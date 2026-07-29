@@ -91,7 +91,8 @@ desktop.ini
 *.vsix
 
 # Claude Code local settings
-.claude/
+.claude/*
+!.claude/skills/
 
 # IDE - IntelliJ/WebStorm
 .idea/
