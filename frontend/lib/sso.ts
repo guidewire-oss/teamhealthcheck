@@ -1,3 +1,6 @@
+// Copyright 2025 Guidewire Software, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * SSO utilities: PKCE generation and OAuth Authorization Code flow helpers.
  * Uses the Web Crypto API (built into all modern browsers and the Next.js runtime).

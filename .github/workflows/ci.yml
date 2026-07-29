@@ -44,6 +44,15 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: backend/go.sum
 
+      - name: Check SPDX license headers
+        run: |
+          MISSING=$(find backend frontend -name '*.go' -o -name '*.ts' -o -name '*.tsx' | xargs grep -L 'SPDX-License-Identifier' || true)
+          if [ -n "$MISSING" ]; then
+            echo "Files missing SPDX-License-Identifier header:"
+            echo "$MISSING"
+            exit 1
+          fi
+
       - name: Run go fmt check
         run: |
           if [ -n "$(gofmt -l .)" ]; then

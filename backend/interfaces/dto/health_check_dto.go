@@ -1,3 +1,6 @@
+// Copyright 2025 Guidewire Software, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package dto
 
 // SubmitHealthCheckRequest represents the request payload for submitting a health check

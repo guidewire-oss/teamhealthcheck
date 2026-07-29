@@ -1,3 +1,6 @@
+// Copyright 2025 Guidewire Software, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * API Response Types
  * TypeScript interfaces matching backend DTOs for type-safe API integration.

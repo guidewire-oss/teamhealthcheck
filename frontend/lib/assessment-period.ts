@@ -1,3 +1,6 @@
+// Copyright 2025 Guidewire Software, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Utility functions for cadence-driven assessment period detection.
  *

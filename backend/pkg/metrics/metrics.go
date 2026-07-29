@@ -1,3 +1,6 @@
+// Copyright 2025 Guidewire Software, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package metrics provides OpenTelemetry metrics for Team360 product analytics and business metrics
 package metrics
 
