@@ -37,7 +37,7 @@ We will acknowledge receipt of your vulnerability report within 48 hours and wil
 
 ### Code Security
 
-- CodeQL analysis runs on every PR and push to main
+- CodeQL analysis (via GitHub's default setup) runs on every PR and push to main
 - Dependency review blocks PRs with high/critical vulnerabilities
 - TruffleHog scans for leaked secrets
 - Dependabot keeps dependencies up to date
