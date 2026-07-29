@@ -1,56 +1,26 @@
 # =============================================================================
-# Team360 Docker Compose - Application Services Only
-# Database must be provided externally (see docs/DOCKER.md for details)
+# Team360 Docker Compose
+# Builds and runs the unified image (Go API + static frontend export).
+# Database must be provided externally (see docs/DOCKER.md).
 # =============================================================================
 
 services:
-  # ---------------------------------------------------------------------------
-  # Backend API
-  # ---------------------------------------------------------------------------
-  api:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-anthropics}/teams360-api:${VERSION:-latest}
+  teams360:
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-guidewire-oss}/teams360:${VERSION:-latest}
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile
-    container_name: teams360-api
+    container_name: teams360
     environment:
-      # DATABASE_URL must be provided at runtime
-      # Example: DATABASE_URL=postgres://user:pass@host:5432/dbname?sslmode=require
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
-      PORT: ${API_PORT:-8080}
+      PORT: ${PORT:-8080}
       GIN_MODE: ${GIN_MODE:-release}
     ports:
-      - "${API_PORT:-8080}:8080"
+      - "${PORT:-8080}:8080"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 30s
       timeout: 3s
       start-period: 10s
-      retries: 3
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # Frontend
-  # ---------------------------------------------------------------------------
-  frontend:
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-anthropics}/teams360-frontend:${VERSION:-latest}
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
-    container_name: teams360-frontend
-    environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
-    ports:
-      - "${FRONTEND_PORT:-3000}:3000"
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
-      interval: 30s
-      timeout: 3s
-      start-period: 15s
       retries: 3
     restart: unless-stopped
