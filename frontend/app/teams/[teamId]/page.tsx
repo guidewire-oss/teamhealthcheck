@@ -1,3 +1,6 @@
+// Copyright 2025 Guidewire Software, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 import TeamResultsClient from './TeamResultsClient';
 
 // Static export requires at least one param. The placeholder is never used —

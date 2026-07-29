@@ -1,3 +1,6 @@
+// Copyright 2025 Guidewire Software, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 import Cookies from 'js-cookie';
 import type { User as DomainUser } from '@/lib/types';
 import { API_BASE_URL } from '@/lib/api/client';
@@ -144,7 +147,9 @@ export const authenticatedFetch = async (
       if (typeof window !== 'undefined') {
         window.location.href = '/login?expired=true';
       }
-      return response;
+      // Return early so callers don't process the 401 response
+      // during the brief window before navigation completes.
+      throw new Error('SESSION_EXPIRED');
     }
   }
 
