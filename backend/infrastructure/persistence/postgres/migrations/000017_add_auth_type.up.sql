@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Add auth_type column to users table
 -- 'local' = username/password authentication
 -- 'sso'   = authentication via external Identity Provider; password_hash unused

@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Update cadence values: remove weekly/biweekly, add half-yearly/yearly
 -- This migration is lossy: weekly/biweekly are mapped to monthly and cannot be restored.
 

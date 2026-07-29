@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Add cadence column to teams table
 ALTER TABLE teams ADD COLUMN cadence VARCHAR(50) DEFAULT 'quarterly';
 

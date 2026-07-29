@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Users table for organizational hierarchy
 CREATE TABLE users (
     id VARCHAR(255) PRIMARY KEY,

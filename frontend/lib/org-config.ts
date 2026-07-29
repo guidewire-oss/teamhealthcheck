@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { OrganizationConfig, HierarchyLevel, User, Team } from './types';
 
 // Default configuration with VP -> Director -> Manager -> Team Lead -> Team Member hierarchy

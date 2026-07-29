@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import Cookies from 'js-cookie';
 import type { User as DomainUser } from '@/lib/types';
 import { API_BASE_URL } from '@/lib/api/client';

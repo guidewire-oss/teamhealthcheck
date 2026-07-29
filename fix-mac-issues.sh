@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+
 
 echo "🔧 Team360 Health Check - Mac ARM64 Fix Script"
 echo "=============================================="

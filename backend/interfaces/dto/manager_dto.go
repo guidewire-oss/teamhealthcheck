@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package dto
 
 // TeamHealthSummary represents aggregated health data for a team

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { Team, HealthCheckSession } from './types';
 
 // Mock teams with proper supervisor chain

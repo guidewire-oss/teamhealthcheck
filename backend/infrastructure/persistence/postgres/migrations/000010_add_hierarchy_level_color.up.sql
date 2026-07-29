@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Add color column to hierarchy_levels table
 ALTER TABLE hierarchy_levels ADD COLUMN IF NOT EXISTS color VARCHAR(20);
 

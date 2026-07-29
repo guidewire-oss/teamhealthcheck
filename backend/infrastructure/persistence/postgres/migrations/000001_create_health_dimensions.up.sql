@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Create health_dimensions table
 CREATE TABLE IF NOT EXISTS health_dimensions (
     id VARCHAR(50) PRIMARY KEY,

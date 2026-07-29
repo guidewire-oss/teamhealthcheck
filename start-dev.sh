@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+
 # Script to start development server on host machine with SSL bypass
 
 echo "Starting Team360 Health Check Application..."

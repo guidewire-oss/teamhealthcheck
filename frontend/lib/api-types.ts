@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * API Response Types
  * TypeScript interfaces matching backend DTOs for type-safe API integration.

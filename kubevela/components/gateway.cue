@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Gateway Trait Definition — Service + Ingress
 // Adapted from fern-platform patterns for KubeVela OAM
 // Usage: vela def apply kubevela/components/gateway.cue

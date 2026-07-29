@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Web Vitals Metrics Collection for Team360 Frontend
  *

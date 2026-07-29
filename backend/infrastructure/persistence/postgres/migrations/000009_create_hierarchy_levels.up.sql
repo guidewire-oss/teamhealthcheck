@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Create hierarchy_levels table for organizational structure
 CREATE TABLE IF NOT EXISTS hierarchy_levels (
     id VARCHAR(50) PRIMARY KEY,

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 package dto
 
 // TeamDashboardHealthSummary represents radar chart data (avg score per dimension)

@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Add survey_type column to distinguish individual vs post-workshop surveys
 ALTER TABLE health_check_sessions
 ADD COLUMN survey_type VARCHAR(20) NOT NULL DEFAULT 'individual';

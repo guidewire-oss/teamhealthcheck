@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Add additional permission columns to hierarchy_levels table
 ALTER TABLE hierarchy_levels ADD COLUMN IF NOT EXISTS can_configure_system BOOLEAN DEFAULT false;
 ALTER TABLE hierarchy_levels ADD COLUMN IF NOT EXISTS can_view_reports BOOLEAN DEFAULT false;

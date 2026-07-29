@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Revert cadence constraint (lossy: cannot restore original weekly/biweekly values)
 ALTER TABLE teams DROP CONSTRAINT IF EXISTS chk_teams_cadence_values;
 

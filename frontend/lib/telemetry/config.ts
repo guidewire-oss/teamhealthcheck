@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * OpenTelemetry Configuration for Team360 Frontend
  *

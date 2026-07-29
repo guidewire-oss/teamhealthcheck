@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 import { authenticatedFetch } from '@/lib/auth';
 import { API_BASE_URL } from './client';
 

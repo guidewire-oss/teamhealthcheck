@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Configurable hierarchy level
 export interface HierarchyLevel {
   id: string;

@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Create password reset tokens table for P0-3: Password reset flow
 -- Tokens are short-lived (1 hour) and single-use
 

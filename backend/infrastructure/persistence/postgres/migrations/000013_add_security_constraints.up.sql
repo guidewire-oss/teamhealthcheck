@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Add security and data integrity constraints
 
 -- Add CHECK constraints for email format validation at database level

@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 CREATE TABLE IF NOT EXISTS app_settings (
     id INTEGER PRIMARY KEY DEFAULT 1 CONSTRAINT singleton CHECK (id = 1),
     email_notifications BOOLEAN NOT NULL DEFAULT false,

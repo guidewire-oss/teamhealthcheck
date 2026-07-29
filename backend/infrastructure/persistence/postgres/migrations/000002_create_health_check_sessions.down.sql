@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Drop health_check_sessions table
 DROP INDEX IF EXISTS idx_sessions_team_date;
 DROP INDEX IF EXISTS idx_sessions_user_date;

@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Remove security constraints (in reverse order)
 
 -- Remove indexes

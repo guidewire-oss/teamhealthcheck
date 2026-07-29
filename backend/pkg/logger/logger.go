@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package logger provides structured logging using zerolog.
 // It is designed for security-conscious, cost-effective logging
 // with a focus on debugging value.

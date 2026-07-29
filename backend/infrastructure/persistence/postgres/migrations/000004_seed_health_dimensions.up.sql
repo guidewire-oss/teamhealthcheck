@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Seed health dimensions based on Spotify Squad Health Check Model
 -- Enhanced with Team360 additions
 

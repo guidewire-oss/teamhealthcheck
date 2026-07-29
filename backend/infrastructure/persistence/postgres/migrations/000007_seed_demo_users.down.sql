@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Remove demo users
 DELETE FROM users WHERE id IN (
     'vp1', 'dir1', 'dir2', 'mgr1', 'mgr2', 'mgr3',

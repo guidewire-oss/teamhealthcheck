@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Create health_check_sessions table
 CREATE TABLE IF NOT EXISTS health_check_sessions (
     id VARCHAR(100) PRIMARY KEY,

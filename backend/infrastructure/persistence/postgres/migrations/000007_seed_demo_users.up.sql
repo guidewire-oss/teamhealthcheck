@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Administrator (always created — needed for login in all environments)
 -- Demo users are now seeded at app startup via SeedDemoData() when APP_ENV=demo
 INSERT INTO users (id, username, email, full_name, hierarchy_level_id, reports_to, password_hash)

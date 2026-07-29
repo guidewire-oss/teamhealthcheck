@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Create health_check_responses table
 CREATE TABLE IF NOT EXISTS health_check_responses (
     id SERIAL PRIMARY KEY,

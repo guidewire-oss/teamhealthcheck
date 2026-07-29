@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: Apache-2.0
+
 CREATE TABLE action_items (
     id                VARCHAR(100)  PRIMARY KEY,
     team_id           VARCHAR(255)  NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
