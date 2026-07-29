@@ -530,7 +530,7 @@ npm install --force @next/swc-darwin-arm64  # If still having issues
 
 ## KubeVela + CNPG Deployment (Kubernetes)
 
-Team360 supports deployment to Kubernetes via **KubeVela** (Open Application Model) with **CloudNativePG** for production-grade PostgreSQL. This is an alternative to the existing Helm charts in `helm/teams360/`.
+Team360 supports deployment to Kubernetes via **KubeVela** (Open Application Model) with **CloudNativePG** for production-grade PostgreSQL. This is an alternative to the existing KubeVela deployment configs in `kubevela/`.
 
 ### Prerequisites
 
@@ -793,7 +793,7 @@ var _ = SynchronizedBeforeSuite(
 
 **Run all E2E tests**:
 ```bash
-cd /Users/agopalakrishnan/workspace/oss/teams360
+cd $(git rev-parse --show-toplevel)
 export TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/teams360_test?sslmode=disable"
 ginkgo -v tests/acceptance/
 ```
