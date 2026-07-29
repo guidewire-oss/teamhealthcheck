@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/XSAM/otelsql"
 	"github.com/agopalakrishnan/teams360/backend/application/services"
@@ -115,6 +117,38 @@ func main() {
 			log.WithError(err).Fatal("failed to ping newly created database")
 		}
 	}
+
+	// Configure connection pool limits
+	maxOpenConns := 25
+	maxIdleConns := 10
+	connMaxLifetime := 30 * time.Minute
+
+	if v := os.Getenv("DB_MAX_OPEN_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			maxOpenConns = n
+		}
+	}
+	if v := os.Getenv("DB_MAX_IDLE_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			maxIdleConns = n
+		}
+	}
+	if v := os.Getenv("DB_CONN_MAX_LIFETIME"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			connMaxLifetime = d
+		}
+	}
+
+	db.SetMaxOpenConns(maxOpenConns)
+	db.SetMaxIdleConns(maxIdleConns)
+	db.SetConnMaxLifetime(connMaxLifetime)
+
+	log.WithFields(log.Fields{
+		"max_open_conns":    maxOpenConns,
+		"max_idle_conns":    maxIdleConns,
+		"conn_max_lifetime": connMaxLifetime,
+	}).Info("database connection pool configured")
+
 	log.Info("database connection established")
 
 	// Store APP_ENV in app_config table for runtime queries
