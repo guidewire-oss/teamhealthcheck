@@ -23,10 +23,15 @@ func NewOrganizationRepository(db *sql.DB) organization.Repository {
 func (r *OrganizationRepository) Get(ctx context.Context) (*organization.OrganizationConfig, error) {
 	var config organization.OrganizationConfig
 
-	// For now, construct config from hierarchy_levels
 	config.ID = "default"
-	config.CompanyName = "Team360"
-	config.TeamMemberLevelID = "level-5" // Default team member level
+
+	// Load company name from app_settings (not hardcoded)
+	appSettings, err := r.GetAppSettings(ctx)
+	if err == nil && appSettings.CompanyName != "" {
+		config.CompanyName = appSettings.CompanyName
+	} else {
+		config.CompanyName = "Team360" // fallback default
+	}
 
 	// Fetch hierarchy levels
 	levels, err := r.FindHierarchyLevels(ctx)
@@ -38,6 +43,19 @@ func (r *OrganizationRepository) Get(ctx context.Context) (*organization.Organiz
 	config.HierarchyLevels = make([]organization.HierarchyLevel, len(levels))
 	for i, level := range levels {
 		config.HierarchyLevels[i] = *level
+	}
+
+	// Derive team member level from the lowest-position hierarchy level
+	if len(levels) > 0 {
+		lowest := levels[0]
+		for _, l := range levels[1:] {
+			if l.Position > lowest.Position {
+				lowest = l
+			}
+		}
+		config.TeamMemberLevelID = lowest.ID
+	} else {
+		config.TeamMemberLevelID = "level-5" // fallback default
 	}
 
 	return &config, nil
