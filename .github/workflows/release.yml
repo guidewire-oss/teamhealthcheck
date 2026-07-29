@@ -36,7 +36,20 @@ jobs:
     outputs:
       digest: ${{ steps.build.outputs.digest }}
       image: ${{ steps.meta.outputs.tags }}
+      version: ${{ steps.version.outputs.version }}
     steps:
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version || '' }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -84,7 +97,7 @@ jobs:
           cache-to: type=gha,mode=max
           # Security: Don't include build secrets in image
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ steps.version.outputs.version }}
             COMMIT=${{ github.sha }}
           provenance: true
           sbom: true
@@ -127,7 +140,7 @@ jobs:
             Pull the unified image from GitHub Container Registry:
 
             ```bash
-            docker pull ${{ env.IMAGE_PREFIX }}/teams360:${{ github.ref_name }}
+            docker pull ${{ env.IMAGE_PREFIX }}/teams360:${{ needs.build.outputs.version }}
             ```
 
             ## Verify Image Signature
@@ -135,7 +148,7 @@ jobs:
             Images are signed with Sigstore. Verify with:
 
             ```bash
-            cosign verify ${{ env.IMAGE_PREFIX }}/teams360:${{ github.ref_name }} \
+            cosign verify ${{ env.IMAGE_PREFIX }}/teams360:${{ needs.build.outputs.version }} \
               --certificate-identity-regexp="https://github.com/${{ github.repository }}" \
               --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
             ```
@@ -145,5 +158,5 @@ jobs:
             ```bash
             docker run -p 8080:8080 \
               -e DATABASE_URL="postgres://user:pass@host:5432/teams360?sslmode=disable" \
-              ${{ env.IMAGE_PREFIX }}/teams360:${{ github.ref_name }}
+              ${{ env.IMAGE_PREFIX }}/teams360:${{ needs.build.outputs.version }}
             ```
