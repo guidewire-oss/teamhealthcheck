@@ -29,7 +29,7 @@ We will acknowledge receipt of your vulnerability report within 48 hours and wil
 
 ### Container Security
 
-- All Docker images are built from minimal base images (`scratch` for Go, `node:alpine` for frontend)
+- The Docker image is built from a minimal `alpine:3.21` base
 - Images run as non-root users
 - Images are signed with Sigstore/Cosign
 - SBOM (Software Bill of Materials) is generated for each image
@@ -53,8 +53,8 @@ We will acknowledge receipt of your vulnerability report within 48 hours and wil
 You can verify image signatures using Cosign:
 
 ```bash
-cosign verify ghcr.io/OWNER/teams360-api:TAG \
-  --certificate-identity-regexp="https://github.com/OWNER/teams360" \
+cosign verify ghcr.io/guidewire-oss/teams360:TAG \
+  --certificate-identity-regexp="https://github.com/guidewire-oss/teams360" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 ```
 
