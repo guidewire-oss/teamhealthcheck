@@ -1,4 +1,4 @@
-# Backend Makefile for Team360 Go API
+# Backend Makefile for Team Health Check Go API
 # Follows DDD architecture and TDD practices with Ginkgo/Gomega
 
 .PHONY: help install run build test test-verbose test-coverage clean lint fmt vet tidy
@@ -25,7 +25,7 @@ GINKGO=ginkgo
 GINKGO_FLAGS=-v --race --randomize-all --randomize-suites --fail-on-pending --trace
 
 help: ## Display this help message
-	@echo "Team360 Backend - Go API with Gin, DDD, and TDD"
+	@echo "Team Health Check Backend - Go API with Gin, DDD, and TDD"
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""
@@ -47,15 +47,15 @@ tidy: ## Tidy go.mod and go.sum
 	$(GOMOD) tidy
 
 run: ## Run the API server (development mode)
-	@echo "Starting Team360 API server..."
+	@echo "Starting Team Health Check API server..."
 	$(GOCMD) run $(MAIN_PATH)/main.go
 
 dev: ## Run the API server with hot reload (requires air)
-	@echo "Starting Team360 API server with hot reload..."
+	@echo "Starting Team Health Check API server with hot reload..."
 	air
 
 build: ## Build the API binary
-	@echo "Building Team360 API..."
+	@echo "Building Team Health Check API..."
 	@mkdir -p bin
 	$(GOBUILD) -o $(BINARY_PATH) $(MAIN_PATH)/main.go
 	@echo "Build complete: $(BINARY_PATH)"
@@ -136,7 +136,7 @@ otel-logs: ## View OTel collector logs
 	@docker compose -f deploy/docker-compose.observability.yaml logs -f otel-collector
 
 run-with-otel: ## Run API server with telemetry enabled
-	@echo "Starting Team360 API with OpenTelemetry enabled..."
+	@echo "Starting Team Health Check API with OpenTelemetry enabled..."
 	@echo "Make sure observability stack is running (make otel-start)"
 	@echo ""
 	OTEL_ENABLED=true $(GOCMD) run $(MAIN_PATH)/main.go

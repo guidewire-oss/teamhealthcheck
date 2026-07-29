@@ -1,6 +1,6 @@
-# Team360 Frontend
+# Team Health Check Frontend
 
-Next.js 15 application for the Team360 Squad Health Check system.
+Next.js 15 application for the Team Health Check Squad Health Check system.
 
 ## Quick Start
 
