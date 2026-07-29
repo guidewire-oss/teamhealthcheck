@@ -65,8 +65,8 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             # Tag with major (v1.0.0 -> 1)
             type=semver,pattern={{major}}
-            # Tag latest for default branch releases
-            type=raw,value=latest,enable={{is_default_branch}}
+            # Tag latest for default branch releases and version tags
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' || github.ref_name == 'main' }}
             # Tag with SHA for traceability
             type=sha,prefix=sha-
 
