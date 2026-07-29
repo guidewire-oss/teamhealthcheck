@@ -35,8 +35,16 @@ const MONTH_NAME_TO_INDEX: Record<string, number> = {
  * @param date - Date object or ISO string (defaults to current date)
  * @param cadence - Team cadence (defaults to 'half-yearly' for backward compat)
  */
+function parseLocalDate(value: string): Date {
+  const parts = value.split('-');
+  if (parts.length === 3) {
+    return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  }
+  return new Date(value);
+}
+
 export function getAssessmentPeriod(date?: Date | string, cadence?: Cadence): string {
-  const d = date ? (typeof date === 'string' ? new Date(date) : date) : new Date();
+  const d = date ? (typeof date === 'string' ? parseLocalDate(date) : date) : new Date();
   const year = d.getFullYear();
   const month = d.getMonth(); // 0-indexed
 
