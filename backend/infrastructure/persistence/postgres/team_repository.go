@@ -1,3 +1,6 @@
+// Copyright 2025 Guidewire Software, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package postgres
 
 import (
@@ -61,7 +64,7 @@ func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, e
 	if cadence.Valid {
 		t.Cadence = cadence.String
 	} else {
-		t.Cadence = "monthly" // default
+		t.Cadence = "quarterly" // default
 	}
 	if distributionListEmail.Valid {
 		t.DistributionListEmail = &distributionListEmail.String
@@ -311,7 +314,7 @@ func (r *TeamRepository) Save(ctx context.Context, t *team.Team) error {
 	if t.Cadence != "" {
 		cadence = sql.NullString{String: t.Cadence, Valid: true}
 	} else {
-		cadence = sql.NullString{String: "monthly", Valid: true}
+		cadence = sql.NullString{String: "quarterly", Valid: true}
 	}
 	if t.DistributionListEmail != nil && *t.DistributionListEmail != "" {
 		distributionListEmail = sql.NullString{String: *t.DistributionListEmail, Valid: true}
@@ -378,7 +381,7 @@ func (r *TeamRepository) Update(ctx context.Context, t *team.Team) error {
 	if t.Cadence != "" {
 		cadence = sql.NullString{String: t.Cadence, Valid: true}
 	} else {
-		cadence = sql.NullString{String: "monthly", Valid: true}
+		cadence = sql.NullString{String: "quarterly", Valid: true}
 	}
 	if t.DistributionListEmail != nil && *t.DistributionListEmail != "" {
 		distributionListEmail = sql.NullString{String: *t.DistributionListEmail, Valid: true}
@@ -561,7 +564,7 @@ func (r *TeamRepository) scanTeams(ctx context.Context, rows *sql.Rows) ([]*team
 		if cadence.Valid {
 			t.Cadence = cadence.String
 		} else {
-			t.Cadence = "monthly"
+			t.Cadence = "quarterly"
 		}
 		if distributionListEmail.Valid {
 			t.DistributionListEmail = &distributionListEmail.String

@@ -1,3 +1,6 @@
+// Copyright 2025 Guidewire Software, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 package v1
 
 import (
@@ -91,7 +94,7 @@ func (h *HealthCheckHandler) SubmitHealthCheck(c *gin.Context) {
 			})
 			return
 		}
-		if parsedDate.After(time.Now()) {
+		if parsedDate.After(time.Now().UTC().Truncate(24 * time.Hour)) {
 			log.Warn("health check submission with future date rejected")
 			c.JSON(http.StatusBadRequest, dto.ErrorResponse{
 				Error:   "Invalid date: future dates are not allowed",
