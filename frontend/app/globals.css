@@ -3,19 +3,155 @@
 @tailwind utilities;
 
 :root {
+  color-scheme: light;
   --background: #ffffff;
   --foreground: #171717;
+  --surface: #ffffff;
+  --surface-muted: #f8fafc;
+  --border: #e5e7eb;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --cardbg: #ffffff;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --background: #0d1117;
+  --foreground: #f8fafc;
+  --surface: #161b22;
+  --surface-muted: #0f172a;
+  --border: #30363d;
+  --muted: #94a3b8;
+  --accent: #58a6ff;
+  --cardbg: #111827;
+  --panel-shadow: rgba(255, 255, 255, 0.04);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+html.dark body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+html.dark [class*='bg-white'],
+html.dark [class*='bg-slate-50'],
+html.dark [class*='bg-slate-100'] {
+  background-color: var(--surface) !important;
+}
+
+html.dark [class*='bg-gray-50'],
+html.dark [class*='bg-slate-50'] {
+  background-color: var(--surface) !important;
+}
+
+html.dark [class*='bg-gray-100'],
+html.dark [class*='bg-slate-100'] {
+  background-color: var(--surface) !important;
+}
+
+html.dark [class*='bg-gray-200'],
+html.dark [class*='bg-slate-200'] {
+  background-color: #1f2937 !important;
+}
+
+html.dark [class*='bg-gray-300'],
+html.dark [class*='bg-slate-300'] {
+  background-color: #1e293b !important;
+}
+
+html.dark [class*='text-gray-900'],
+html.dark [class*='text-gray-800'],
+html.dark [class*='text-gray-700'] {
+  color: var(--foreground) !important;
+}
+
+html.dark [class*='text-gray-600'],
+html.dark [class*='text-gray-500'],
+html.dark [class*='text-slate-500'],
+html.dark [class*='text-slate-600'] {
+  color: var(--muted) !important;
+}
+
+html.dark [class*='border-gray-200'],
+html.dark [class*='border-gray-300'],
+html.dark [class*='border-gray-400'],
+html.dark [class*='border-slate-200'],
+html.dark [class*='border-slate-300'] {
+  border-color: var(--border) !important;
+}
+
+html.dark [class*='bg-indigo-50'],
+html.dark [class*='bg-indigo-100'],
+html.dark [class*='bg-blue-50'],
+html.dark [class*='bg-blue-100'],
+html.dark [class*='bg-green-50'],
+html.dark [class*='bg-red-50'],
+html.dark [class*='bg-amber-50'] {
+  background-color: rgba(88, 166, 255, 0.12) !important;
+}
+
+html.dark [class*='bg-gradient-to-br'],
+html.dark [class*='bg-gradient-to-r'],
+html.dark [class*='bg-gradient-to-b'] {
+  background-image: linear-gradient(to bottom right, var(--surface-muted), var(--surface)) !important;
+}
+
+html.dark [class*='border-indigo-100'],
+html.dark [class*='border-indigo-200'],
+html.dark [class*='border-blue-200'],
+html.dark [class*='border-blue-100'],
+html.dark [class*='border-green-200'],
+html.dark [class*='border-red-200'],
+html.dark [class*='border-amber-200'] {
+  border-color: var(--border) !important;
+}
+
+html.dark [class*='text-indigo-600'],
+html.dark [class*='text-indigo-500'] {
+  color: var(--accent) !important;
+}
+
+html.dark .dark\:bg-gray-800 {
+  background-color: #111827 !important;
+}
+
+html.dark .dark\:text-white {
+  color: #f8fafc !important;
+}
+
+html.dark .shadow-xl,
+html.dark .shadow-lg,
+html.dark .shadow-md,
+html.dark .shadow-sm {
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.25), 0 4px 8px rgba(0, 0, 0, 0.2) !important;
+}
+
+html.dark ::selection {
+  background: rgba(248, 250, 252, 0.18);
+  color: var(--foreground);
+}
+
+html.dark input,
+html.dark textarea,
+html.dark select,
+html.dark button,
+html.dark optgroup,
+html.dark option,
+html.dark fieldset,
+html.dark summary {
+  color: var(--foreground) !important;
+  background-color: var(--surface) !important;
+  border-color: var(--border) !important;
+}
+
+html.dark input::placeholder,
+html.dark textarea::placeholder {
+  color: var(--muted) !important;
+  opacity: 1 !important;
 }
