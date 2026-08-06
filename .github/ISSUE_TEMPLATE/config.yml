@@ -1,0 +1,11 @@
+# .github/ISSUE_TEMPLATE/config.yml
+# Forces contributors to pick a template (no blank issues) and routes
+# security reports + questions away from the public issue tracker.
+blank_issues_enabled: false
+contact_links:
+  - name: "🔒 Report a security vulnerability"
+    url: "https://github.com/guidewire-oss/teams360/security/policy"
+    about: "Report vulnerabilities privately per our security policy — never as a public issue."
+  - name: "💬 Questions & discussion"
+    url: "https://github.com/guidewire-oss/teams360/discussions"
+    about: "Ask questions, share ideas, or get help using Team Health Check."

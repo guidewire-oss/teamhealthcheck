@@ -5,7 +5,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 var _ = Describe("E2E: VP/Executive Dashboard", func() {
@@ -64,6 +64,7 @@ var _ = Describe("E2E: VP/Executive Dashboard", func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Verifying Hierarchy View tab exists")
 				hierarchyTab := page.Locator("[data-testid='hierarchy-tab'], button:has-text('Hierarchy View')")
@@ -130,6 +131,7 @@ var _ = Describe("E2E: VP/Executive Dashboard", func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Clicking on Summary View tab")
 				summaryTab := page.Locator("[data-testid='summary-tab'], button:has-text('Summary View')")
@@ -193,6 +195,7 @@ var _ = Describe("E2E: VP/Executive Dashboard", func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Clicking on Comparison tab")
 				comparisonTab := page.Locator("[data-testid='comparison-tab'], button:has-text('Comparison')")
@@ -248,6 +251,7 @@ var _ = Describe("E2E: VP/Executive Dashboard", func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Verifying assessment period filter exists")
 				periodFilter := page.Locator("[data-testid='period-filter'], select:has-text('Period'), select#period-filter")
@@ -305,6 +309,7 @@ var _ = Describe("E2E: VP/Executive Dashboard", func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Attempting to navigate to survey page")
 				_, err = page.Goto(frontendURL + "/survey")

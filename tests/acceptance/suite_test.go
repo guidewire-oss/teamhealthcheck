@@ -14,7 +14,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 
 	"github.com/golang-migrate/migrate/v4"
 	migratePostgres "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -409,3 +409,33 @@ var _ = AfterEach(func() {
 	// Cleanup per-test resources if needed
 	// This runs after each It() block
 })
+
+// dismissOnboardingIfVisible closes the onboarding modal if it is showing.
+// Called after every login navigation so the modal never blocks test interactions.
+// Waits up to 2 seconds for the modal to appear (React may not have rendered it yet).
+func dismissOnboardingIfVisible(page playwright.Page) {
+	modal := page.Locator("[data-testid='onboarding-modal']")
+	// Wait briefly for the modal to appear — React renders it asynchronously after navigation.
+	// If it doesn't appear within 2s it's not shown for this user/session, so proceed.
+	err := modal.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(2000),
+	})
+	if err != nil {
+		// Modal not shown — nothing to dismiss.
+		return
+	}
+	btn := page.Locator("[data-testid='onboarding-dismiss-btn']")
+	btnVisible, _ := btn.IsVisible()
+	if btnVisible {
+		_ = btn.Click()
+	} else {
+		// Modal is on an earlier slide — click the close X button
+		_ = page.Locator("[data-testid='onboarding-close-btn']").Click()
+	}
+	// Wait for modal to disappear before returning
+	_ = modal.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateHidden,
+		Timeout: playwright.Float(3000),
+	})
+}

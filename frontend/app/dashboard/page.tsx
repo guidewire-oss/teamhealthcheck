@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { getCurrentUser, logout, authenticatedFetch } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { getOrgConfig, getHierarchyLevel, getUserPermissions } from '@/lib/org-config';
-import { LogOut, Building2, ChevronDown, BarChart3, LineChart as LineChartIcon, Users as UsersIcon, Activity, ClipboardList, TrendingUp, TrendingDown, Minus, LayoutGrid, List, Info, CheckCircle, Download } from 'lucide-react';
+import { LogOut, Building2, ChevronDown, BarChart3, LineChart as LineChartIcon, Users as UsersIcon, Activity, ClipboardList, TrendingUp, TrendingDown, Minus, LayoutGrid, List, Info, CheckCircle, Download, ListTodo } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { AlertCircle } from 'lucide-react';
 import { getTeamSubmissionStatus, getAssessmentPeriods, TeamSubmissionStatus } from '@/lib/api/health-checks';
@@ -13,8 +13,10 @@ import { API_BASE_URL } from '@/lib/api/client';
 import { getAssessmentPeriod, toCadence } from '@/lib/assessment-period';
 import { getTeamInfoCached } from '@/lib/api/teams';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line, ResponsiveContainer } from 'recharts';
+import OnboardingModal from '@/components/OnboardingModal';
+import ActionItemsTab from '@/components/ActionItemsTab';
 
-type TabType = 'radar' | 'distribution' | 'responses' | 'trends';
+type TabType = 'radar' | 'distribution' | 'responses' | 'trends' | 'actions';
 
 interface HealthSummary {
   dimension: string;
@@ -67,6 +69,7 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [responseView, setResponseView] = useState<'matrix' | 'cards'>('matrix');
   const [teamOptions, setTeamOptions] = useState<{id: string, name: string}[]>([]);
+  const [teamMembers, setTeamMembers] = useState<{id: string, name: string}[]>([]);
   const [brandingName, setBrandingName] = useState<string>('');
   const [brandingLogo, setBrandingLogo] = useState<string | null>(null);
   const [collapsedCards, setCollapsedCards] = useState<Set<number>>(new Set());
@@ -80,6 +83,7 @@ export default function DashboardPage() {
     trend: string;
     comment: string;
   } | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   useEffect(() => {
     const currentUser = getCurrentUser();
@@ -88,6 +92,9 @@ export default function DashboardPage() {
       return;
     }
     setUser(currentUser);
+    if (!localStorage.getItem(`onboarding_complete:${currentUser.id}`)) {
+      setShowOnboarding(true);
+    }
 
     // Fetch branding from public config endpoint
     fetch(`${API_BASE_URL}/api/v1/config`)
@@ -103,14 +110,16 @@ export default function DashboardPage() {
       const firstTeamId = currentUser.teamIds[0];
       setTeamId(firstTeamId);
       fetchDashboardData(firstTeamId, '');
-      // Fetch team info for cadence, then compute current period for submission status
+      // Fetch team info for cadence, members, and submission status
       getTeamInfoCached(firstTeamId)
         .then((teamInfo) => {
+          setTeamMembers(teamInfo.members.map(m => ({ id: m.id, name: m.fullName })));
           const currentPeriod = getAssessmentPeriod(new Date(), toCadence(teamInfo.cadence));
           return getTeamSubmissionStatus(firstTeamId, currentPeriod);
         })
         .catch(() => {
-          // Fallback: use default cadence if team info fetch fails
+          // Fallback: use default cadence if team info fetch fails; clear stale members
+          setTeamMembers([]);
           const currentPeriod = getAssessmentPeriod(new Date());
           return getTeamSubmissionStatus(firstTeamId, currentPeriod);
         })
@@ -275,9 +284,10 @@ export default function DashboardPage() {
     setTeamId(newTeamId);
     setSelectedPeriod('');
     fetchDashboardData(newTeamId, '');
-    // Re-fetch submission status for the new team
+    // Re-fetch team info (members + submission status) for the new team
     getTeamInfoCached(newTeamId)
       .then((teamInfo) => {
+        setTeamMembers(teamInfo.members.map(m => ({ id: m.id, name: m.fullName })));
         const currentPeriod = getAssessmentPeriod(new Date(), toCadence(teamInfo.cadence));
         return getTeamSubmissionStatus(newTeamId, currentPeriod);
       })
@@ -309,14 +319,6 @@ export default function DashboardPage() {
       return nonZero.length > 0 ? nonZero.reduce((a, b) => a + b, 0) / nonZero.length : 0;
     }),
     [matrixDims, individualResponses]
-  );
-
-  const matrixOverallAvg = useMemo(
-    () => matrixDimAvgs.length > 0
-      ? matrixDimAvgs.filter((a) => a > 0).reduce((a, b) => a + b, 0) /
-        (matrixDimAvgs.filter((a) => a > 0).length || 1)
-      : 0,
-    [matrixDimAvgs]
   );
 
   // Breakdown view: percentage bars sorted worst-first
@@ -392,7 +394,7 @@ export default function DashboardPage() {
     return 'Poor';
   };
 
-  const handleExportToExcel = () => {
+  const handleExportToExcel = async () => {
     const teamName = teamOptions.find(t => t.id === teamId)?.name || teamId;
     const periodLabel = selectedPeriod || 'All Periods';
 
@@ -431,10 +433,26 @@ export default function DashboardPage() {
     }));
     const distributionSheet = XLSX.utils.json_to_sheet(distributionRows);
 
+    // Sheet 4: Action items
+    const { listActionItems } = await import('@/lib/api/action-items');
+    const actionItems = await listActionItems(teamId).catch(() => []);
+    const actionRows = actionItems.map(a => ({
+      Title: a.title,
+      Dimension: a.dimensionName || '',
+      Status: a.status === 'in_progress' ? 'In Progress' : a.status === 'done' ? 'Done' : 'Open',
+      'Assigned To': a.assigneeName || '',
+      'Due Date': a.dueDate ? new Date(a.dueDate).toLocaleDateString() : '',
+      Description: a.description || '',
+      'Created By': a.createdByName || '',
+      'Created At': new Date(a.createdAt).toLocaleDateString(),
+    }));
+    const actionsSheet = XLSX.utils.json_to_sheet(actionRows.length > 0 ? actionRows : [{ Title: 'No action items' }]);
+
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary');
     XLSX.utils.book_append_sheet(wb, responsesSheet, 'Individual Responses');
     XLSX.utils.book_append_sheet(wb, distributionSheet, 'Distribution');
+    XLSX.utils.book_append_sheet(wb, actionsSheet, 'Action Items');
 
     const fileName = `health-check-${teamName.replace(/\s+/g, '-').toLowerCase()}-${periodLabel.replace(/\s+/g, '-').toLowerCase()}.xlsx`;
     XLSX.writeFile(wb, fileName);
@@ -644,6 +662,18 @@ export default function DashboardPage() {
                 <LineChartIcon className="w-4 h-4" />
                 Trends
               </button>
+              <button
+                data-testid="actions-tab"
+                onClick={() => setActiveTab('actions')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                  activeTab === 'actions'
+                    ? 'bg-indigo-50 text-indigo-600 font-medium'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                <ListTodo className="w-4 h-4" />
+                Actions
+              </button>
             </div>
           </div>
 
@@ -815,12 +845,19 @@ export default function DashboardPage() {
                           /* Chart view — original grouped bar chart */
                           <div data-testid="distribution-chart" style={{ width: '100%', height: 500 }}>
                           <ResponsiveContainer width="100%" height={500}>
-                            <BarChart data={distribution}>
+                            <BarChart data={distribution} margin={{ top: 8, right: 16, left: 0, bottom: 80 }}>
                               <CartesianGrid strokeDasharray="3 3" />
-                              <XAxis dataKey="dimension" />
+                              <XAxis
+                                dataKey="dimension"
+                                interval={0}
+                                angle={-35}
+                                textAnchor="end"
+                                tick={{ fontSize: 12, fill: '#374151' }}
+                                height={80}
+                              />
                               <YAxis />
                               <Tooltip />
-                              <Legend />
+                              <Legend verticalAlign="top" />
                               <Bar dataKey="red" fill="#EF4444" name="Red (Poor)" />
                               <Bar dataKey="yellow" fill="#F59E0B" name="Yellow (Medium)" />
                               <Bar dataKey="green" fill="#10B981" name="Green (Good)" />
@@ -894,18 +931,10 @@ export default function DashboardPage() {
                                         </span>
                                       </th>
                                     ))}
-                                    <th className="px-3 py-3 text-center font-semibold text-gray-700 min-w-[64px] border-l border-gray-200">
-                                      Avg
-                                    </th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {individualResponses.map((response, idx) => {
-                                    const memberScores = response.responses.filter((r) => r.score > 0);
-                                    const memberAvg =
-                                      memberScores.length > 0
-                                        ? memberScores.reduce((sum, r) => sum + r.score, 0) / memberScores.length
-                                        : 0;
                                     return (
                                       <tr
                                         key={idx}
@@ -990,14 +1019,6 @@ export default function DashboardPage() {
                                             </td>
                                           );
                                         })}
-                                        <td className="px-3 py-3 text-center border-l border-gray-200">
-                                          <span
-                                            className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold"
-                                            style={getAvgBadgeStyle(memberAvg)}
-                                          >
-                                            {memberAvg > 0 ? memberAvg.toFixed(1) : '—'}
-                                          </span>
-                                        </td>
                                       </tr>
                                     );
                                   })}
@@ -1016,14 +1037,6 @@ export default function DashboardPage() {
                                         </span>
                                       </td>
                                     ))}
-                                    <td className="px-3 py-3 text-center border-l border-gray-200">
-                                      <span
-                                        className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold"
-                                        style={getAvgBadgeStyle(matrixOverallAvg)}
-                                      >
-                                        {matrixOverallAvg > 0 ? matrixOverallAvg.toFixed(1) : '—'}
-                                      </span>
-                                    </td>
                                   </tr>
                                 </tbody>
                               </table>
@@ -1209,8 +1222,11 @@ export default function DashboardPage() {
                     <div className="flex justify-between items-center mb-6">
                       <div>
                         <h2 className="text-xl font-semibold text-gray-900">Health Trends Over Time</h2>
-                        {trendsView === 'dimensions' && trends.length > 0 && (
-                          <p className="text-xs text-gray-400 mt-0.5">One card per dimension — score vs. time</p>
+                        {trends.length > 0 && (
+                          <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1">
+                            <Info className="w-3 h-3 flex-shrink-0" />
+                            Hover over a dot to see the assessment period and score
+                          </p>
                         )}
                       </div>
                       {trends.length > 0 && (
@@ -1309,8 +1325,8 @@ export default function DashboardPage() {
                                           dataKey="value"
                                           stroke={lineColor}
                                           strokeWidth={2}
-                                          dot={{ r: 2, fill: lineColor }}
-                                          activeDot={{ r: 3 }}
+                                          dot={{ r: 3, fill: lineColor }}
+                                          activeDot={{ r: 4 }}
                                         />
                                         <Tooltip
                                           contentStyle={{
@@ -1329,7 +1345,7 @@ export default function DashboardPage() {
                                           itemStyle={{ color: '#d1fae5' }}
                                           cursor={{ stroke: '#6366f1', strokeWidth: 1, strokeDasharray: '3 3' }}
                                           formatter={(v: number) => [v.toFixed(2), 'Score']}
-                                          labelFormatter={(period) => period}
+                                          labelFormatter={(period) => `Period: ${period}`}
                                         />
                                       </LineChart>
                                     </ResponsiveContainer>
@@ -1338,46 +1354,123 @@ export default function DashboardPage() {
                                       Single period
                                     </div>
                                   )}
-
-                                  {/* Latest period label */}
-                                  {data.length > 0 && (
-                                    <p className="text-xs text-gray-400 truncate text-right">
-                                      {data[data.length - 1].period}
-                                    </p>
-                                  )}
                                 </div>
                               );
                             })}
                           </div>
                         ) : (
-                          /* Overview — original 11-line chart */
-                          <div data-testid="trends-chart" style={{ width: '100%', height: 500 }}>
-                          <ResponsiveContainer width="100%" height={500}>
-                            <LineChart data={trends}>
-                              <CartesianGrid strokeDasharray="3 3" />
-                              <XAxis dataKey="period" />
-                              <YAxis domain={[0, 3]} />
-                              <Tooltip />
-                              <Legend />
-                              {HEALTH_DIMENSIONS.map((dim, idx) => (
-                                <Line
-                                  key={dim.id}
-                                  type="monotone"
-                                  dataKey={dim.id}
-                                  name={dim.name}
-                                  stroke={`hsl(${idx * 30}, 70%, 50%)`}
-                                  strokeWidth={2}
-                                />
-                              ))}
-                            </LineChart>
-                          </ResponsiveContainer>
-                          </div>
+                          /* Overview — 11-line chart with perceptual palette + focused tooltip */
+                          (() => {
+                            // Hand-picked perceptually-distinct colours (hue + lightness varied)
+                            const DIM_COLORS = [
+                              '#6366f1', // indigo
+                              '#10b981', // emerald
+                              '#f59e0b', // amber
+                              '#ef4444', // red
+                              '#3b82f6', // blue
+                              '#8b5cf6', // violet
+                              '#14b8a6', // teal
+                              '#f97316', // orange
+                              '#ec4899', // pink
+                              '#84cc16', // lime
+                              '#64748b', // slate
+                            ];
+                            // Dash patterns to distinguish lines beyond colour alone
+                            const DASHES = ['0', '6 3', '3 3', '8 3 3 3', '6 3 3 3', '0', '6 3', '3 3', '8 3 3 3', '6 3 3 3', '0'];
+                            return (
+                              <div data-testid="trends-chart">
+                                <ResponsiveContainer width="100%" height={420}>
+                                  <LineChart
+                                    data={trends}
+                                    margin={{ top: 8, right: 24, left: 0, bottom: 8 }}
+                                  >
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                                    <XAxis
+                                      dataKey="period"
+                                      tick={{ fontSize: 12, fill: '#6b7280' }}
+                                    />
+                                    <YAxis
+                                      domain={[0.8, 3.2]}
+                                      ticks={[1, 1.5, 2, 2.5, 3]}
+                                      tickFormatter={(v) => v === 1 ? 'Red' : v === 2 ? 'Yellow' : v === 3 ? 'Green' : String(v)}
+                                      tick={{ fontSize: 11, fill: '#9ca3af' }}
+                                      width={52}
+                                    />
+                                    <Tooltip
+                                      contentStyle={{
+                                        fontSize: '12px',
+                                        padding: '8px 12px',
+                                        borderRadius: '8px',
+                                        backgroundColor: '#1f2937',
+                                        border: '1px solid #374151',
+                                        color: '#f9fafb',
+                                        boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                                      }}
+                                      labelStyle={{ color: '#9ca3af', fontWeight: 600, marginBottom: '6px' }}
+                                      itemStyle={{ color: '#f9fafb', padding: '1px 0' }}
+                                      formatter={(value: number, name: string) => [value.toFixed(2), name]}
+                                      labelFormatter={(period) => `Period: ${period}`}
+                                    />
+                                    {HEALTH_DIMENSIONS.map((dim, idx) => (
+                                      <Line
+                                        key={dim.id}
+                                        type="monotone"
+                                        dataKey={dim.id}
+                                        name={dim.name}
+                                        stroke={DIM_COLORS[idx]}
+                                        strokeWidth={2}
+                                        strokeDasharray={DASHES[idx]}
+                                        dot={{ r: 3, fill: DIM_COLORS[idx], strokeWidth: 0 }}
+                                        activeDot={{ r: 5, strokeWidth: 2, stroke: '#fff' }}
+                                      />
+                                    ))}
+                                  </LineChart>
+                                </ResponsiveContainer>
+                                {/* Compact legend grid below chart */}
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1.5 mt-3 px-1">
+                                  {HEALTH_DIMENSIONS.map((dim, idx) => (
+                                    <div key={dim.id} className="flex items-center gap-2 min-w-0">
+                                      <svg width="20" height="10" className="flex-shrink-0">
+                                        <line
+                                          x1="0" y1="5" x2="20" y2="5"
+                                          stroke={DIM_COLORS[idx]}
+                                          strokeWidth="2"
+                                          strokeDasharray={DASHES[idx]}
+                                        />
+                                      </svg>
+                                      <span className="text-xs text-gray-600 truncate">{dim.name}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })()
                         )}
                       </>
 
                     ) : (
                       <p className="text-gray-500 text-center py-12">No trend data available</p>
                     )}
+                  </div>
+                )}
+
+                {/* Actions Tab */}
+                {activeTab === 'actions' && (
+                  <div data-testid="actions-tab-panel">
+                    <ActionItemsTab
+                      teamId={teamId}
+                      assessmentPeriod={selectedPeriod || ''}
+                      defaultDimensionId={
+                        healthSummary.length > 0
+                          ? (() => {
+                              const worstName = [...healthSummary].sort((a, b) => a.averageScore - b.averageScore)[0]?.dimension;
+                              return HEALTH_DIMENSIONS.find(d => d.name === worstName)?.id;
+                            })()
+                          : undefined
+                      }
+                      teamMembers={teamMembers}
+                      canEdit={true}
+                    />
                   </div>
                 )}
               </>
@@ -1409,6 +1502,15 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
+      )}
+      {showOnboarding && user && (
+        <OnboardingModal
+          userLevel={user.hierarchyLevelId}
+          onDismiss={() => {
+            localStorage.setItem(`onboarding_complete:${user.id}`, 'true');
+            setShowOnboarding(false);
+          }}
+        />
       )}
     </div>
   );

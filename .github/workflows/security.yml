@@ -53,7 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ['teams360-api', 'teams360-frontend']
+        image: ['teams360']
     steps:
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master

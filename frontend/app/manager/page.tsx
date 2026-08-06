@@ -6,8 +6,10 @@ import { getCurrentUser, logout, authenticatedFetch, User } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { API_BASE_URL } from '@/lib/api/client';
 import { getAssessmentPeriods } from '@/lib/api/health-checks';
-import { LogOut, Users, ChevronDown, AlertCircle, Activity, LineChart as LineChartIcon, CheckCircle, Clock, ClipboardList, TrendingUp, TrendingDown, Minus, LayoutGrid, Download } from 'lucide-react';
+import { LogOut, Users, ChevronDown, AlertCircle, Activity, LineChart as LineChartIcon, CheckCircle, Clock, ClipboardList, TrendingUp, TrendingDown, Minus, LayoutGrid, Download, ListTodo } from 'lucide-react';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import OnboardingModal from '@/components/OnboardingModal';
+import { listManagerTeamsActionSummary, TeamActionSummary } from '@/lib/api/action-items';
 import * as XLSX from 'xlsx';
 
 // Types matching backend API response
@@ -52,7 +54,7 @@ interface Subordinate {
   teamIds: string[];
 }
 
-type TabView = 'teams' | 'hierarchy' | 'summary' | 'comparison' | 'radar' | 'trends';
+type TabView = 'teams' | 'hierarchy' | 'summary' | 'comparison' | 'radar' | 'trends' | 'actions';
 
 const LEVEL_STYLES: Record<string, { border: string; icon: string; label: string }> = {
   'level-1': { border: 'border-purple-500', icon: 'text-purple-600', label: 'VP' },
@@ -158,6 +160,9 @@ export default function ManagerPage() {
   const [brandingLogo, setBrandingLogo] = useState<string | null>(null);
   const [trendsView, setTrendsView] = useState<'overview' | 'dimensions'>('dimensions');
   const [selectedTrendTeam, setSelectedTrendTeam] = useState<string>(''); // '' = all teams averaged
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [actionSummary, setActionSummary] = useState<TeamActionSummary[]>([]);
+  const [actionSummaryLoading, setActionSummaryLoading] = useState(false);
 
   useEffect(() => {
     const currentUser = getCurrentUser();
@@ -167,6 +172,9 @@ export default function ManagerPage() {
       setUser(currentUser);
       fetchDashboardData(currentUser.id, '');
       fetchSubordinates(currentUser.id);
+      if (!localStorage.getItem(`onboarding_complete:${currentUser.id}`)) {
+        setShowOnboarding(true);
+      }
     }
 
     // Fetch branding from public config endpoint
@@ -299,6 +307,12 @@ export default function ManagerPage() {
       fetchRadarData(user.id, selectedPeriod);
     } else if (user && activeTab === 'trends') {
       fetchTrendsData(user.id, selectedTrendTeam || undefined);
+    } else if (user && activeTab === 'actions') {
+      setActionSummaryLoading(true);
+      listManagerTeamsActionSummary(user.id)
+        .then(setActionSummary)
+        .catch(() => setActionSummary([]))
+        .finally(() => setActionSummaryLoading(false));
     }
   }, [user, activeTab, selectedPeriod, selectedTrendTeam]);
 
@@ -343,7 +357,7 @@ export default function ManagerPage() {
     return 'Poor';
   };
 
-  const handleExportToExcel = () => {
+  const handleExportToExcel = async () => {
     if (!dashboardData) return;
     const periodLabel = selectedPeriod || 'All Periods';
 
@@ -371,9 +385,30 @@ export default function ManagerPage() {
     );
     const dimensionsSheet = XLSX.utils.json_to_sheet(dimensionRows);
 
+    // Sheet 3: Action items across all teams
+    const { listActionItems } = await import('@/lib/api/action-items');
+    const allActionItems = await Promise.all(
+      dashboardData.teams.map(t =>
+        listActionItems(t.teamId).then(items => items.map(a => ({ ...a, teamName: t.teamName }))).catch(() => [])
+      )
+    );
+    const actionRows = allActionItems.flat().map(a => ({
+      Team: a.teamName,
+      Title: a.title,
+      Dimension: a.dimensionName || '',
+      Status: a.status === 'in_progress' ? 'In Progress' : a.status === 'done' ? 'Done' : 'Open',
+      'Assigned To': a.assigneeName || '',
+      'Due Date': a.dueDate ? new Date(a.dueDate).toLocaleDateString() : '',
+      Description: a.description || '',
+      'Created By': a.createdByName || '',
+      'Created At': new Date(a.createdAt).toLocaleDateString(),
+    }));
+    const actionsSheet = XLSX.utils.json_to_sheet(actionRows.length > 0 ? actionRows : [{ Title: 'No action items' }]);
+
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, teamsSheet, 'Team Summary');
     XLSX.utils.book_append_sheet(wb, dimensionsSheet, 'Dimension Breakdown');
+    XLSX.utils.book_append_sheet(wb, actionsSheet, 'Action Items');
 
     const fileName = `health-check-manager-${periodLabel.replace(/\s+/g, '-').toLowerCase()}.xlsx`;
     XLSX.writeFile(wb, fileName);
@@ -552,6 +587,18 @@ export default function ManagerPage() {
               }`}
             >
               Comparison
+            </button>
+            <button
+              data-testid="manager-actions-tab"
+              onClick={() => setActiveTab('actions')}
+              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors whitespace-nowrap flex items-center gap-2 ${
+                activeTab === 'actions'
+                  ? 'border-indigo-500 text-indigo-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              <ListTodo className="w-4 h-4" />
+              Actions
             </button>
           </nav>
         </div>
@@ -1208,7 +1255,69 @@ export default function ManagerPage() {
             )}
           </div>
         )}
+        {/* Actions Tab */}
+        {!loading && !error && activeTab === 'actions' && (
+          <div className="bg-white rounded-xl shadow-sm border p-6" data-testid="manager-actions-panel">
+            <h3 className="text-xl font-semibold text-gray-900 mb-1">Action Items Across Teams</h3>
+            <p className="text-sm text-gray-500 mb-6">Open and in-progress action items per team supervised by you.</p>
+            {actionSummaryLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+              </div>
+            ) : actionSummary.length === 0 ? (
+              <div className="text-center py-12 text-gray-400">
+                <ListTodo className="w-10 h-10 mx-auto mb-3 text-gray-200" />
+                <p className="font-medium text-gray-500">No action items found</p>
+                <p className="text-sm mt-1">Team Leads create action items on their team dashboards.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Team</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Open / In Progress</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {actionSummary.map((row) => (
+                      <tr key={row.teamId} data-testid="manager-action-row">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{row.teamName}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{row.openCount}</td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          {row.openCount === 0 ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700">
+                              <CheckCircle className="w-3 h-3" /> All done
+                            </span>
+                          ) : row.openCount <= 3 ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-50 text-yellow-700">
+                              <Clock className="w-3 h-3" /> In progress
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700">
+                              <AlertCircle className="w-3 h-3" /> Needs attention
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
       </div>
+      {showOnboarding && user && (
+        <OnboardingModal
+          userLevel={(user as any).hierarchyLevelId}
+          onDismiss={() => {
+            localStorage.setItem(`onboarding_complete:${(user as any).id}`, 'true');
+            setShowOnboarding(false);
+          }}
+        />
+      )}
     </div>
   );
 }

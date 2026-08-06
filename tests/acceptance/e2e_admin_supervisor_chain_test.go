@@ -6,7 +6,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 var _ = Describe("E2E: Admin Supervisor Chain Management", Label("e2e", "admin", "supervisor-chain"), func() {

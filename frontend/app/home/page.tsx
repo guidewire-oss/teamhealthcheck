@@ -10,6 +10,7 @@ import { getOrgConfig, getHierarchyLevel } from '@/lib/org-config';
 import { LogOut, Building2, ChevronDown, ClipboardList, TrendingUp, Calendar, Clock, CalendarClock } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts';
 import { getTeamInfoCached, TeamInfo } from '@/lib/api/teams';
+import OnboardingModal from '@/components/OnboardingModal';
 
 function getNextSurveyDate(lastSurveyDate: string, cadence: string): Date {
   const last = new Date(lastSurveyDate);
@@ -26,6 +27,12 @@ function getNextSurveyDate(lastSurveyDate: string, cadence: string): Date {
       break;
     case 'quarterly':
       next.setMonth(last.getMonth() + 3);
+      break;
+    case 'half-yearly':
+      next.setMonth(last.getMonth() + 6);
+      break;
+    case 'yearly':
+      next.setFullYear(last.getFullYear() + 1);
       break;
     default:
       next.setMonth(last.getMonth() + 1);
@@ -79,6 +86,7 @@ export default function MemberHomePage() {
   const [loading, setLoading] = useState(true);
   const [brandingName, setBrandingName] = useState<string>('');
   const [brandingLogo, setBrandingLogo] = useState<string | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   const currentPeriod = ''; // Period is team-specific; shown on survey page after team selection
 
@@ -89,6 +97,9 @@ export default function MemberHomePage() {
       return;
     }
     setUser(currentUser);
+    if (!localStorage.getItem(`onboarding_complete:${currentUser.id}`)) {
+      setShowOnboarding(true);
+    }
     fetchSurveyHistory(currentUser.id);
 
     fetch(`${API_BASE_URL}/api/v1/config`)
@@ -459,6 +470,15 @@ export default function MemberHomePage() {
           </div>
         )}
       </main>
+      {showOnboarding && user && (
+        <OnboardingModal
+          userLevel={user.hierarchyLevelId}
+          onDismiss={() => {
+            localStorage.setItem(`onboarding_complete:${user.id}`, 'true');
+            setShowOnboarding(false);
+          }}
+        />
+      )}
     </div>
   );
 }

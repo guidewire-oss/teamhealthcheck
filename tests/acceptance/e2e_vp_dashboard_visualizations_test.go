@@ -5,7 +5,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 var _ = Describe("E2E: VP Dashboard Visualizations", Label("e2e"), func() {
@@ -120,6 +120,7 @@ var _ = Describe("E2E: VP Dashboard Visualizations", Label("e2e"), func() {
 				Eventually(func() string {
 					return page.URL()
 				}, 10*time.Second, 500*time.Millisecond).Should(ContainSubstring("/manager"))
+				dismissOnboardingIfVisible(page)
 
 				// Wait for dashboard to load
 				_, err = page.WaitForSelector("text=Team Health Overview", playwright.PageWaitForSelectorOptions{
@@ -248,6 +249,7 @@ var _ = Describe("E2E: VP Dashboard Visualizations", Label("e2e"), func() {
 				Eventually(func() string {
 					return page.URL()
 				}, 10*time.Second, 500*time.Millisecond).Should(ContainSubstring("/manager"))
+				dismissOnboardingIfVisible(page)
 
 				// Wait for dashboard to load
 				_, err = page.WaitForSelector("text=Team Health Overview", playwright.PageWaitForSelectorOptions{
@@ -328,6 +330,7 @@ var _ = Describe("E2E: VP Dashboard Visualizations", Label("e2e"), func() {
 				Eventually(func() string {
 					return page.URL()
 				}, 10*time.Second, 500*time.Millisecond).Should(ContainSubstring("/manager"))
+				dismissOnboardingIfVisible(page)
 
 				_, err = page.WaitForSelector("text=Team Health Overview", playwright.PageWaitForSelectorOptions{
 					Timeout: playwright.Float(10000),
@@ -406,6 +409,7 @@ var _ = Describe("E2E: VP Dashboard Visualizations", Label("e2e"), func() {
 				Eventually(func() string {
 					return page.URL()
 				}, 10*time.Second, 500*time.Millisecond).Should(ContainSubstring("/manager"))
+				dismissOnboardingIfVisible(page)
 
 				_, err = page.WaitForSelector("text=Team Health Overview", playwright.PageWaitForSelectorOptions{
 					Timeout: playwright.Float(10000),

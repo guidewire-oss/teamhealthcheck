@@ -6,7 +6,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 var _ = Describe("E2E: Survey Submission Flow", func() {
@@ -85,6 +85,7 @@ var _ = Describe("E2E: Survey Submission Flow", func() {
 					Timeout: playwright.Float(5000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				// Navigate to survey via Take Survey button
 				By("Clicking Take Survey button on home page")
@@ -210,6 +211,7 @@ var _ = Describe("E2E: Survey Submission Flow", func() {
 				Timeout: playwright.Float(10000),
 			})
 			Expect(err).NotTo(HaveOccurred())
+			dismissOnboardingIfVisible(page)
 
 			By("Verifying we're on the home page")
 			url := page.URL()
@@ -318,6 +320,7 @@ var _ = Describe("E2E: Survey Submission Flow", func() {
 					Timeout: playwright.Float(5000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Verifying session exists in database")
 				// Verify via direct database query that the session was created
@@ -353,6 +356,7 @@ var _ = Describe("E2E: Survey Submission Flow", func() {
 					Timeout: playwright.Float(5000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				surveyBtn := page.Locator("[data-testid='take-survey-btn']")
 				err = surveyBtn.WaitFor(playwright.LocatorWaitForOptions{
@@ -417,6 +421,7 @@ var _ = Describe("E2E: Survey Submission Flow", func() {
 					Timeout: playwright.Float(5000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Navigating directly to post-workshop survey")
 				_, err = page.Goto(frontendURL + "/survey?type=post_workshop")
@@ -477,6 +482,7 @@ var _ = Describe("E2E: Survey Submission Flow", func() {
 					Timeout: playwright.Float(5000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				// Navigate to survey via Take Survey button
 				surveyBtn := page.Locator("[data-testid='take-survey-btn']")

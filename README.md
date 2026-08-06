@@ -1,5 +1,12 @@
 # Team360 Health Check
 
+[![CI](https://github.com/guidewire-oss/teams360/actions/workflows/ci.yml/badge.svg)](https://github.com/guidewire-oss/teams360/actions/workflows/ci.yml)
+[![Security](https://github.com/guidewire-oss/teams360/actions/workflows/security.yml/badge.svg)](https://github.com/guidewire-oss/teams360/actions/workflows/security.yml)
+[![Release](https://github.com/guidewire-oss/teams360/actions/workflows/release.yml/badge.svg)](https://github.com/guidewire-oss/teams360/actions/workflows/release.yml)
+[![Go Version](https://img.shields.io/badge/Go-1.25-blue?logo=go)](https://go.dev)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Last Commit](https://img.shields.io/github/last-commit/guidewire-oss/teams360)](https://github.com/guidewire-oss/teams360/commits/main)
+
 An open-source team health assessment platform inspired by [Spotify's Squad Health Check Model](https://engineering.atspotify.com/2014/09/squad-health-check-model/), designed to help organizations systematically improve team well-being and effectiveness.
 
 ## What is Team360?
@@ -45,9 +52,9 @@ Monitor your team's health with detailed breakdowns and individual response trac
 
 ### Prerequisites
 
-- **Node.js 18+** (for frontend)
+- **Node.js 22+** (for frontend)
 - **Go 1.25+** (for backend)
-- **PostgreSQL 14+** (for database)
+- **PostgreSQL 17+** (for database)
 - **Docker** (recommended, for running PostgreSQL)
 
 ### One-Command Setup
@@ -89,7 +96,7 @@ docker run -d \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=teams360 \
   -p 5432:5432 \
-  postgres:16-alpine
+  postgres:17-alpine
 ```
 
 Or use an existing PostgreSQL instance and set the connection string.

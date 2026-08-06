@@ -5,7 +5,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 var _ = Describe("E2E: Team Member Home Page", Label("e2e"), func() {
@@ -53,6 +53,7 @@ var _ = Describe("E2E: Team Member Home Page", Label("e2e"), func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Verifying home page displays welcome message")
 				welcomeText := page.Locator("[data-testid='welcome-message']")
@@ -86,6 +87,7 @@ var _ = Describe("E2E: Team Member Home Page", Label("e2e"), func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				err = page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
 					State: playwright.LoadStateNetworkidle,
@@ -129,6 +131,7 @@ var _ = Describe("E2E: Team Member Home Page", Label("e2e"), func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				// Wait for page to fully load including API calls
 				err = page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
@@ -168,6 +171,7 @@ var _ = Describe("E2E: Team Member Home Page", Label("e2e"), func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Verifying Take Survey button is prominent and visible")
 				surveyButton := page.Locator("[data-testid='take-survey-btn']")
@@ -206,6 +210,7 @@ var _ = Describe("E2E: Team Member Home Page", Label("e2e"), func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Verifying assessment period context is shown")
 				periodText := page.Locator("[data-testid='current-period']")
@@ -246,6 +251,7 @@ var _ = Describe("E2E: Team Member Home Page", Label("e2e"), func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Verifying empty state is displayed")
 				emptyState := page.Locator("[data-testid='empty-state']")

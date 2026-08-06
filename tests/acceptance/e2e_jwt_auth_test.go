@@ -9,7 +9,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 var _ = Describe("E2E: JWT Authentication", Label("e2e", "security"), func() {
@@ -77,6 +77,7 @@ var _ = Describe("E2E: JWT Authentication", Label("e2e", "security"), func() {
 				Eventually(func() string {
 					return page.URL()
 				}, 10*time.Second, 500*time.Millisecond).Should(ContainSubstring("/home"))
+				dismissOnboardingIfVisible(page)
 
 				// And: Access token should be stored (check via API call)
 				By("Verifying authenticated API access works")
@@ -118,6 +119,7 @@ var _ = Describe("E2E: JWT Authentication", Label("e2e", "security"), func() {
 				Eventually(func() string {
 					return page.URL()
 				}, 10*time.Second, 500*time.Millisecond).Should(ContainSubstring("/home"))
+				dismissOnboardingIfVisible(page)
 
 				// When: User clicks user menu to open dropdown
 				By("User clicking user menu to open dropdown")
@@ -182,6 +184,7 @@ var _ = Describe("E2E: JWT Authentication", Label("e2e", "security"), func() {
 				Eventually(func() string {
 					return page.URL()
 				}, 10*time.Second, 500*time.Millisecond).Should(ContainSubstring("/home"))
+				dismissOnboardingIfVisible(page)
 
 				// When: User accesses protected resource after some time
 				// (In a real scenario, access token would have short expiry)

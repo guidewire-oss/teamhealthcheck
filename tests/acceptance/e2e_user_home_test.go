@@ -5,7 +5,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 var _ = Describe("E2E: User Home Page and Survey History", func() {
@@ -52,6 +52,7 @@ var _ = Describe("E2E: User Home Page and Survey History", func() {
 					Timeout: playwright.Float(5000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				// Navigate to survey via Take Survey button
 				By("Clicking Take Survey button on home page")
@@ -154,6 +155,7 @@ var _ = Describe("E2E: User Home Page and Survey History", func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				// Wait for network to settle before checking for survey history
 				err = page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
@@ -266,6 +268,7 @@ var _ = Describe("E2E: User Home Page and Survey History", func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				err = page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
 					State: playwright.LoadStateNetworkidle,
@@ -334,6 +337,7 @@ var _ = Describe("E2E: User Home Page and Survey History", func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Clicking Take Survey button to access survey")
 				surveyBtn := page.Locator("[data-testid='take-survey-btn']")
@@ -385,6 +389,7 @@ var _ = Describe("E2E: User Home Page and Survey History", func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Verifying Team Lead can access survey")
 				// Team Lead should be able to take surveys
@@ -439,6 +444,7 @@ var _ = Describe("E2E: User Home Page and Survey History", func() {
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Verifying Manager cannot access survey page")
 				_, err = page.Goto(frontendURL + "/survey")

@@ -5,7 +5,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 var _ = Describe("E2E: Manager Dashboard", Label("e2e"), func() {
@@ -155,6 +155,7 @@ var _ = Describe("E2E: Manager Dashboard", Label("e2e"), func() {
 					url := page.URL()
 					return url
 				}, 10*time.Second, 500*time.Millisecond).Should(ContainSubstring("/manager"))
+				dismissOnboardingIfVisible(page)
 
 				// Then: Verify dashboard shows aggregated team health
 				By("Verifying team health data is displayed")
@@ -315,6 +316,7 @@ var _ = Describe("E2E: Manager Dashboard", Label("e2e"), func() {
 				Eventually(func() string {
 					return page.URL()
 				}, 10*time.Second, 500*time.Millisecond).Should(ContainSubstring("/manager"))
+				dismissOnboardingIfVisible(page)
 
 				By("Filtering by assessment period '2024 - 1st Half'")
 				_, err = page.Locator("[data-testid='period-filter']").SelectOption(playwright.SelectOptionValues{

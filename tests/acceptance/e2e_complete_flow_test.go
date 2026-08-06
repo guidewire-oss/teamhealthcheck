@@ -7,7 +7,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 var _ = Describe("E2E: Complete Data Flow", Label("e2e", "critical"), func() {
@@ -92,6 +92,7 @@ var _ = Describe("E2E: Complete Data Flow", Label("e2e", "critical"), func() {
 				Eventually(func() string {
 					return page.URL()
 				}, 10*time.Second, 500*time.Millisecond).Should(ContainSubstring("/home"))
+				dismissOnboardingIfVisible(page)
 
 				// Navigate to survey from home page via Take Survey button
 				By("Clicking Take Survey button on home page")
@@ -244,6 +245,7 @@ var _ = Describe("E2E: Complete Data Flow", Label("e2e", "critical"), func() {
 				Eventually(func() string {
 					return page.URL()
 				}, 10*time.Second, 500*time.Millisecond).Should(ContainSubstring("/manager"))
+				dismissOnboardingIfVisible(page)
 
 				// ========================================
 				// STEP 5: Verify team data on manager dashboard

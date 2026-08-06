@@ -6,7 +6,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 var _ = Describe("E2E: Cadence-Driven Assessment Periods", Label("e2e"), func() {
@@ -82,6 +82,7 @@ var _ = Describe("E2E: Cadence-Driven Assessment Periods", Label("e2e"), func() 
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				// Click Take Survey
 				surveyBtn := page.Locator("[data-testid='take-survey-btn']")
@@ -168,6 +169,7 @@ var _ = Describe("E2E: Cadence-Driven Assessment Periods", Label("e2e"), func() 
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Verifying assessment period in database is in quarterly format")
 				var assessmentPeriod string
@@ -237,6 +239,7 @@ var _ = Describe("E2E: Cadence-Driven Assessment Periods", Label("e2e"), func() 
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				surveyBtn := page.Locator("[data-testid='take-survey-btn']")
 				err = surveyBtn.WaitFor(playwright.LocatorWaitForOptions{
@@ -305,6 +308,7 @@ var _ = Describe("E2E: Cadence-Driven Assessment Periods", Label("e2e"), func() 
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
+				dismissOnboardingIfVisible(page)
 
 				By("Verifying assessment period in database is in monthly format")
 				var assessmentPeriod string

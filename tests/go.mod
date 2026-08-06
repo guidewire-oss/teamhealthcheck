@@ -3,20 +3,20 @@ module github.com/agopalakrishnan/teams360/tests
 go 1.25
 
 require (
+	github.com/fergusstrange/embedded-postgres v1.34.0
 	github.com/golang-migrate/migrate/v4 v4.19.0
 	github.com/lib/pq v1.10.9
+	github.com/mxschmitt/playwright-go v0.6100.0
 	github.com/onsi/ginkgo/v2 v2.27.2
 	github.com/onsi/gomega v1.38.2
-	github.com/playwright-community/playwright-go v0.5200.1
 )
 
 replace github.com/agopalakrishnan/teams360/backend => ../backend
 
 require (
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
-	github.com/deckarep/golang-set/v2 v2.7.0 // indirect
-	github.com/fergusstrange/embedded-postgres v1.34.0 // indirect
-	github.com/go-jose/go-jose/v3 v3.0.4 // indirect
+	github.com/deckarep/golang-set/v2 v2.8.0 // indirect
+	github.com/go-jose/go-jose/v3 v3.0.5 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect

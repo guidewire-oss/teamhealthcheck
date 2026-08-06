@@ -6,7 +6,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 var _ = Describe("E2E: Dimension Matrix View", Label("e2e"), func() {
@@ -136,6 +136,7 @@ var _ = Describe("E2E: Dimension Matrix View", Label("e2e"), func() {
 		Eventually(func() string {
 			return page.URL()
 		}, 10*time.Second, 500*time.Millisecond).Should(ContainSubstring("/dashboard"))
+		dismissOnboardingIfVisible(page)
 
 		By("Clicking Individual Responses tab")
 		responsesTab := page.Locator("[data-testid='responses-tab']")
