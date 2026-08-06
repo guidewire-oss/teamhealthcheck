@@ -5,6 +5,12 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/PULL_REQUEST_TEMPLATE/**'
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
@@ -25,12 +31,48 @@ env:
 
 jobs:
   # =============================================================================
+  # Change Detection (skip builds for docs-only PRs)
+  # =============================================================================
+
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      needs_build: ${{ steps.filter.outputs.needs_build }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for functional changes
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            BASE=${{ github.event.before }}
+          else
+            BASE=${{ github.event.pull_request.base.sha }}
+          fi
+          # Files that don't affect functionality
+          IGNORE_PATTERN='^docs/|\.md$|\.txt$|^LICENSE$|^\.github/ISSUE_TEMPLATE|^\.github/PULL_REQUEST_TEMPLATE'
+          CHANGED=$(git diff --name-only "$BASE" HEAD | grep -vE "$IGNORE_PATTERN" || true)
+          if [ -z "$CHANGED" ]; then
+            echo "Only docs/non-functional files changed — skipping builds and E2E"
+            echo "needs_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Functional files changed — builds and E2E required"
+            echo "needs_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # =============================================================================
   # Backend Jobs
   # =============================================================================
 
   backend-lint:
     name: Backend Lint
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.needs_build == 'true'
     defaults:
       run:
         working-directory: backend
@@ -145,6 +187,8 @@ jobs:
   frontend-lint:
     name: Frontend Lint
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.needs_build == 'true'
     defaults:
       run:
         working-directory: frontend
@@ -202,44 +246,14 @@ jobs:
           retention-days: 1
 
   # =============================================================================
-  # E2E Tests (skip for docs-only changes)
+  # E2E Tests
   # =============================================================================
-
-  changes:
-    name: Detect Changes
-    runs-on: ubuntu-latest
-    outputs:
-      needs_e2e: ${{ steps.filter.outputs.needs_e2e }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check for functional changes
-        id: filter
-        run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            BASE=${{ github.event.before }}
-          else
-            BASE=${{ github.event.pull_request.base.sha }}
-          fi
-          # Files that don't affect functionality
-          IGNORE_PATTERN='^docs/|\.md$|\.txt$|^LICENSE$|^\.github/ISSUE_TEMPLATE|^\.github/PULL_REQUEST_TEMPLATE'
-          CHANGED=$(git diff --name-only "$BASE" HEAD | grep -vE "$IGNORE_PATTERN" || true)
-          if [ -z "$CHANGED" ]; then
-            echo "Only docs/non-functional files changed — skipping E2E"
-            echo "needs_e2e=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Functional files changed — E2E required"
-            echo "needs_e2e=true" >> "$GITHUB_OUTPUT"
-          fi
 
   e2e-test:
     name: E2E Tests
     runs-on: ubuntu-latest
     needs: [backend-build, frontend-build, changes]
-    if: needs.changes.outputs.needs_e2e == 'true'
+    if: needs.changes.outputs.needs_build == 'true'
     services:
       postgres:
         image: postgres:17-alpine
@@ -304,18 +318,25 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [backend-test, backend-build, frontend-build, e2e-test]
+    needs: [changes, backend-test, backend-build, frontend-build, e2e-test]
     if: always()
     steps:
       - name: Check all jobs passed
         run: |
+          # For docs-only PRs, all build jobs are skipped — that's OK
+          NEEDS_BUILD="${{ needs.changes.outputs.needs_build }}"
+          if [[ "$NEEDS_BUILD" != "true" ]]; then
+            echo "Docs-only change — all builds skipped. CI passed!"
+            exit 0
+          fi
+          # For functional changes, require build jobs to pass
           if [[ "${{ needs.backend-test.result }}" != "success" ]] || \
              [[ "${{ needs.backend-build.result }}" != "success" ]] || \
              [[ "${{ needs.frontend-build.result }}" != "success" ]]; then
             echo "One or more required jobs failed"
             exit 1
           fi
-          # E2E is required when functional files change, skipped for docs-only
+          # E2E is required when functional files change
           E2E="${{ needs.e2e-test.result }}"
           if [[ "$E2E" != "success" && "$E2E" != "skipped" ]]; then
             echo "E2E tests failed"

@@ -25,11 +25,17 @@ Team360 enables teams to regularly assess their working environment across multi
 | Feature | Description |
 |---------|-------------|
 | **11 Health Dimensions** | Expanded from Spotify's original 8 dimensions to cover more aspects of team health |
-| **Hierarchical Organization** | Support for VP → Director → Manager → Team Lead → Team Member reporting chains |
+| **Hierarchical Organization** | VP → Director → Manager → Team Lead → Team Member with auto-derived supervisor chains |
 | **Role-Based Dashboards** | Different views for team members, team leads, managers, and executives |
-| **Trend Analysis** | Track health metrics over assessment periods (e.g., "2024 - 1st Half") |
-| **Visual Analytics** | Radar charts, bar charts, and line graphs for data visualization |
-| **Flexible Cadences** | Configure weekly, biweekly, monthly, or quarterly check-ins per team |
+| **Multi-Team Support** | Users belonging to multiple teams can switch between them via a team selector |
+| **Dimension Matrix View** | Team leads can toggle between per-person and per-dimension views of individual responses |
+| **Survey Autosave** | Draft responses are saved to localStorage automatically and restored on page reload |
+| **Session Timeout UX** | Expired sessions redirect to login with a clear "session expired" banner |
+| **Cadence-Driven Periods** | Assessment periods adapt to each team's cadence (monthly, quarterly, half-yearly, yearly) |
+| **SSO (OIDC / OAuth 2.0)** | Single sign-on with any OIDC provider, plus admin SSO user provisioning |
+| **Org Hierarchy Tree** | Visual tree view of the organization structure in the manager dashboard |
+| **Trend Analysis** | Track health metrics over assessment periods with historical trend lines |
+| **Visual Analytics** | Radar charts, bar charts, line graphs, and dimension matrices for data visualization |
 
 ## Screenshots
 
@@ -56,7 +62,7 @@ Monitor your team's health with detailed breakdowns and individual response trac
 The easiest way to run Team360 locally:
 
 ```bash
-git clone https://github.com/anthropics/teams360.git
+git clone https://github.com/guidewire-oss/teams360.git
 cd teams360
 make run
 ```
@@ -77,7 +83,7 @@ If you prefer manual control or don't have Docker:
 #### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/anthropics/teams360.git
+git clone https://github.com/guidewire-oss/teams360.git
 cd teams360
 ```
 
@@ -175,10 +181,10 @@ Teams are the core unit for health assessments. Each team has members and a desi
    - **Team Name**: A descriptive name (e.g., "Platform Squad", "Mobile Team")
    - **Team Lead**: Assign a user responsible for the team (optional)
    - **Cadence**: How often the team should complete health checks:
-     - Weekly (high-velocity teams)
-     - Biweekly (most common)
-     - Monthly (stable teams)
-     - Quarterly (strategic reviews)
+     - Monthly (high-velocity teams)
+     - Quarterly (most common)
+     - Half-Yearly (stable teams)
+     - Yearly (strategic reviews)
 
 #### Add Users
 
@@ -196,11 +202,16 @@ Create user accounts for everyone who will participate in health checks.
 
 ### Step 2: Establish Assessment Periods
 
-Team360 automatically determines assessment periods based on the calendar:
-- **January - June**: Surveys contribute to "Previous Year - 2nd Half" (reflecting on the period just ended)
-- **July - December**: Surveys contribute to "Current Year - 1st Half"
+Team360 automatically determines assessment periods based on each team's configured cadence:
 
-This approach encourages reflection on completed work rather than in-progress activities.
+| Cadence | Period Format | Example |
+|---------|--------------|---------|
+| **Monthly** | "YYYY Mon" | "2025 Mar" |
+| **Quarterly** | "YYYY QN" | "2025 Q1" |
+| **Half-Yearly** | "YYYY HN" | "2025 H1" |
+| **Yearly** | "YYYY" | "2025" |
+
+The period is derived from the survey submission date and the team's cadence setting. This ensures trend analysis aligns with each team's check-in rhythm rather than using a one-size-fits-all calendar split.
 
 ### Step 3: Conduct Health Check Sessions
 
@@ -221,12 +232,15 @@ Health checks work best as structured team discussions, not just individual surv
 
 1. Log in and navigate to Home (`/home`)
 2. Click "Take Survey" to begin
-3. For each of the 11 dimensions:
+3. If you belong to multiple teams, select the team you're assessing from the team selector
+4. For each of the 11 dimensions:
    - Read the "Good" and "Bad" descriptions
    - Select your honest assessment (🟢 Green, 🟡 Yellow, 🔴 Red)
    - Choose a trend direction (↑ Improving, → Stable, ↓ Declining)
-   - Optionally add a comment for context
-4. Submit the survey
+   - Optionally add a comment for context (up to 1,000 characters)
+5. Submit the survey
+
+Your progress is **automatically saved** as a draft. If you close the browser or navigate away, your responses will be restored when you return. A "Your previous progress has been restored from a saved draft" banner confirms when a previous draft has been loaded.
 
 **Tips for honest assessment:**
 - Compare your current state to both the ideal ("Good") and worst case ("Bad")
@@ -239,15 +253,20 @@ Health checks work best as structured team discussions, not just individual surv
 #### Team Lead View (`/dashboard`)
 
 Team Leads see detailed breakdowns for their specific team:
+- **Team Selector**: If you lead multiple teams, switch between them from a dropdown
 - **Radar Chart**: Visual overview of all 11 dimensions
 - **Response Distribution**: Bar chart showing green/yellow/red spread
 - **Trend Lines**: Historical view across assessment periods
-- **Individual Responses**: Detailed view of each team member's input (for follow-up)
+- **Individual Responses**: Toggle between two views:
+  - **By Person**: Cards showing each member's full response
+  - **By Dimension**: Matrix table for comparing scores across all members for each dimension, with color-coded cells, trend arrows, and comment tooltips
+- **Error Handling**: If data fails to load, a clear error banner is shown instead of a blank page
 
 #### Manager/Executive View (`/manager`)
 
 Managers, Directors, and VPs see aggregated data across their supervised teams:
-- **Team Cards**: Quick health overview for each team
+- **Team Cards**: Quick health overview for each team (including teams without health data)
+- **Org Hierarchy Tree**: Visual tree view of the organization structure showing reporting chains
 - **Radar Comparison**: Compare multiple teams on one chart
 - **Aggregated Trends**: Roll-up trends across all supervised teams
 - **Assessment Period Filter**: Focus on specific time periods
@@ -267,7 +286,7 @@ The goal isn't perfect scores—it's continuous improvement:
 | Practice | Description |
 |----------|-------------|
 | **Start small** | Pilot with 2-3 teams before organization-wide rollout |
-| **Consistent cadence** | Stick to your chosen frequency (biweekly works for most) |
+| **Consistent cadence** | Stick to your chosen frequency (quarterly works for most) |
 | **Psychological safety** | Emphasize that red scores lead to support, not punishment |
 | **Action-oriented** | Always end sessions with specific improvement actions |
 | **Celebrate progress** | Highlight teams that improve, regardless of absolute scores |
@@ -422,25 +441,39 @@ make db-test-setup   # Setup test database
 - `POST /api/v1/auth/login` - Username/password login
 - `POST /api/v1/auth/refresh` - Refresh access token
 - `POST /api/v1/auth/logout` - Logout
+- `POST /api/v1/auth/forgot-password` - Request password reset
+- `POST /api/v1/auth/reset-password` - Reset password with token
 - `POST /api/v1/auth/sso/callback` - Exchange OAuth authorization code for JWT tokens (SSO)
 
 ### Health Checks
 - `POST /api/v1/health-checks` - Submit health check
 - `GET /api/v1/health-checks/:id` - Get health check by ID
+- `GET /api/v1/health-checks/team/:id` - Get health checks for a team
 - `GET /api/v1/health-dimensions` - List all dimensions
+- `GET /api/v1/teams/:teamId/submission-status` - Check submission status for current period
+- `GET /api/v1/assessment-periods` - List available assessment periods
 
 ### Teams
 - `GET /api/v1/teams` - List teams
 - `GET /api/v1/teams/:teamId/info` - Get team info
+- `GET /api/v1/teams/:teamId/sessions` - Get team health check sessions
 - `GET /api/v1/teams/:teamId/dashboard/health-summary` - Team health summary
+- `GET /api/v1/teams/:teamId/dashboard/response-distribution` - Response distribution (red/yellow/green counts)
+- `GET /api/v1/teams/:teamId/dashboard/individual-responses` - Individual member responses
 - `GET /api/v1/teams/:teamId/dashboard/trends` - Team health trends
 
 ### Managers
 - `GET /api/v1/managers/:managerId/teams/health` - Get supervised teams' health
+- `GET /api/v1/managers/:managerId/dashboard/radar` - Aggregated radar data
 - `GET /api/v1/managers/:managerId/dashboard/trends` - Aggregated trends
+- `GET /api/v1/managers/:managerId/subordinates` - Get subordinate users
 
 ### Users
+- `GET /api/v1/users/me` - Get current authenticated user
 - `GET /api/v1/users/:userId/survey-history` - User's survey history
+
+### Configuration
+- `GET /api/v1/config` - Get application configuration (SSO enabled, app environment)
 
 ### Admin - Hierarchy Levels
 - `GET /api/v1/admin/hierarchy-levels` - List all hierarchy levels
@@ -451,7 +484,7 @@ make db-test-setup   # Setup test database
 
 ### Admin - Users
 - `GET /api/v1/admin/users` - List all users
-- `POST /api/v1/admin/users` - Create user
+- `POST /api/v1/admin/users` - Create user (supports SSO provisioning)
 - `PUT /api/v1/admin/users/:id` - Update user
 - `DELETE /api/v1/admin/users/:id` - Delete user
 
@@ -460,8 +493,21 @@ make db-test-setup   # Setup test database
 - `POST /api/v1/admin/teams` - Create team
 - `PUT /api/v1/admin/teams/:id` - Update team
 - `DELETE /api/v1/admin/teams/:id` - Delete team
-- `POST /api/v1/admin/teams/:teamId/members` - Add member to team
-- `DELETE /api/v1/admin/teams/:teamId/members/:userId` - Remove member from team
+- `GET /api/v1/admin/teams/:id/members` - Get team members
+- `POST /api/v1/admin/teams/:id/members` - Add member to team
+- `DELETE /api/v1/admin/teams/:id/members/:userId` - Remove member from team
+- `GET /api/v1/admin/teams/:id/supervisors` - Get team supervisors
+- `PUT /api/v1/admin/teams/:id/supervisors` - Update team supervisors
+
+### Admin - Settings
+- `GET /api/v1/admin/settings/dimensions` - List health dimensions
+- `POST /api/v1/admin/settings/dimensions` - Create health dimension
+- `PUT /api/v1/admin/settings/dimensions/:id` - Update health dimension
+- `DELETE /api/v1/admin/settings/dimensions/:id` - Delete health dimension
+- `GET /api/v1/admin/settings/notifications` - Get notification settings
+- `PUT /api/v1/admin/settings/notifications` - Update notification settings
+- `GET /api/v1/admin/settings/retention` - Get data retention policy
+- `PUT /api/v1/admin/settings/retention` - Update data retention policy
 
 ## Configuration
 
@@ -484,6 +530,7 @@ NEXT_PUBLIC_OAUTH_SCOPES=openid email profile   # optional, this is the default
 PORT=8080
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/teams360?sslmode=disable
 GIN_MODE=debug  # or "release" for production
+APP_ENV=demo    # Set to "demo" to seed demo users/teams on startup; omit for production
 
 # SSO / OIDC (optional — must be set if frontend SSO vars are set)
 OAUTH_CLIENT_ID=your-client-id
@@ -502,7 +549,7 @@ Team360 supports single sign-on via any OIDC-compliant provider (Keycloak, Okta,
 3. Set the environment variables listed above in both `frontend/.env.local` and `backend/.env`.
 4. Restart both servers. A **Sign in with SSO** button will appear on the login page.
 
-When a user signs in via SSO, Team360 extracts their `email` from the provider's ID token and looks up the matching user in the database. The user must already exist — Team360 does not auto-create accounts from SSO logins.
+When a user signs in via SSO, Team360 extracts their `email` from the provider's ID token and looks up the matching user in the database. If the user does not yet exist, an administrator can provision them from the Admin Dashboard → Users tab using the **SSO user provisioning** feature, which pre-creates accounts linked to SSO email addresses.
 
 #### Provider setup quick reference
 
