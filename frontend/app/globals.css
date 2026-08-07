@@ -39,90 +39,62 @@ html.dark body {
   color: var(--foreground);
 }
 
-html.dark [class*='bg-white'],
-html.dark [class*='bg-slate-50'],
-html.dark [class*='bg-slate-100'] {
+html.dark .bg-white,
+html.dark .bg-slate-50,
+html.dark .bg-slate-100,
+html.dark .bg-gray-50,
+html.dark .bg-gray-100 {
   background-color: var(--surface) !important;
 }
 
-html.dark [class*='bg-gray-50'],
-html.dark [class*='bg-slate-50'] {
-  background-color: var(--surface) !important;
-}
-
-html.dark [class*='bg-gray-100'],
-html.dark [class*='bg-slate-100'] {
-  background-color: var(--surface) !important;
-}
-
-html.dark [class*='bg-gray-200'],
-html.dark [class*='bg-slate-200'] {
+html.dark .bg-gray-200,
+html.dark .bg-slate-200 {
   background-color: #1f2937 !important;
 }
 
-html.dark [class*='bg-gray-300'],
-html.dark [class*='bg-slate-300'] {
+html.dark .bg-gray-300,
+html.dark .bg-slate-300 {
   background-color: #1e293b !important;
 }
 
-html.dark [class*='text-gray-900'],
-html.dark [class*='text-gray-800'],
-html.dark [class*='text-gray-700'] {
+html.dark .text-gray-900,
+html.dark .text-gray-800,
+html.dark .text-gray-700 {
   color: var(--foreground) !important;
 }
 
-html.dark [class*='text-gray-600'],
-html.dark [class*='text-gray-500'],
-html.dark [class*='text-slate-500'],
-html.dark [class*='text-slate-600'] {
+html.dark .text-gray-600,
+html.dark .text-gray-500,
+html.dark .text-slate-500,
+html.dark .text-slate-600 {
   color: var(--muted) !important;
 }
 
-html.dark [class*='border-gray-200'],
-html.dark [class*='border-gray-300'],
-html.dark [class*='border-gray-400'],
-html.dark [class*='border-slate-200'],
-html.dark [class*='border-slate-300'] {
+html.dark .border-gray-200,
+html.dark .border-gray-300,
+html.dark .border-gray-400,
+html.dark .border-slate-200,
+html.dark .border-slate-300 {
   border-color: var(--border) !important;
 }
 
-html.dark [class*='bg-indigo-50'],
-html.dark [class*='bg-indigo-100'],
-html.dark [class*='bg-blue-50'],
-html.dark [class*='bg-blue-100'],
-html.dark [class*='bg-green-50'],
-html.dark [class*='bg-red-50'],
-html.dark [class*='bg-amber-50'] {
+html.dark .bg-indigo-50,
+html.dark .bg-indigo-100,
+html.dark .bg-blue-50,
+html.dark .bg-blue-100 {
   background-color: rgba(88, 166, 255, 0.12) !important;
 }
 
-html.dark [class*='bg-gradient-to-br'],
-html.dark [class*='bg-gradient-to-r'],
-html.dark [class*='bg-gradient-to-b'] {
-  background-image: linear-gradient(to bottom right, var(--surface-muted), var(--surface)) !important;
-}
-
-html.dark [class*='border-indigo-100'],
-html.dark [class*='border-indigo-200'],
-html.dark [class*='border-blue-200'],
-html.dark [class*='border-blue-100'],
-html.dark [class*='border-green-200'],
-html.dark [class*='border-red-200'],
-html.dark [class*='border-amber-200'] {
+html.dark .border-indigo-100,
+html.dark .border-indigo-200,
+html.dark .border-blue-200,
+html.dark .border-blue-100 {
   border-color: var(--border) !important;
 }
 
-html.dark [class*='text-indigo-600'],
-html.dark [class*='text-indigo-500'] {
+html.dark .text-indigo-600,
+html.dark .text-indigo-500 {
   color: var(--accent) !important;
-}
-
-html.dark .dark\:bg-gray-800 {
-  background-color: #111827 !important;
-}
-
-html.dark .dark\:text-white {
-  color: #f8fafc !important;
 }
 
 html.dark .shadow-xl,
@@ -140,7 +112,6 @@ html.dark ::selection {
 html.dark input,
 html.dark textarea,
 html.dark select,
-html.dark button,
 html.dark optgroup,
 html.dark option,
 html.dark fieldset,

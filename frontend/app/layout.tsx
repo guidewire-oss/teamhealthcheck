@@ -21,6 +21,7 @@ const themeScript = `
     } catch (e) {
       document.documentElement.setAttribute('data-theme', 'light');
       document.documentElement.classList.remove('dark');
+      document.documentElement.style.colorScheme = 'light';
     }
   })();
 `;
