@@ -340,7 +340,7 @@ teams360/
 
 ### Using Make Commands
 
-Team360 uses a comprehensive Makefile for common development tasks. See [docs/MAKEFILE.md](docs/MAKEFILE.md) for full documentation.
+Team360 uses a comprehensive Makefile for common development tasks. See [docs/operations/makefile.md](docs/operations/makefile.md) for full documentation.
 
 ```bash
 # Quick start - run the full application

@@ -1,6 +1,20 @@
-# Team360 Architecture Documentation
+# Architecture Overview
 
-This document provides a comprehensive overview of Team360's architecture, including system design, data flow, database schema, and technology decisions.
+This document provides a comprehensive overview of Team Health Check's architecture, including system design, data flow, database schema, and technology decisions.
+
+!!! note "Companion pages"
+    This page is the wide-angle view. Three companion pages go deeper on subjects that
+    are only summarised here:
+
+    - [Request Lifecycle](request-lifecycle.md) — startup sequence, the global middleware
+      chain, route registration order, and static file serving.
+    - [Authentication & Authorization](authentication.md) — the JWT model, every guard
+      middleware, SSO, and password reset.
+    - [Background & External Services](services.md) — email (SES/SMTP), notifications,
+      and telemetry wiring.
+
+    For the authoritative, migration-derived schema see [Data Model](../data-model.md);
+    for every route and its contract see the [API Reference](../api/index.md).
 
 ## Table of Contents
 
@@ -12,18 +26,18 @@ This document provides a comprehensive overview of Team360's architecture, inclu
 6. [Database Schema](#database-schema)
 7. [Data Flow](#data-flow)
 8. [API Design](#api-design)
-9. [Security & Authentication](#security--authentication)
+9. [Security & Authentication](#security-authentication)
 10. [Testing Strategy](#testing-strategy)
 
 ---
 
 ## System Overview
 
-Team360 is a full-stack web application built with a **decoupled frontend-backend architecture**:
+Team Health Check is a full-stack web application built with a **decoupled frontend-backend architecture**:
 
 ```
 ┌─────────────────┐     HTTP/JSON     ┌─────────────────┐     SQL      ┌─────────────────┐
-│   Next.js 15    │ ◄──────────────► │   Go/Gin API    │ ◄──────────► │   PostgreSQL    │
+│   Next.js 15    │ ◄──────────────►  │   Go/Gin API    │ ◄──────────► │   PostgreSQL    │
 │   (Frontend)    │     REST API      │   (Backend)     │    Queries   │   (Database)    │
 │   Port 3000     │                   │   Port 8080     │              │   Port 5432     │
 └─────────────────┘                   └─────────────────┘              └─────────────────┘
@@ -224,22 +238,36 @@ frontend/
 └─────────────────┴────────────────────┴──────────────────────────┘
 ```
 
-### API Proxy Pattern
+### API Access Pattern
 
-Next.js API routes act as a proxy to the Go backend, solving CORS issues in development:
+!!! warning "Corrected: there are no Next.js API route handlers"
+    This section previously described a proxy implemented as Next.js route handlers under
+    `frontend/app/api/v1/`. That directory does not exist — there are no `route.ts` files
+    anywhere in the frontend. The mechanism below is what the code actually does.
 
-```typescript
-// frontend/app/api/v1/admin/teams/route.ts
-export async function GET() {
-  const response = await fetch(`${BACKEND_URL}/api/v1/admin/teams`);
-  return Response.json(await response.json());
-}
+The browser talks to the Go API directly through a thin client layer, and same-origin
+behaviour is achieved two different ways depending on how the app is running:
+
+- **Development** — `frontend/next.config.ts` declares a rewrite that forwards
+  `/api/:path*` to `http://localhost:8080/api/:path*`. The browser sees same-origin
+  requests; the Next.js dev server proxies them.
+- **Production** — the frontend is built as a static export (`STATIC_EXPORT=true`) and
+  served by the Go binary itself from `WEB_DIR`, so the API and the SPA share an origin
+  by construction. No proxy is involved.
+
+The client layer lives in `frontend/lib/api/`:
+
+```
+lib/api/client.ts        # apiRequest / handleResponse, API_BASE_URL
+lib/api/teams.ts
+lib/api/health-checks.ts
+lib/api/action-items.ts
+lib/api/admin.ts
 ```
 
-**Benefits:**
-- No CORS configuration needed in development
-- Same-origin requests from browser
-- Can add frontend-specific logic (caching, auth)
+`API_BASE_URL` is `process.env.NEXT_PUBLIC_API_URL || ''`, so an empty value means
+same-origin. Bearer tokens and 401-triggered refresh are handled centrally by
+`authenticatedFetch` in `frontend/lib/auth.ts`.
 
 ---
 
@@ -402,6 +430,22 @@ func (r *PostgresUserRepository) FindByID(ctx context.Context, id string) (*User
 | `health_dimensions` | 11 health check dimensions | Referenced by responses |
 | `health_check_sessions` | Survey submissions | FK to `teams`, `users` |
 | `health_check_responses` | Individual dimension scores | FK to `sessions`, `dimensions` |
+| `password_reset_tokens` | Hashed, expiring reset tokens | FK to `users` (cascade) |
+| `app_settings` | Single-row app configuration: branding, notification toggles, retention | none |
+| `action_items` | Follow-up actions raised against a team and optionally a dimension | FK to `teams`, `users`, `health_dimensions` |
+
+!!! warning "The diagram above predates three tables and several columns"
+    The ERD does not show `password_reset_tokens` (000012), `app_settings` (000015), or
+    `action_items` (000020), nor the later columns `users.auth_type`,
+    `health_check_sessions.survey_type`, and `teams.distribution_list_email`.
+    [Data Model](../data-model.md) is reconstructed from the migrations and is the
+    authoritative reference.
+
+!!! warning "`health_check_sessions` has no foreign keys"
+    The table above describes `health_check_sessions` as having FKs to `teams` and
+    `users`. It does not — migration 000013 explicitly declines to add them because demo
+    seed data may reference non-existent users. `team_id` and `user_id` are unconstrained
+    strings and referential integrity is enforced only by application code.
 
 ### Key Indexes
 
@@ -492,6 +536,15 @@ CREATE INDEX idx_responses_session_dimension ON health_check_responses(session_i
 
 ## API Design
 
+!!! note "This table is a summary, not the reference"
+    The list below covers the main routes but is not complete — it omits token refresh
+    and logout, SSO, `/api/v1/config`, action items, submission status, assessment
+    periods, password reset, `/api/v1/users/me`, team sessions, subordinates, the
+    response-distribution and individual-responses dashboard endpoints, and the admin
+    team-member, supervisor, branding, notification, and retention endpoints. The
+    [API Reference](../api/index.md) is generated from the route files and covers every
+    endpoint with its guards, request shape, responses, and error codes.
+
 ### RESTful Endpoints
 
 | Method | Endpoint | Purpose | Auth Required |
@@ -563,33 +616,52 @@ CREATE INDEX idx_responses_session_dimension ON health_check_responses(session_i
 
 ## Security & Authentication
 
+!!! warning "Corrected: this section described a pre-JWT design"
+    Earlier revisions listed cookie-based sessions as the implementation and JWT,
+    refresh tokens, and role-based API middleware as future roadmap items. All three are
+    now implemented. The table and flow below reflect the current code. Full detail lives
+    in [Authentication & Authorization](authentication.md).
+
 ### Current Implementation
 
 | Aspect | Implementation |
 |--------|----------------|
-| **Authentication** | Cookie-based session with user ID |
-| **Password Storage** | Bcrypt hashed in database |
-| **Route Protection** | Next.js middleware checks cookie |
-| **API Protection** | Handler extracts user from context |
+| **Authentication** | JWT bearer tokens (access + refresh), `application/services/jwt_service.go` |
+| **Token storage** | `localStorage` in the browser; a separate non-credential `user` cookie drives Next.js routing only |
+| **Password storage** | Bcrypt hashed in `users.password_hash` |
+| **SSO** | OAuth 2.0 Authorization Code + PKCE, `POST /api/v1/auth/sso/callback` |
+| **Route protection (frontend)** | `frontend/middleware.ts` — presentational routing only |
+| **API protection** | `JWTAuthMiddleware` plus role/ownership guards per route group |
+| **Password reset** | Tokenised, `password_reset_tokens` table (backend only — no UI) |
 
 ### Authentication Flow
 
 ```
 1. User submits credentials → POST /api/v1/auth/login
-2. Backend verifies password hash → bcrypt.CompareHashAndPassword
-3. On success, returns user data with set-cookie header
-4. Frontend stores user ID in cookie (js-cookie)
-5. Subsequent requests include cookie
-6. Middleware validates cookie, redirects if missing
+2. Backend looks up the user, rejects SSO accounts, and verifies the password
+   with bcrypt.CompareHashAndPassword
+3. On success, returns { user, accessToken, refreshToken, expiresIn }
+4. Frontend stores both tokens in localStorage and writes a `user` cookie
+   so that Next.js middleware can route by role
+5. Subsequent API requests send `Authorization: Bearer <accessToken>`
+6. JWTAuthMiddleware validates the token and places the claims on the Gin context
+7. On 401, the client posts the refresh token to POST /api/v1/auth/refresh
+   and retries once; on failure it navigates to /login?expired=true
 ```
 
-### Future Improvements (Roadmap)
+### Known gaps
 
-- [ ] JWT tokens for stateless authentication
-- [ ] Refresh token rotation
-- [ ] Role-based API middleware
-- [ ] Rate limiting
-- [ ] HTTPS enforcement
+These are implemented-but-incomplete or unimplemented, and are documented rather than
+claimed:
+
+- `JWT_SECRET` defaults to a random per-process value when unset.
+- Rate limiting exists in `interfaces/api/middleware/validation.go` but is never applied
+  to any route, including login.
+- CORS is `Access-Control-Allow-Origin: *` with credentials enabled and no allowlist.
+- `SameUserOrManagerMiddleware` does not verify that the target user is actually a
+  subordinate; `TeamMembershipMiddleware` lets any manager reach any team.
+- SSO provider tokens are parsed with `ParseUnverified` — the signature is not checked.
+- HTTPS is not enforced by the application.
 
 ---
 
@@ -645,14 +717,34 @@ go test ./...
 
 | Migration | Purpose |
 |-----------|---------|
-| 000001 | Create health_dimensions table |
-| 000002 | Create health_check_sessions table |
-| 000003 | Create health_check_responses table |
-| 000004 | Seed 11 health dimensions |
-| 000005 | Create users, teams, team_members, team_supervisors |
-| 000006 | Add password_hash to users |
-| 000007 | Seed demo users |
-| 000008 | Seed demo teams |
-| 000009 | Add cadence to teams |
-| 000010 | Create hierarchy_levels with permissions |
-| 000011+ | Additional schema refinements |
+!!! warning "Corrected: entries 000008–000011 were misattributed"
+    The previous table listed 000008 as "Seed demo teams", 000009 as "Add cadence to
+    teams", and 000010 as "Create hierarchy_levels", and collapsed everything from 000011
+    onward into "Additional schema refinements". The list below is taken from the actual
+    filenames in `backend/infrastructure/persistence/postgres/migrations/`.
+
+| Migration | Purpose |
+|-----------|---------|
+| 000001 | Create `health_dimensions` |
+| 000002 | Create `health_check_sessions` |
+| 000003 | Create `health_check_responses` |
+| 000004 | Seed the 11 health dimensions |
+| 000005 | Create `users`, `teams`, `team_members`, `team_supervisors` |
+| 000006 | Add `password_hash` to `users` |
+| 000007 | Seed the `admin` user |
+| 000008 | Add `cadence` to `teams` |
+| 000009 | Create `hierarchy_levels` (and the FK from `users`) |
+| 000010 | Add `color` to `hierarchy_levels` |
+| 000011 | Add `can_configure_system`, `can_view_reports`, `can_export_data` permissions |
+| 000012 | Create `password_reset_tokens` |
+| 000013 | Add security constraints (email/username regexes, comment length, named FKs) |
+| 000014 | Add `survey_type` to `health_check_sessions` |
+| 000015 | Create the `app_settings` singleton |
+| 000016 | Replace the cadence check constraint — final set is monthly, quarterly, half-yearly, yearly |
+| 000017 | Add `auth_type` to `users` |
+| 000018 | Add branding (`company_name`, `logo_url`) to `app_settings` |
+| 000019 | Add `distribution_list_email` to `teams` |
+| 000020 | Create `action_items` |
+
+Every migration has a matching `.down.sql`. See [Data Model](../data-model.md) for the
+resulting schema and [Migrations & Data](../operations/migrations.md) for how they run.

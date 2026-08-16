@@ -10,6 +10,7 @@ import { LogOut, Users, ChevronDown, AlertCircle, Activity, LineChart as LineCha
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import OnboardingModal from '@/components/OnboardingModal';
 import { listManagerTeamsActionSummary, TeamActionSummary } from '@/lib/api/action-items';
+import DocsLink from '@/components/DocsLink';
 import * as XLSX from 'xlsx';
 
 // Types matching backend API response
@@ -463,6 +464,8 @@ export default function ManagerPage() {
                   Take Survey
                 </button>
               )}
+
+              <DocsLink />
 
               <button
                 onClick={handleLogout}

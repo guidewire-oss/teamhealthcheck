@@ -4,7 +4,20 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Stage 1: Build frontend static export
+# Stage 1: Build MkDocs documentation site
+# -----------------------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM python:3.12-alpine AS docs-builder
+
+WORKDIR /docs-src
+
+COPY mkdocs.yml ./
+COPY docs/ ./docs/
+
+RUN pip install --no-cache-dir mkdocs-material && \
+    mkdocs build -d /site
+
+# -----------------------------------------------------------------------------
+# Stage 2: Build frontend static export
 # -----------------------------------------------------------------------------
 FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
 
@@ -14,12 +27,13 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 
 COPY frontend/ .
+COPY --from=docs-builder /site/ ./public/docs/
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV STATIC_EXPORT=true
 RUN npm run build
 
 # -----------------------------------------------------------------------------
-# Stage 2: Build backend binary (cross-compile for target arch)
+# Stage 3: Build backend binary (cross-compile for target arch)
 # -----------------------------------------------------------------------------
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS backend-builder
 
@@ -44,7 +58,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     cmd/api/main.go
 
 # -----------------------------------------------------------------------------
-# Stage 3: Runtime — single container serving API + static frontend
+# Stage 4: Runtime — single container serving API + static frontend
 # -----------------------------------------------------------------------------
 FROM alpine:3.21
 

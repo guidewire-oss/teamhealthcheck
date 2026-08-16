@@ -1,0 +1,89 @@
+site_name: Team360 Documentation
+site_description: Team health check application based on Spotify's Squad Health Check Model
+repo_url: https://github.com/guidewire-oss/teams360
+edit_uri: edit/main/docs/
+
+# dir/index.html output so pages resolve at clean URLs (e.g. /docs/api/ instead
+# of /docs/api.html). frontend/next.config.ts rewrites directory requests to
+# their index.html locally, and the Go static server in main.go does the same
+# in production.
+use_directory_urls: true
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+
+nav:
+  - Home: index.md
+  - Architecture:
+      - Overview: architecture/overview.md
+      - Request Lifecycle: architecture/request-lifecycle.md
+      - Authentication & Authorization: architecture/authentication.md
+      - Background & External Services: architecture/services.md
+  - API Reference:
+      - Overview: api/index.md
+      - Authentication: api/auth.md
+      - Health Checks: api/health-checks.md
+      - Teams: api/teams.md
+      - Team Dashboard: api/team-dashboard.md
+      - Managers: api/managers.md
+      - Action Items: api/action-items.md
+      - Admin: api/admin.md
+  - Data Model: data-model.md
+  - Guides:
+      - Overview: guides/index.md
+      - Signing In: guides/authentication.md
+      - Submitting a Health Check: guides/survey.md
+      - Team Lead Dashboard: guides/team-lead-dashboard.md
+      - Manager Dashboard: guides/manager-dashboard.md
+      - Action Items: guides/action-items.md
+      - Administration: guides/administration.md
+  - Operations:
+      - Configuration: operations/configuration.md
+      - Docker: operations/docker.md
+      - Makefile: operations/makefile.md
+      - GitHub Actions: operations/github-actions.md
+      - Kubernetes (KubeVela): operations/kubernetes.md
+      - Migrations & Data: operations/migrations.md
+  - Observability: observability.md
+  - Testing: testing.md
+  - Contributing: contributing.md
+  - Code Review Report: code-review.md

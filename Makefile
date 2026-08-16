@@ -88,7 +88,7 @@ install-backend: ## [Backend] Install Go dependencies
 # Running the Application
 # =============================================================================
 
-run: _ensure-deps _ensure-db _kill-servers _print-banner ## Run the full application locally
+run: _ensure-deps _ensure-db _kill-servers docs-build _print-banner ## Run the full application locally
 	@$(MAKE) -j2 _start-frontend _start-backend
 
 run-frontend: _ensure-deps ## [Frontend] Run only the frontend
@@ -99,11 +99,22 @@ run-backend: _ensure-deps _ensure-db ## [Backend] Run only the backend
 	@echo "$(CYAN)Starting backend on http://localhost:8080...$(RESET)"
 	@cd backend && DATABASE_URL="$(DATABASE_URL)" go run cmd/api/main.go
 
-dev: _ensure-deps _ensure-db _kill-servers _print-banner ## Run with hot reload (requires 'air' for backend)
+dev: _ensure-deps _ensure-db _kill-servers docs-build _print-banner ## Run with hot reload (requires 'air' for backend)
 	@echo "$(BOLD)$(CYAN)Development mode with hot reload$(RESET)"
 	@echo "$(YELLOW)Tip:$(RESET) Install 'air' for backend hot reload: go install github.com/air-verse/air@latest"
 	@echo ""
 	@$(MAKE) -j2 _start-frontend dev-backend
+
+docs-build: ## [Docs] Build MkDocs site into frontend/public/docs (served at /docs)
+	@if command -v mkdocs >/dev/null 2>&1; then \
+		echo "$(CYAN)Building documentation site...$(RESET)"; \
+		mkdocs build -d frontend/public/docs -q; \
+	elif command -v docker >/dev/null 2>&1; then \
+		echo "$(CYAN)Building documentation site (via Docker)...$(RESET)"; \
+		docker run --rm -v "$(PWD)":/docs squidfunk/mkdocs-material:latest build -d /docs/frontend/public/docs -q; \
+	else \
+		echo "$(YELLOW)Neither mkdocs nor docker found, skipping docs build.$(RESET)"; \
+	fi
 
 dev-backend: ## [Backend] Run with hot reload using 'air'
 	@cd backend && if command -v air >/dev/null 2>&1; then \
@@ -124,8 +135,9 @@ _print-banner:
 	@echo ""
 	@echo "$(BOLD)$(CYAN)Starting Team360...$(RESET)"
 	@echo ""
-	@echo "  $(CYAN)Frontend:$(RESET) http://localhost:3000"
-	@echo "  $(CYAN)Backend:$(RESET)  http://localhost:8080"
+	@echo "  $(CYAN)Frontend:$(RESET)      http://localhost:3000"
+	@echo "  $(CYAN)Backend:$(RESET)       http://localhost:8080"
+	@echo "  $(CYAN)Documentation:$(RESET) http://localhost:3000/docs/"
 	@echo ""
 	@echo "$(BOLD)Demo Credentials:$(RESET)"
 	@echo "  demo/demo      - Team Member"
@@ -229,7 +241,7 @@ db-test-setup: db-start ## Setup test database
 
 build: build-frontend build-backend ## Build both frontend and backend for production
 
-build-frontend: ## [Frontend] Build Next.js for production
+build-frontend: docs-build ## [Frontend] Build Next.js for production
 	@echo "$(CYAN)Building frontend...$(RESET)"
 	@cd frontend && npm run build
 	@echo "$(GREEN)Frontend build complete!$(RESET)"

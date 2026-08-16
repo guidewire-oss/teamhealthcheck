@@ -264,9 +264,17 @@ func main() {
 			}
 
 			// Try exact file
-			if info, statErr := os.Stat(filePath); statErr == nil && !info.IsDir() {
-				c.File(filePath)
-				return
+			if info, statErr := os.Stat(filePath); statErr == nil {
+				if !info.IsDir() {
+					c.File(filePath)
+					return
+				}
+				// Directory request (e.g. /docs/api/): serve its index.html
+				indexPath := filepath.Join(filePath, "index.html")
+				if info, statErr := os.Stat(indexPath); statErr == nil && !info.IsDir() {
+					c.File(indexPath)
+					return
+				}
 			}
 
 			// Try with .html extension (Next.js static export: /login -> login.html)

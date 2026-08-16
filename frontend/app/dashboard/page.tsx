@@ -15,6 +15,7 @@ import { getTeamInfoCached } from '@/lib/api/teams';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line, ResponsiveContainer } from 'recharts';
 import OnboardingModal from '@/components/OnboardingModal';
 import ActionItemsTab from '@/components/ActionItemsTab';
+import DocsLink from '@/components/DocsLink';
 
 type TabType = 'radar' | 'distribution' | 'responses' | 'trends' | 'actions';
 
@@ -564,6 +565,8 @@ export default function DashboardPage() {
                   </div>
                 )}
               </div>
+
+              <DocsLink />
 
               <button
                 onClick={handleLogout}

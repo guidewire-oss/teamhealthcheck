@@ -1,4 +1,4 @@
-# Team Lead Dashboard API Documentation
+# Team Dashboard API
 
 ## Overview
 The Team Lead Dashboard API provides endpoints for team leads to view aggregated health check data, individual responses, distributions, and trends for their teams.
@@ -7,7 +7,20 @@ The Team Lead Dashboard API provides endpoints for team leads to view aggregated
 All endpoints are prefixed with `/api/v1/teams/:teamId/dashboard`
 
 ## Authentication
-All endpoints require authentication (to be implemented). Currently, no authentication is enforced.
+
+!!! warning "Corrected: authentication is enforced"
+    This page previously stated that authentication was "to be implemented" and that "no
+    authentication is enforced". That has not been true since `SetupTeamDashboardRoutes`
+    gained its middleware chain.
+
+All four endpoints require `JWTAuthMiddleware` **and** `TeamMembershipMiddleware("teamId")`
+— shorthand `JWT` `+TeamMember` in the [API Reference](index.md#authentication). A caller
+must be a member of the team named in the path, or hold `level-1`, `level-2`, `level-3`, or
+`level-admin`, in which case any team is accessible.
+
+In addition to the errors listed at the bottom of this page, every endpoint can return the
+[standard auth errors](index.md#errors-common-to-all-guarded-routes): `401` for a missing,
+malformed, or expired token, and `403 Access denied: you are not a member of this team`.
 
 ## Endpoints
 
@@ -98,6 +111,15 @@ curl http://localhost:8080/api/v1/teams/team-alpha/dashboard/response-distributi
 
 **Description:** Returns individual team member responses with their scores, trends, and comments for each dimension.
 
+!!! note "Responses are attributed, not anonymous"
+    This endpoint returns `userId` and `userName` alongside every comment, and the
+    dashboard renders them per person. There is no anonymity toggle anywhere in the
+    codebase. Bear this in mind against the "support, not surveillance" design principle —
+    participants should know their individual responses are visible to their team lead and
+    to every manager above them.
+
+`surveyType` is `individual` or `post_workshop` (added by migration 000014).
+
 **Query Parameters:**
 - `assessmentPeriod` (optional): Filter by specific assessment period
 
@@ -111,6 +133,7 @@ curl http://localhost:8080/api/v1/teams/team-alpha/dashboard/response-distributi
       "userId": "alice",
       "userName": "Alice Johnson",
       "date": "2024-06-15",
+      "surveyType": "individual",
       "dimensions": [
         {
           "dimensionId": "mission",
@@ -190,8 +213,28 @@ All endpoints return standard error responses:
 **Common HTTP Status Codes:**
 - `200 OK`: Successful request
 - `400 Bad Request`: Missing or invalid team ID
-- `404 Not Found`: Team not found
+- `404 Not Found`: Team not found (health summary only — the other three endpoints return an empty result rather than 404 for an unknown team)
 - `500 Internal Server Error`: Database or server error
+
+**Exact error strings by endpoint:**
+
+| Endpoint | Status | `error` | `message` |
+|----------|--------|---------|-----------|
+| all four | 400 | `Team ID is required` | `teamId parameter cannot be empty` |
+| health-summary | 404 | `Team not found` | `No team found with the given ID` |
+| health-summary | 500 | `Database query failed` / `Failed to parse dimension data` | underlying error |
+| response-distribution | 500 | `Database query failed` / `Failed to parse distribution data` | underlying error |
+| individual-responses | 500 | `Database query failed` / `Failed to parse response data` / `Failed to parse dimension data` | underlying error |
+| trends | 500 | `Failed to fetch trend data` | underlying error |
+
+!!! note "The 400 branch is unreachable"
+    Gin never routes a request with an empty path segment to these handlers, so the
+    `Team ID is required` guard is dead code. It is listed for completeness.
+
+!!! warning "`error` is a human-readable string, not a code"
+    The example above labels the field "Error type", but `dto.ErrorResponse` has a separate
+    `code` field that no handler ever populates. Clients must match on the `error` string.
+    Note also that `message` carries the raw underlying error, including driver errors.
 
 ---
 

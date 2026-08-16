@@ -1,6 +1,6 @@
 # Makefile Documentation
 
-This document describes all available Make targets for the Team360 project. The Makefile orchestrates both the frontend (Next.js/TypeScript) and backend (Go/Gin) services.
+This document describes all available Make targets for the Team Health Check project. The Makefile orchestrates both the frontend (Next.js/TypeScript) and backend (Go/Gin) services.
 
 ## Quick Reference
 
