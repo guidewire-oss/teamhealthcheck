@@ -1,13 +1,13 @@
-# Contributing to Teams360
+# Contributing to Team Health Check
 
-First off, thank you for considering contributing to Teams360! It's people like
-you who make Teams360 a useful tool for teams everywhere. Any contribution you
+First off, thank you for considering contributing to Team Health Check! It's people like
+you who make Team Health Check a useful tool for teams everywhere. Any contribution you
 make — code, docs, bug reports, enhancement ideas — is greatly appreciated.
 
 ## Code of Conduct
 
 While we are not a CNCF project, we fully support and endorse its general
-principles. As an extension, Teams360 follows their
+principles. As an extension, Team Health Check follows their
 [Code of Conduct](https://github.com/cncf/foundation/blob/main/code-of-conduct.md)
 that we expect project participants to adhere to. Please read the full text so
 you understand what actions will and will not be tolerated.
@@ -17,7 +17,7 @@ you understand what actions will and will not be tolerated.
 ### Starting a Discussion
 
 Have a question, an idea that isn't fully formed, or want to share how your
-team is using Teams360? Use
+team is using Team Health Check? Use
 [GitHub Discussions](https://github.com/guidewire-oss/teams360/discussions)
 rather than opening an issue:
 
@@ -25,7 +25,7 @@ rather than opening an issue:
 - **Ideas** — early-stage enhancement thinking that hasn't crystallised into a
   concrete proposal yet
 - **Show and tell** — screenshots, custom dimension configs, or workflows your
-  team has built around Teams360
+  team has built around Team Health Check
 
 Issues are best for *actionable* items (bug reports, concrete enhancement
 proposals); Discussions are best for *open-ended* conversations.
@@ -66,7 +66,7 @@ labels.
 
 ## Development Setup
 
-Teams360 is a Go (Gin) backend + Next.js frontend with a PostgreSQL database.
+Team Health Check is a Go (Gin) backend + Next.js frontend with a PostgreSQL database.
 The Makefile orchestrates everything; the most useful targets:
 
 ```bash
@@ -110,7 +110,7 @@ certifying that you wrote or otherwise have the right to submit the code under
 the project's Apache 2.0 license. This is signified by adding a `Signed-off-by`
 line to your commits (`git commit -s`).
 
-Once the pull request is opened, a Teams360 maintainer will review your
+Once the pull request is opened, a Team Health Check maintainer will review your
 changes. CI must be green before merge. If everything is good, your PR will be
 merged into `main`.
 
@@ -135,5 +135,5 @@ merged into `main`.
 
 ## License
 
-By contributing to Teams360, you agree that your contributions will be licensed
+By contributing to Team Health Check, you agree that your contributions will be licensed
 under the [Apache License 2.0](LICENSE).

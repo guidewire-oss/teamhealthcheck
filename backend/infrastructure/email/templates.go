@@ -113,7 +113,7 @@ func RenderIndividualSurveyEmail(data IndividualSurveyEmailData) string {
 <tr><td align="center">
 <table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
   <tr><td style="background:#1E40AF;padding:24px 32px;">
-    <h1 style="margin:0;color:#fff;font-size:20px;">Teams360</h1>
+    <h1 style="margin:0;color:#fff;font-size:20px;">Team Health Check</h1>
     <p style="margin:4px 0 0;color:#BFDBFE;font-size:14px;">%s Submission Copy</p>
   </td></tr>
   <tr><td style="padding:24px 32px;">
@@ -137,7 +137,7 @@ func RenderIndividualSurveyEmail(data IndividualSurveyEmailData) string {
     <p style="margin:24px 0 0;color:#9CA3AF;font-size:12px;">This is an automated copy of your submission. No action is required.</p>
   </td></tr>
   <tr><td style="background:#F9FAFB;padding:16px 32px;text-align:center;">
-    <p style="margin:0;color:#9CA3AF;font-size:11px;">Teams360 — Team Health Check Platform</p>
+    <p style="margin:0;color:#9CA3AF;font-size:11px;">Team Health Check — Team Health Check Platform</p>
   </td></tr>
 </table>
 </td></tr>
@@ -181,7 +181,7 @@ func RenderTeamSummaryEmail(data TeamSummaryEmailData) string {
 <tr><td align="center">
 <table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
   <tr><td style="background:#7C3AED;padding:24px 32px;">
-    <h1 style="margin:0;color:#fff;font-size:20px;">Teams360</h1>
+    <h1 style="margin:0;color:#fff;font-size:20px;">Team Health Check</h1>
     <p style="margin:4px 0 0;color:#DDD6FE;font-size:14px;">Post-Workshop Survey Summary</p>
   </td></tr>
   <tr><td style="padding:24px 32px;">
@@ -202,10 +202,10 @@ func RenderTeamSummaryEmail(data TeamSummaryEmailData) string {
         %s
       </tbody>
     </table>
-    <p style="margin:24px 0 0;color:#9CA3AF;font-size:12px;">This is an automated summary. Log in to Teams360 for full analytics.</p>
+    <p style="margin:24px 0 0;color:#9CA3AF;font-size:12px;">This is an automated summary. Log in to Team Health Check for full analytics.</p>
   </td></tr>
   <tr><td style="background:#F9FAFB;padding:16px 32px;text-align:center;">
-    <p style="margin:0;color:#9CA3AF;font-size:11px;">Teams360 — Team Health Check Platform</p>
+    <p style="margin:0;color:#9CA3AF;font-size:11px;">Team Health Check — Team Health Check Platform</p>
   </td></tr>
 </table>
 </td></tr>

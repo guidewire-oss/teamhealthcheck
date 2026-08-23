@@ -1,6 +1,6 @@
-# Team360 Architecture Documentation
+# Team Health Check Architecture Documentation
 
-This document provides a comprehensive overview of Team360's architecture, including system design, data flow, database schema, and technology decisions.
+This document provides a comprehensive overview of Team Health Check's architecture, including system design, data flow, database schema, and technology decisions.
 
 ## Table of Contents
 
@@ -19,7 +19,7 @@ This document provides a comprehensive overview of Team360's architecture, inclu
 
 ## System Overview
 
-Team360 is a full-stack web application built with a **decoupled frontend-backend architecture**:
+Team Health Check is a full-stack web application built with a **decoupled frontend-backend architecture**:
 
 ```
 ┌─────────────────┐     HTTP/JSON     ┌─────────────────┐     SQL      ┌─────────────────┐

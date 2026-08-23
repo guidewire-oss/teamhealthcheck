@@ -1,5 +1,5 @@
 # =============================================================================
-# Team360 Docker Compose - Application Services Only
+# Team Health Check Docker Compose - Application Services Only
 # Database must be provided externally (see docs/DOCKER.md for details)
 # =============================================================================
 

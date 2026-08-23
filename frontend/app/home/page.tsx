@@ -222,7 +222,7 @@ export default function MemberHomePage() {
                 <Building2 className="h-8 w-8 text-blue-600" />
               )}
               <div>
-                <h1 className="text-xl font-bold text-gray-900">{brandingName || 'Team360'}</h1>
+                <h1 className="text-xl font-bold text-gray-900">{brandingName || 'Team Health Check'}</h1>
                 <p className="text-sm text-gray-500">Member Home</p>
               </div>
             </div>

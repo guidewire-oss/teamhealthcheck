@@ -4,9 +4,9 @@
 apiVersion: 1
 
 providers:
-  - name: 'Teams360 Dashboards'
+  - name: 'Team Health Check Dashboards'
     orgId: 1
-    folder: 'Teams360'
+    folder: 'Team Health Check'
     folderUid: 'teams360'
     type: file
     disableDeletion: false

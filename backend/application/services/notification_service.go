@@ -76,7 +76,7 @@ func (n *NotificationService) SendIndividualSurveyEmail(ctx context.Context, ses
 	}
 
 	htmlBody := email.RenderIndividualSurveyEmail(data)
-	subject := "Teams360 — Your Health Check Submission (" + tm.Name + ")"
+	subject := "Team Health Check — Your Health Check Submission (" + tm.Name + ")"
 
 	if err := n.sender.SendHTML(ctx, usr.Email, subject, htmlBody); err != nil {
 		log.WithError(err).WithField("to", usr.Email).Warn("notification: failed to send individual survey email")
@@ -132,7 +132,7 @@ func (n *NotificationService) sendTeamSummaryEmail(ctx context.Context, session 
 	}
 
 	htmlBody := email.RenderTeamSummaryEmail(data)
-	subject := "Teams360 — Post-Workshop Summary (" + tm.Name + ", " + session.AssessmentPeriod + ")"
+	subject := "Team Health Check — Post-Workshop Summary (" + tm.Name + ", " + session.AssessmentPeriod + ")"
 
 	if err := n.sender.SendHTML(ctx, *tm.DistributionListEmail, subject, htmlBody); err != nil {
 		log.WithError(err).WithField("to", *tm.DistributionListEmail).Warn("notification: failed to send team summary email")

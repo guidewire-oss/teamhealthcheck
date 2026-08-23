@@ -1,5 +1,5 @@
 # =============================================================================
-# Team360 KubeVela + CNPG Deployment Automation
+# Team Health Check KubeVela + CNPG Deployment Automation
 # Included from root Makefile via: -include Makefile.kubevela
 #
 # Full pipeline:  make kubevela-deploy-all
@@ -166,7 +166,7 @@ kubevela-status: ## [KubeVela] Show application status, pods, services, ingress
 
 kubevela-deploy-all: ## [KubeVela] Full pipeline: cluster -> prereqs -> build -> deploy
 	@echo "$(BOLD)$(CYAN)========================================$(RESET)"
-	@echo "$(BOLD)$(CYAN)  Team360 KubeVela Full Deployment$(RESET)"
+	@echo "$(BOLD)$(CYAN)  Team Health Check KubeVela Full Deployment$(RESET)"
 	@echo "$(BOLD)$(CYAN)========================================$(RESET)"
 	@echo ""
 	$(MAKE) kubevela-k3d-create

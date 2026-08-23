@@ -1,4 +1,4 @@
-# Team360 KubeVela Application Manifest
+# Team Health Check KubeVela Application Manifest
 # Deploys: CNPG PostgreSQL + unified app (Go API serving static frontend)
 # Usage: kubectl apply -f kubevela/teams360-kubevela.yaml
 #

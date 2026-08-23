@@ -1,6 +1,6 @@
-# Team360 Backend API
+# Team Health Check Backend API
 
-Go backend for Team360 Squad Health Check application, built with Gin framework following Domain-Driven Design (DDD) principles and Test-Driven Development (TDD) practices.
+Go backend for Team Health Check Squad Health Check application, built with Gin framework following Domain-Driven Design (DDD) principles and Test-Driven Development (TDD) practices.
 
 ## Architecture
 

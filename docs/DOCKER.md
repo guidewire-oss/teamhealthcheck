@@ -1,6 +1,6 @@
 # Docker Deployment Guide
 
-This guide explains how to deploy Team360 using Docker containers.
+This guide explains how to deploy Team Health Check using Docker containers.
 
 ## Quick Start
 
@@ -12,7 +12,7 @@ This guide explains how to deploy Team360 using Docker containers.
 
 ### Production Deployment
 
-Team360 containers require an external PostgreSQL database. The database is NOT included in the container images to follow security best practices.
+Team Health Check containers require an external PostgreSQL database. The database is NOT included in the container images to follow security best practices.
 
 #### 1. Create Environment File
 
@@ -102,7 +102,7 @@ This starts:
 
 ### Supported Databases
 
-Team360 requires PostgreSQL 14 or higher. Tested with:
+Team Health Check requires PostgreSQL 14 or higher. Tested with:
 - PostgreSQL 14, 15, 16, 17
 - Amazon RDS for PostgreSQL
 - Google Cloud SQL for PostgreSQL

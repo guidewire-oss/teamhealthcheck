@@ -1,5 +1,5 @@
 # =============================================================================
-# Team360 Unified Image — Frontend (static export) + Backend (Go API)
+# Team Health Check Unified Image — Frontend (static export) + Backend (Go API)
 # Uses --platform=$BUILDPLATFORM so npm/go builds run natively (no QEMU)
 # =============================================================================
 

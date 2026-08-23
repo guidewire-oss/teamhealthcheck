@@ -333,18 +333,18 @@ Remember: **Claude Flow coordinates, Claude Code creates!**
 ---
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PROJECT DOCUMENTATION: Team360 Health Check Application
+# PROJECT DOCUMENTATION: Team Health Check Application
 # ═══════════════════════════════════════════════════════════════════════════════
 
 ## Project Overview
 
-Team360 is an open-source (Apache 2.0 licensed) web application based on Spotify's Squad Health Check Model, enhanced with organizational flexibility and hierarchical management capabilities.
+Team Health Check is an open-source (Apache 2.0 licensed) web application based on Spotify's Squad Health Check Model, enhanced with organizational flexibility and hierarchical management capabilities.
 
 **Architecture**: Next.js 15 frontend with Go backend (Gin framework), following Domain-Driven Design (DDD) principles and Test-Driven Development (TDD) practices.
 
 ### Purpose & Philosophy
 
-Inspired by [Spotify's Squad Health Check Model](https://engineering.atspotify.com/2014/09/squad-health-check-model), Team360 helps teams systematically assess their working environment and identify improvement areas through structured self-reflection.
+Inspired by [Spotify's Squad Health Check Model](https://engineering.atspotify.com/2014/09/squad-health-check-model), Team Health Check helps teams systematically assess their working environment and identify improvement areas through structured self-reflection.
 
 **Core Philosophy** (from Spotify):
 - Teams are intrinsically motivated and want to succeed
@@ -357,7 +357,7 @@ Inspired by [Spotify's Squad Health Check Model](https://engineering.atspotify.c
 
 ### Enhancements Over Original Spotify Model
 
-Team360 extends the original concept with enterprise-ready features:
+Team Health Check extends the original concept with enterprise-ready features:
 
 1. **Hierarchical Organization Support**: Multi-level hierarchy (VP → Director → Manager → Team Lead → Team Member) with supervisor chains
 2. **Configurable Dimensions**: 11 health dimensions (expanded from Spotify's ~8), fully customizable
@@ -365,7 +365,7 @@ Team360 extends the original concept with enterprise-ready features:
 4. **Assessment Periods**: Track trends across defined periods (e.g., "2024 - 1st Half")
 5. **Role-Based Access Control**: Granular permissions system for different organizational levels
 6. **Aggregated Insights**: Roll-up views for managers and executives across multiple teams
-7. **Digital-First**: While Spotify emphasizes face-to-face workshops, Team360 enables distributed teams to participate asynchronously
+7. **Digital-First**: While Spotify emphasizes face-to-face workshops, Team Health Check enables distributed teams to participate asynchronously
 
 Built with Next.js 15, TypeScript, and Tailwind CSS for modern, maintainable development.
 
@@ -530,7 +530,7 @@ npm install --force @next/swc-darwin-arm64  # If still having issues
 
 ## KubeVela + CNPG Deployment (Kubernetes)
 
-Team360 supports deployment to Kubernetes via **KubeVela** (Open Application Model) with **CloudNativePG** for production-grade PostgreSQL. This is an alternative to the existing Helm charts in `helm/teams360/`.
+Team Health Check supports deployment to Kubernetes via **KubeVela** (Open Application Model) with **CloudNativePG** for production-grade PostgreSQL. This is an alternative to the existing Helm charts in `helm/teams360/`.
 
 ### Prerequisites
 
@@ -614,7 +614,7 @@ After `make kubevela-deploy-all`, verify:
 
 ### Testing Philosophy: TRUE Outer-Loop TDD
 
-Team360 follows **TRUE Outer-Loop Test-Driven Development** principles:
+Team Health Check follows **TRUE Outer-Loop Test-Driven Development** principles:
 
 1. **Write E2E tests FIRST** that interact through the UI like a real user would
 2. **Let tests drive implementation** - tests should fail until feature is complete
@@ -624,7 +624,7 @@ Team360 follows **TRUE Outer-Loop Test-Driven Development** principles:
 
 ### Test Organization
 
-Team360 uses a three-tier testing pyramid:
+Team Health Check uses a three-tier testing pyramid:
 
 ```
 /tests/acceptance/              # E2E/Acceptance Tests (Playwright, full stack)
@@ -948,9 +948,9 @@ Located in `frontend/lib/types.ts`:
    - `Team`: Has supervisorChain (full chain of supervisors), members, cadence (survey frequency)
 
 3. **Health Checks**:
-   - `HealthDimension`: 11 dimensions based on Spotify's model with Team360 enhancements:
+   - `HealthDimension`: 11 dimensions based on Spotify's model with Team Health Check enhancements:
      - **From Spotify's model**: Mission, Delivering Value, Speed, Fun, Health of Codebase, Learning, Support, Pawns or Players
-     - **Team360 additions**: Easy to Release, Suitable Process, Teamwork
+     - **Team Health Check additions**: Easy to Release, Suitable Process, Teamwork
      - Each dimension has goodDescription/badDescription for clarity (e.g., "We deliver great stuff!" vs "We deliver crap")
      - Dimensions can be enabled/disabled and weighted via isActive and weight properties
    - `HealthCheckSession`: User's responses to health check, includes assessmentPeriod (e.g., "2024 - 1st Half")
@@ -1111,11 +1111,11 @@ When adding features:
 
 ## Open Source Philosophy
 
-Team360 is released under the **Apache 2.0 license** to benefit organizations worldwide. The goal is to make structured team health assessment accessible to any organization, regardless of size or resources.
+Team Health Check is released under the **Apache 2.0 license** to benefit organizations worldwide. The goal is to make structured team health assessment accessible to any organization, regardless of size or resources.
 
 ### Design Principles
 
-When contributing or extending Team360, keep these principles in mind:
+When contributing or extending Team Health Check, keep these principles in mind:
 
 1. **Support, Not Surveillance**: Features should help teams improve, never be weaponized for performance reviews
 2. **Flexibility First**: Organizations differ - support customization (dimensions, cadences, hierarchies)
