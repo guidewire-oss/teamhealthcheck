@@ -42,6 +42,7 @@ View aggregated health metrics across all supervised teams with trend analysis.
 ### Team Lead Dashboard
 Monitor your team's health with detailed breakdowns and individual response tracking.
 
+
 ## Quick Start
 
 ### Prerequisites
