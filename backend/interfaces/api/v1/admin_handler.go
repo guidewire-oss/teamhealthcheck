@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"github.com/agopalakrishnan/teams360/backend/domain/healthcheck"
 	"github.com/agopalakrishnan/teams360/backend/domain/organization"
 	"github.com/agopalakrishnan/teams360/backend/domain/team"
 	"github.com/agopalakrishnan/teams360/backend/domain/user"
@@ -9,19 +10,21 @@ import (
 
 // AdminHandler aggregates all admin sub-handlers
 type AdminHandler struct {
-	HierarchyHandler *HierarchyAdminHandler
-	UserHandler      *UserAdminHandler
-	TeamHandler      *TeamAdminHandler
-	SettingsHandler  *SettingsAdminHandler
+	HierarchyHandler        *HierarchyAdminHandler
+	UserHandler             *UserAdminHandler
+	TeamHandler             *TeamAdminHandler
+	SettingsHandler         *SettingsAdminHandler
+	SurveyCompletionHandler *SurveyCompletionAdminHandler
 }
 
 // NewAdminHandler creates a new AdminHandler with all sub-handlers
-func NewAdminHandler(orgRepo organization.Repository, userRepo user.Repository, teamRepo team.Repository) *AdminHandler {
+func NewAdminHandler(orgRepo organization.Repository, userRepo user.Repository, teamRepo team.Repository, healthCheckRepo healthcheck.Repository) *AdminHandler {
 	return &AdminHandler{
-		HierarchyHandler: NewHierarchyAdminHandler(orgRepo),
-		UserHandler:      NewUserAdminHandler(userRepo, teamRepo),
-		TeamHandler:      NewTeamAdminHandler(teamRepo, userRepo, orgRepo),
-		SettingsHandler:  NewSettingsAdminHandler(orgRepo),
+		HierarchyHandler:        NewHierarchyAdminHandler(orgRepo),
+		UserHandler:             NewUserAdminHandler(userRepo, teamRepo),
+		TeamHandler:             NewTeamAdminHandler(teamRepo, userRepo, orgRepo),
+		SettingsHandler:         NewSettingsAdminHandler(orgRepo),
+		SurveyCompletionHandler: NewSurveyCompletionAdminHandler(teamRepo, healthCheckRepo, userRepo, orgRepo),
 	}
 }
 
@@ -151,4 +154,12 @@ func (h *AdminHandler) GetRetentionPolicy(c *gin.Context) {
 
 func (h *AdminHandler) UpdateRetentionPolicy(c *gin.Context) {
 	h.SettingsHandler.UpdateRetentionPolicy(c)
+}
+
+// ============================================================================
+// Survey Completion Handlers - Delegate to SurveyCompletionAdminHandler
+// ============================================================================
+
+func (h *AdminHandler) GetSurveyCompletion(c *gin.Context) {
+	h.SurveyCompletionHandler.GetSurveyCompletion(c)
 }

@@ -737,7 +737,7 @@ export default function DashboardPage() {
                       <div>
                         <h2 className="text-xl font-semibold text-gray-900">Response Distribution</h2>
                         {distributionView === 'breakdown' && distribution.length > 0 && (
-                          <p className="text-xs text-gray-400 mt-0.5">Sorted by health score — most attention needed first</p>
+                          <p className="text-xs text-gray-900 mt-0.5">Sorted by health score — most attention needed first</p>
                         )}
                       </div>
                       {distribution.length > 0 && (
@@ -819,7 +819,7 @@ export default function DashboardPage() {
                                 >
                                   {d.healthScore.toFixed(1)}
                                 </span>
-                                <span className="text-xs text-gray-400 w-14 text-right flex-shrink-0">
+                                <span className="text-xs text-gray-900 w-14 text-right flex-shrink-0">
                                   {d.total} resp.
                                 </span>
                               </div>
@@ -838,7 +838,7 @@ export default function DashboardPage() {
                                 <span className="w-3 h-3 rounded-sm inline-block" style={{ backgroundColor: '#EF4444' }} />
                                 Red (Poor)
                               </div>
-                              <span className="ml-auto text-gray-400">Score = weighted average (3·green + 2·yellow + 1·red)</span>
+                              <span className="ml-auto text-gray-900">Score = weighted average (3·green + 2·yellow + 1·red)</span>
                             </div>
                           </div>
                         ) : (
@@ -948,7 +948,7 @@ export default function DashboardPage() {
                                           >
                                             {response.userName}
                                           </div>
-                                          <div className="text-xs text-gray-400">
+                                          <div className="text-xs text-gray-900">
                                             {new Date(response.date).toLocaleDateString()}
                                           </div>
                                         </td>
@@ -1014,7 +1014,7 @@ export default function DashboardPage() {
                                                   )}
                                                 </div>
                                               ) : (
-                                                <span className="text-gray-300 text-xs">—</span>
+                                                <span className="text-gray-900 text-xs">—</span>
                                               )}
                                             </td>
                                           );
@@ -1140,7 +1140,7 @@ export default function DashboardPage() {
                                             </span>
                                           )}
                                         </div>
-                                        <p className="text-xs text-gray-400">
+                                        <p className="text-xs text-gray-900">
                                           {new Date(response.date).toLocaleDateString()}
                                         </p>
                                       </div>
@@ -1223,7 +1223,7 @@ export default function DashboardPage() {
                       <div>
                         <h2 className="text-xl font-semibold text-gray-900">Health Trends Over Time</h2>
                         {trends.length > 0 && (
-                          <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1">
+                          <p className="text-xs text-gray-900 mt-0.5 flex items-center gap-1">
                             <Info className="w-3 h-3 flex-shrink-0" />
                             Hover over a dot to see the assessment period and score
                           </p>
@@ -1300,7 +1300,7 @@ export default function DashboardPage() {
                                           ? 'text-green-600'
                                           : direction === 'down'
                                           ? 'text-red-600'
-                                          : 'text-gray-400'
+                                          : 'text-gray-900'
                                       }
                                     >
                                       {direction === 'up'
@@ -1350,7 +1350,7 @@ export default function DashboardPage() {
                                       </LineChart>
                                     </ResponsiveContainer>
                                   ) : (
-                                    <div className="h-[52px] flex items-center justify-center text-xs text-gray-300">
+                                    <div className="h-[52px] flex items-center justify-center text-xs text-gray-900">
                                       Single period
                                     </div>
                                   )}
@@ -1496,7 +1496,7 @@ export default function DashboardPage() {
               </p>
             )}
             {tooltip.comment && (
-              <p className="mt-1 text-gray-300 whitespace-normal" data-testid="comment">
+              <p className="mt-1 text-gray-900 whitespace-normal" data-testid="comment">
                 {tooltip.comment}
               </p>
             )}

@@ -304,10 +304,10 @@ export default function MemberHomePage() {
                     <p className="text-lg font-semibold text-gray-900">
                       {new Date(latestSurvey.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                     </p>
-                    <p className="text-xs text-gray-400 mt-0.5">{latestSurvey.assessmentPeriod}</p>
+                    <p className="text-xs text-gray-900 mt-0.5">{latestSurvey.assessmentPeriod}</p>
                   </>
                 ) : (
-                  <p className="text-lg font-semibold text-gray-400">No surveys yet</p>
+                  <p className="text-lg font-semibold text-gray-900">No surveys yet</p>
                 )}
               </div>
             </div>
@@ -326,14 +326,14 @@ export default function MemberHomePage() {
                         <p className={`text-lg font-semibold ${isOverdue ? 'text-red-600' : 'text-gray-900'}`}>
                           {nextDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                         </p>
-                        <p className={`text-xs mt-0.5 ${isOverdue ? 'text-red-400' : 'text-gray-400'}`}>
+                        <p className={`text-xs mt-0.5 ${isOverdue ? 'text-red-400' : 'text-gray-900'}`}>
                           {formatRelativeDate(nextDate)} · {team.cadence.charAt(0).toUpperCase() + team.cadence.slice(1)} cadence
                         </p>
                       </>
                     );
                   })()
                 ) : (
-                  <p className="text-lg font-semibold text-gray-400">
+                  <p className="text-lg font-semibold text-gray-900">
                     {team ? 'Complete your first survey' : 'Loading...'}
                   </p>
                 )}

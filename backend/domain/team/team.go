@@ -45,6 +45,28 @@ type Member struct {
 	Role   string `json:"role,omitempty"` // lead, member
 }
 
+// SurveyCompletionRow is a lightweight per-team projection for the admin
+// survey-completion dashboard (member count, hierarchy owners, and the
+// opt-in flag). Kept separate from Team, rather than adding fields to it,
+// because it depends on a column (health_check_enabled) that is not present
+// on every database yet — see FindSurveyCompletionTeams.
+//
+// ChainDirectorID and ManagerID are this team's own Level-2/Level-3
+// supervisors as recorded in team_supervisors — a team may have either,
+// both, or neither. TeamLead* is the Level-4 escalation target used when a
+// team has neither.
+type SurveyCompletionRow struct {
+	ID                 string
+	Name               string
+	ChainDirectorID    string
+	ManagerID          string
+	TeamLeadID         string
+	TeamLeadName       string
+	TeamLeadEmail      string
+	MemberCount        int
+	HealthCheckEnabled bool
+}
+
 // Repository defines the interface for team data access
 type Repository interface {
 	FindByID(ctx context.Context, id string) (*Team, error)
@@ -63,4 +85,9 @@ type Repository interface {
 	FindTeamMembers(ctx context.Context, teamID string) ([]TeamMember, error)
 	CountTeamMembers(ctx context.Context, teamID string) (int, error)
 	FindAllWithDetails(ctx context.Context) ([]Team, error)
+	// FindSurveyCompletionTeams returns the admin survey-completion projection
+	// for every team. Requires the health_check_enabled column on teams —
+	// only this method selects it, so every other team query keeps working
+	// unchanged against databases that haven't added it yet.
+	FindSurveyCompletionTeams(ctx context.Context) ([]SurveyCompletionRow, error)
 }

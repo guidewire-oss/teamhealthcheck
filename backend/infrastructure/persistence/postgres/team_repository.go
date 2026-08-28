@@ -171,6 +171,87 @@ func (r *TeamRepository) FindBySupervisorID(ctx context.Context, supervisorID st
 	return r.scanTeams(ctx, rows)
 }
 
+// FindSurveyCompletionTeams returns a lightweight per-team projection for the
+// admin survey-completion dashboard: member count, this team's own Level-2
+// (director) and Level-3 (manager) supervisors, the Level-4 team lead, and
+// the health_check_enabled column.
+//
+// The director/manager lookups are filtered by hierarchy_levels.position (2
+// and 3 respectively — see 000009_create_hierarchy_levels.up.sql) rather than
+// a hardcoded level id, so a team may resolve either, both, or neither; the
+// caller (GetSurveyCompletionOverviewHandler) falls back to the manager's
+// reports_to chain when a team has a manager but no director of its own.
+//
+// health_check_enabled is only present on databases that have applied the
+// survey-completion schema addition (currently teams360_dummy — see
+// claude-progress.md for the exact ALTER TABLE statement). No other method
+// on this repository selects it, so FindAll/FindByID/etc. keep working
+// unchanged against databases that haven't added the column yet.
+func (r *TeamRepository) FindSurveyCompletionTeams(ctx context.Context) ([]team.SurveyCompletionRow, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			t.id,
+			t.name,
+			t.health_check_enabled,
+			COALESCE(m.member_count, 0) AS member_count,
+			COALESCE(d.user_id, '') AS director_id,
+			COALESCE(mgr.user_id, '') AS manager_id,
+			COALESCE(t.team_lead_id, '') AS team_lead_id,
+			COALESCE(tl.full_name, '') AS team_lead_name,
+			COALESCE(tl.email, '') AS team_lead_email
+		FROM teams t
+		LEFT JOIN (
+			SELECT team_id, COUNT(*) AS member_count
+			FROM team_members
+			GROUP BY team_id
+		) m ON m.team_id = t.id
+		LEFT JOIN LATERAL (
+			SELECT ts.user_id
+			FROM team_supervisors ts
+			JOIN hierarchy_levels hl ON hl.id = ts.hierarchy_level_id
+			WHERE ts.team_id = t.id AND hl.position = 2
+			LIMIT 1
+		) d ON true
+		LEFT JOIN LATERAL (
+			SELECT ts.user_id
+			FROM team_supervisors ts
+			JOIN hierarchy_levels hl ON hl.id = ts.hierarchy_level_id
+			WHERE ts.team_id = t.id AND hl.position = 3
+			LIMIT 1
+		) mgr ON true
+		LEFT JOIN users tl ON tl.id = t.team_lead_id
+		ORDER BY t.name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query survey completion teams: %w", err)
+	}
+	defer rows.Close()
+
+	var result []team.SurveyCompletionRow
+	for rows.Next() {
+		var row team.SurveyCompletionRow
+		if err := rows.Scan(
+			&row.ID,
+			&row.Name,
+			&row.HealthCheckEnabled,
+			&row.MemberCount,
+			&row.ChainDirectorID,
+			&row.ManagerID,
+			&row.TeamLeadID,
+			&row.TeamLeadName,
+			&row.TeamLeadEmail,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan survey completion team: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return result, nil
+}
+
 // FindMembers retrieves team members as domain Members
 func (r *TeamRepository) FindMembers(ctx context.Context, teamID string) ([]*team.Member, error) {
 	rows, err := r.db.QueryContext(ctx, `

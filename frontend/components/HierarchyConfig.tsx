@@ -232,7 +232,7 @@ export default function HierarchyConfig() {
     const Icon = icons[permission] || Shield;
 
     return (
-      <div className="flex items-center gap-2 text-sm">
+      <div className="flex items-center gap-2 text-sm text-gray-900">
         <Icon className="w-4 h-4" />
         <span>{label}</span>
       </div>

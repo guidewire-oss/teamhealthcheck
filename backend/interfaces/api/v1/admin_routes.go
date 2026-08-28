@@ -2,6 +2,7 @@ package v1
 
 import (
 	"github.com/agopalakrishnan/teams360/backend/application/services"
+	"github.com/agopalakrishnan/teams360/backend/domain/healthcheck"
 	"github.com/agopalakrishnan/teams360/backend/domain/organization"
 	"github.com/agopalakrishnan/teams360/backend/domain/team"
 	"github.com/agopalakrishnan/teams360/backend/domain/user"
@@ -11,8 +12,8 @@ import (
 
 // SetupAdminRoutes configures admin routes with repository dependency injection
 // All admin routes require JWT authentication and admin privileges (level-1)
-func SetupAdminRoutes(router *gin.Engine, orgRepo organization.Repository, userRepo user.Repository, teamRepo team.Repository, jwtService *services.JWTService) {
-	handler := NewAdminHandler(orgRepo, userRepo, teamRepo)
+func SetupAdminRoutes(router *gin.Engine, orgRepo organization.Repository, userRepo user.Repository, teamRepo team.Repository, healthCheckRepo healthcheck.Repository, jwtService *services.JWTService) {
+	handler := NewAdminHandler(orgRepo, userRepo, teamRepo, healthCheckRepo)
 
 	admin := router.Group("/api/v1/admin")
 	// Apply JWT authentication and admin-only authorization to all admin routes
@@ -73,5 +74,8 @@ func SetupAdminRoutes(router *gin.Engine, orgRepo organization.Repository, userR
 			settings.GET("/retention", handler.GetRetentionPolicy)
 			settings.PUT("/retention", handler.UpdateRetentionPolicy)
 		}
+
+		// Survey completion dashboard (org-wide, all teams grouped by leader)
+		admin.GET("/survey-completion", handler.GetSurveyCompletion)
 	}
 }

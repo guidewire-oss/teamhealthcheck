@@ -75,9 +75,10 @@ var _ = Describe("Admin API", func() {
 		orgRepo := postgres.NewOrganizationRepository(db)
 		userRepo := postgres.NewUserRepository(db)
 		teamRepo := postgres.NewTeamRepository(db)
+		healthCheckRepo := postgres.NewHealthCheckRepository(db)
 
 		router = gin.New()
-		v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, jwtService)
+		v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, healthCheckRepo, jwtService)
 	})
 
 	AfterEach(func() {

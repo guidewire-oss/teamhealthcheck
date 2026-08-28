@@ -126,7 +126,7 @@ export default function TeamMembersModal({
                 Current Members ({members.length})
               </h3>
               {members.length === 0 ? (
-                <p className="text-sm text-gray-400 italic py-2" data-testid="no-members-msg">
+                <p className="text-sm text-gray-900 italic py-2" data-testid="no-members-msg">
                   No members in this team yet.
                 </p>
               ) : (
@@ -178,7 +178,7 @@ export default function TeamMembersModal({
               </div>
               <div className="max-h-48 overflow-y-auto space-y-1">
                 {availableUsers.length === 0 ? (
-                  <p className="text-sm text-gray-400 italic py-2">
+                  <p className="text-sm text-gray-900 italic py-2">
                     {searchQuery ? 'No matching users found.' : 'All users are already members.'}
                   </p>
                 ) : (

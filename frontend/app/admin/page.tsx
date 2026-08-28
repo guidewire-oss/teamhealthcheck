@@ -41,17 +41,19 @@ import {
   Building2,
   AlertCircle,
   GitBranch,
+  BarChart3,
 } from "lucide-react";
 import HierarchyConfig from "@/components/HierarchyConfig";
 import DimensionConfig from "@/components/DimensionConfig";
 import SupervisorChainModal from "@/components/SupervisorChainModal";
 import TeamMembersModal from "@/components/TeamMembersModal";
+import SurveyCompletionDashboard from "@/components/SurveyCompletionDashboard";
 
 export default function AdminPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<
-    "hierarchy" | "teams" | "users" | "settings"
+    "hierarchy" | "teams" | "surveyCompletion" | "users" | "settings"
   >("hierarchy");
 
   // Teams tab state
@@ -650,6 +652,20 @@ export default function AdminPage() {
             </div>
           </button>
           <button
+            data-testid="survey-completion-tab"
+            onClick={() => setActiveTab("surveyCompletion")}
+            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+              activeTab === "surveyCompletion"
+                ? "text-indigo-600 border-indigo-600"
+                : "text-gray-500 border-transparent hover:text-gray-700"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <BarChart3 className="w-5 h-5" />
+              Survey completion
+            </div>
+          </button>
+          <button
             data-testid="users-tab"
             onClick={() => setActiveTab("users")}
             className={`px-6 py-3 font-medium transition-colors border-b-2 ${
@@ -1005,6 +1021,8 @@ export default function AdminPage() {
             )}
           </div>
         )}
+
+        {activeTab === "surveyCompletion" && <SurveyCompletionDashboard />}
 
         {activeTab === "users" && (
           <div>
@@ -1709,7 +1727,7 @@ export default function AdminPage() {
                       </thead>
                       <tbody className="divide-y">
                         {teams.length === 0 ? (
-                          <tr><td colSpan={2} className="px-4 py-3 text-gray-400 text-center">No teams configured</td></tr>
+                          <tr><td colSpan={2} className="px-4 py-3 text-gray-900 text-center">No teams configured</td></tr>
                         ) : teams.map((t) => (
                           <tr key={t.id}>
                             <td className="px-4 py-2 font-medium text-gray-900">{t.name}</td>
@@ -1717,7 +1735,7 @@ export default function AdminPage() {
                               {t.distributionListEmail ? (
                                 <span className="text-gray-700">{t.distributionListEmail}</span>
                               ) : (
-                                <span className="text-gray-400">Not set</span>
+                                <span className="text-gray-900">Not set</span>
                               )}
                             </td>
                           </tr>
