@@ -1,7 +1,38 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
+function handleDocsRequest(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  
+  if (/^\/docs\/INDEX\/?$/.test(pathname)) {
+    return NextResponse.redirect(new URL('/docs/', request.url), 308);
+  }
+
+  // MkDocs pages use relative asset links (e.g. "assets/main.css"), so a
+  // page must be served from its real trailing-slash directory URL or the
+  // browser resolves assets against the wrong base and the page renders
+  // unstyled. Static assets (css/js/xml/png/...) always have an extension
+  // and are left alone; clean directory URLs get a trailing slash and are
+  // then rewritten to the directory's index.html.
+  const hasExtension = /\.[^/]+$/.test(pathname);
+  if (hasExtension) {
+    return NextResponse.next();
+  }
+
+  if (!pathname.endsWith('/')) {
+    return NextResponse.redirect(new URL(pathname + '/', request.url), 308);
+  }
+
+  return NextResponse.rewrite(new URL(pathname + 'index.html', request.url));
+}
+
 export function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  if (pathname === '/docs' || pathname.startsWith('/docs/')) {
+    return handleDocsRequest(request);
+  }
+
   const userCookie = request.cookies.get('user');
   const isLoginPage = request.nextUrl.pathname === '/login';
   const isPublicPath = request.nextUrl.pathname === '/' || isLoginPage;

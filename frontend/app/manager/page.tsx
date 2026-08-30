@@ -11,6 +11,7 @@ import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, LineChar
 import OnboardingModal from '@/components/OnboardingModal';
 import { listManagerTeamsActionSummary, TeamActionSummary } from '@/lib/api/action-items';
 import * as XLSX from 'xlsx';
+import DocsLink from '@/components/DocsLink';
 
 // Types matching backend API response
 interface DimensionSummary {
@@ -464,6 +465,7 @@ export default function ManagerPage() {
                 </button>
               )}
 
+              <DocsLink />
               <button
                 onClick={handleLogout}
                 className="flex items-center gap-2 px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors"
