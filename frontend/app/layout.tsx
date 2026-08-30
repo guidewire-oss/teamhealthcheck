@@ -7,7 +7,7 @@ import AuthGuard from "@/components/AuthGuard";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Team360 Health Check",
+  title: "Team Health Check",
   description: "Squad Health Check Model - Track and improve your team&apos;s health",
 };
 

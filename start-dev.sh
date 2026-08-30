@@ -1,7 +1,7 @@
 #!/bin/bash
 # Script to start development server on host machine with SSL bypass
 
-echo "Starting Team360 Health Check Application..."
+echo "Starting Team Health Check Application..."
 echo "----------------------------------------"
 
 # Set environment variable to bypass SSL certificate check

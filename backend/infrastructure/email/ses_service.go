@@ -111,10 +111,10 @@ func (s *SESEmailService) SendHTML(ctx context.Context, to, subject, htmlBody st
 
 // SendPasswordResetEmail sends a password reset email via SES.
 func (s *SESEmailService) SendPasswordResetEmail(ctx context.Context, emailAddr, resetToken string) error {
-	subject := "Teams360 - Password Reset"
+	subject := "Team Health Check - Password Reset"
 	body := fmt.Sprintf(`<html><body>
 <h2>Password Reset Request</h2>
-<p>You requested a password reset for your Teams360 account.</p>
+<p>You requested a password reset for your Team Health Check account.</p>
 <p>Your reset token is: <strong>%s</strong></p>
 <p>This token will expire in 1 hour.</p>
 <p>If you did not request this, please ignore this email.</p>

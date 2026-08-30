@@ -23,9 +23,12 @@ func NewOrganizationRepository(db *sql.DB) organization.Repository {
 func (r *OrganizationRepository) Get(ctx context.Context) (*organization.OrganizationConfig, error) {
 	var config organization.OrganizationConfig
 
-	// For now, construct config from hierarchy_levels
+	// Construct config from hierarchy_levels and app_settings
 	config.ID = "default"
-	config.CompanyName = "Team360"
+	config.CompanyName = "My Company"
+	if settings, err := r.GetAppSettings(ctx); err == nil && settings.CompanyName != "" {
+		config.CompanyName = settings.CompanyName
+	}
 	config.TeamMemberLevelID = "level-5" // Default team member level
 
 	// Fetch hierarchy levels

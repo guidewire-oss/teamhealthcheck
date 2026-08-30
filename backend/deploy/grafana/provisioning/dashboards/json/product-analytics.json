@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "Team360 Product Analytics Dashboard - Track user engagement, survey metrics, and team health",
+  "description": "Team Health Check Product Analytics Dashboard - Track user engagement, survey metrics, and team health",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -431,7 +431,7 @@
   "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
   "timezone": "",
-  "title": "Team360 Product Analytics",
+  "title": "Team Health Check Product Analytics",
   "uid": "team360-product-analytics",
   "version": 1,
   "weekStart": ""

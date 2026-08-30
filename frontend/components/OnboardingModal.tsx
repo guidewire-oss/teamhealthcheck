@@ -10,11 +10,11 @@ interface OnboardingModalProps {
 
 const SLIDES = [
   {
-    title: 'Welcome to Teams360',
+    title: 'Welcome to Team Health Check',
     content: (
       <div className="space-y-3 text-sm text-gray-600">
         <p>
-          Teams360 is a safe space for your team to reflect on how you are working together.
+          Team Health Check is a safe space for your team to reflect on how you are working together.
           It is based on the{' '}
           <span className="font-medium text-gray-800">Spotify Squad Health Check Model</span>.
         </p>

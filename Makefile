@@ -1,4 +1,4 @@
-# Root Makefile for Team360 Monorepo
+# Root Makefile for Team Health Check Monorepo
 # Orchestrates both Frontend (Next.js/TypeScript) and Backend (Go/Gin)
 #
 # Quick Start: make run
@@ -50,7 +50,7 @@ FRONTEND_PID := $(PID_DIR)/frontend.pid
 # =============================================================================
 
 help: ## Show this help message
-	@echo "$(BOLD)Team360 - Squad Health Check Application$(RESET)"
+	@echo "$(BOLD)Team Health Check - Squad Health Check Application$(RESET)"
 	@echo "Full-stack application with Go backend and Next.js frontend"
 	@echo ""
 	@echo "$(BOLD)$(CYAN)Quick Start:$(RESET) make run"
@@ -122,7 +122,7 @@ _start-backend:
 
 _print-banner:
 	@echo ""
-	@echo "$(BOLD)$(CYAN)Starting Team360...$(RESET)"
+	@echo "$(BOLD)$(CYAN)Starting Team Health Check...$(RESET)"
 	@echo ""
 	@echo "  $(CYAN)Frontend:$(RESET) http://localhost:3000"
 	@echo "  $(CYAN)Backend:$(RESET)  http://localhost:8080"
@@ -394,7 +394,7 @@ docker-run: docker-build ## Run in Docker containers
 # =============================================================================
 
 status: ## Show project status
-	@echo "$(BOLD)$(CYAN)Team360 Project Status$(RESET)"
+	@echo "$(BOLD)$(CYAN)Team Health Check Project Status$(RESET)"
 	@echo ""
 	@echo "$(CYAN)Frontend (Next.js 15 + TypeScript):$(RESET)"
 	@echo "  Location: ./frontend"
@@ -464,7 +464,7 @@ otel-logs: ## View OTel collector logs
 
 run-with-otel: _ensure-deps _ensure-db _kill-servers _ensure-otel ## Run full app with telemetry enabled
 	@echo ""
-	@echo "$(BOLD)$(CYAN)Starting Team360 with OpenTelemetry...$(RESET)"
+	@echo "$(BOLD)$(CYAN)Starting Team Health Check with OpenTelemetry...$(RESET)"
 	@echo ""
 	@echo "  $(CYAN)Frontend:$(RESET)   http://localhost:3000"
 	@echo "  $(CYAN)Backend:$(RESET)    http://localhost:8080"

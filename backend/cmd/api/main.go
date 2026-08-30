@@ -302,7 +302,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.WithField("port", port).Info("starting Team360 API server")
+		log.WithField("port", port).Info("starting Team Health Check API server")
 		if err := router.Run(":" + port); err != nil {
 			log.WithError(err).Fatal("failed to start server")
 		}

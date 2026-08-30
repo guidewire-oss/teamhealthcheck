@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "🔧 Team360 Health Check - Mac ARM64 Fix Script"
+echo "🔧 Team Health Check - Mac ARM64 Fix Script"
 echo "=============================================="
 
 # Check if we're on macOS
