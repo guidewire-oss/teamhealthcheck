@@ -1,5 +1,6 @@
 site_name: Team Health Check Documentation
 site_description: Team health check application based on Spotify's Squad Health Check Model
+site_url: https://guidewire-oss.github.io/teams360/
 repo_url: https://github.com/guidewire-oss/teams360
 edit_uri: edit/main/docs/
 
