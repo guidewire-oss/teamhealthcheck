@@ -48,6 +48,13 @@ func TestNewClient_RejectsNonHTTPBaseURL(t *testing.T) {
 	}
 }
 
+func TestNewClient_RejectsHostlessBaseURL(t *testing.T) {
+	_, err := NewClient(&Config{BaseURL: "https:///provider", APIToken: "secret-token"})
+	if err == nil {
+		t.Fatal("expected an error for a hostless base URL, got nil")
+	}
+}
+
 func TestClient_Do_SendsAPITokenHeader(t *testing.T) {
 	var receivedHeader, receivedPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -45,7 +45,7 @@ func NewClient(config *Config) (*Client, error) {
 		return nil, fmt.Errorf("dataprovider: invalid base URL %q: %w", config.BaseURL, err)
 	}
 
-	if !baseURL.IsAbs() || (baseURL.Scheme != "http" && baseURL.Scheme != "https") {
+	if !baseURL.IsAbs() || (baseURL.Scheme != "http" && baseURL.Scheme != "https") || baseURL.Hostname() == "" {
 		return nil, fmt.Errorf("dataprovider: base URL %q must be an absolute http(s) URL", config.BaseURL)
 	}
 
