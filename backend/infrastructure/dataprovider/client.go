@@ -18,6 +18,9 @@ const (
 // ErrNilConfig is returned by NewClient when no configuration is supplied.
 var ErrNilConfig = errors.New("dataprovider: config must not be nil")
 
+// ErrEmptyAPIToken is returned by NewClient when the config's APIToken is empty.
+var ErrEmptyAPIToken = errors.New("dataprovider: APIToken must not be empty")
+
 // Client makes HTTP requests to the data provider API, authenticating every
 // outbound request with the x-api-token header.
 type Client struct {
@@ -33,9 +36,17 @@ func NewClient(config *Config) (*Client, error) {
 		return nil, ErrNilConfig
 	}
 
+	if config.APIToken == "" {
+		return nil, ErrEmptyAPIToken
+	}
+
 	baseURL, err := url.Parse(config.BaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("dataprovider: invalid base URL %q: %w", config.BaseURL, err)
+	}
+
+	if !baseURL.IsAbs() || (baseURL.Scheme != "http" && baseURL.Scheme != "https") {
+		return nil, fmt.Errorf("dataprovider: base URL %q must be an absolute http(s) URL", config.BaseURL)
 	}
 
 	return &Client{

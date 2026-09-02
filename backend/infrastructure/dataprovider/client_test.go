@@ -24,6 +24,30 @@ func TestNewClient_RejectsInvalidBaseURL(t *testing.T) {
 	}
 }
 
+func TestNewClient_RejectsEmptyAPIToken(t *testing.T) {
+	client, err := NewClient(&Config{BaseURL: "https://provider.example.com", APIToken: ""})
+	if err != ErrEmptyAPIToken {
+		t.Fatalf("err = %v, want %v", err, ErrEmptyAPIToken)
+	}
+	if client != nil {
+		t.Fatalf("expected nil client, got %+v", client)
+	}
+}
+
+func TestNewClient_RejectsRelativeBaseURL(t *testing.T) {
+	_, err := NewClient(&Config{BaseURL: "/pods", APIToken: "secret-token"})
+	if err == nil {
+		t.Fatal("expected an error for a relative base URL, got nil")
+	}
+}
+
+func TestNewClient_RejectsNonHTTPBaseURL(t *testing.T) {
+	_, err := NewClient(&Config{BaseURL: "ftp://provider.example.com", APIToken: "secret-token"})
+	if err == nil {
+		t.Fatal("expected an error for a non-http(s) base URL, got nil")
+	}
+}
+
 func TestClient_Do_SendsAPITokenHeader(t *testing.T) {
 	var receivedHeader, receivedPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

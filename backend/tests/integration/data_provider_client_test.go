@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,8 +19,10 @@ var _ = Describe("Data Provider Client", func() {
 		})
 
 		Context("when DATA_PROVIDER_BASE_URL is not set", func() {
-			It("returns nil", func() {
-				Expect(dataprovider.LoadConfig()).To(BeNil())
+			It("returns nil with no error", func() {
+				config, err := dataprovider.LoadConfig()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config).To(BeNil())
 			})
 		})
 
@@ -35,7 +38,8 @@ var _ = Describe("Data Provider Client", func() {
 			})
 
 			It("returns a config populated from the environment", func() {
-				config := dataprovider.LoadConfig()
+				config, err := dataprovider.LoadConfig()
+				Expect(err).NotTo(HaveOccurred())
 				Expect(config).NotTo(BeNil())
 				Expect(config.BaseURL).To(Equal("https://provider.example.com"))
 				Expect(config.APIToken).To(Equal("secret-token"))
@@ -51,10 +55,10 @@ var _ = Describe("Data Provider Client", func() {
 				os.Unsetenv("DATA_PROVIDER_BASE_URL")
 			})
 
-			It("returns a config with an empty token", func() {
-				config := dataprovider.LoadConfig()
-				Expect(config).NotTo(BeNil())
-				Expect(config.APIToken).To(BeEmpty())
+			It("returns an error because the configuration is incomplete", func() {
+				config, err := dataprovider.LoadConfig()
+				Expect(err).To(MatchError(dataprovider.ErrMissingAPIToken))
+				Expect(config).To(BeNil())
 			})
 		})
 	})
@@ -79,12 +83,13 @@ var _ = Describe("Data Provider Client", func() {
 		})
 
 		It("sends the configured token in the x-api-token header", func() {
-			client := dataprovider.NewClient(&dataprovider.Config{
+			client, err := dataprovider.NewClient(&dataprovider.Config{
 				BaseURL:  server.URL,
 				APIToken: "secret-token",
 			})
+			Expect(err).NotTo(HaveOccurred())
 
-			resp, err := client.Do(http.MethodGet, "/pods", nil)
+			resp, err := client.Do(context.Background(), http.MethodGet, "/pods", nil)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -94,16 +99,52 @@ var _ = Describe("Data Provider Client", func() {
 		})
 
 		It("joins the base URL and path correctly regardless of slashes", func() {
-			client := dataprovider.NewClient(&dataprovider.Config{
+			client, err := dataprovider.NewClient(&dataprovider.Config{
 				BaseURL:  server.URL + "/",
 				APIToken: "secret-token",
 			})
+			Expect(err).NotTo(HaveOccurred())
 
-			resp, err := client.Do(http.MethodGet, "/pods", nil)
+			resp, err := client.Do(context.Background(), http.MethodGet, "/pods", nil)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
 			Expect(receivedPath).To(Equal("/pods"))
+		})
+	})
+
+	Describe("NewClient validation", func() {
+		It("rejects a nil config", func() {
+			client, err := dataprovider.NewClient(nil)
+			Expect(err).To(MatchError(dataprovider.ErrNilConfig))
+			Expect(client).To(BeNil())
+		})
+
+		It("rejects an empty API token", func() {
+			client, err := dataprovider.NewClient(&dataprovider.Config{
+				BaseURL:  "https://provider.example.com",
+				APIToken: "",
+			})
+			Expect(err).To(MatchError(dataprovider.ErrEmptyAPIToken))
+			Expect(client).To(BeNil())
+		})
+
+		It("rejects a relative base URL", func() {
+			client, err := dataprovider.NewClient(&dataprovider.Config{
+				BaseURL:  "/pods",
+				APIToken: "secret-token",
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(client).To(BeNil())
+		})
+
+		It("rejects a non-http(s) base URL", func() {
+			client, err := dataprovider.NewClient(&dataprovider.Config{
+				BaseURL:  "ftp://provider.example.com",
+				APIToken: "secret-token",
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(client).To(BeNil())
 		})
 	})
 })
