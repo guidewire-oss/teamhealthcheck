@@ -1,4 +1,4 @@
-# Team360 Health Check
+# Team Health Check
 
 [![CI](https://github.com/guidewire-oss/teams360/actions/workflows/ci.yml/badge.svg)](https://github.com/guidewire-oss/teams360/actions/workflows/ci.yml)
 [![Security](https://github.com/guidewire-oss/teams360/actions/workflows/security.yml/badge.svg)](https://github.com/guidewire-oss/teams360/actions/workflows/security.yml)
@@ -9,9 +9,9 @@
 
 An open-source team health assessment platform inspired by [Spotify's Squad Health Check Model](https://engineering.atspotify.com/2014/09/squad-health-check-model/), designed to help organizations systematically improve team well-being and effectiveness.
 
-## What is Team360?
+## What is Team Health Check?
 
-Team360 enables teams to regularly assess their working environment across multiple dimensions (mission clarity, delivery speed, code health, fun, etc.) using a simple red/yellow/green scoring system. The platform aggregates these assessments to help managers and executives identify areas needing support and track improvements over time.
+Team Health Check enables teams to regularly assess their working environment across multiple dimensions (mission clarity, delivery speed, code health, fun, etc.) using a simple red/yellow/green scoring system. The platform aggregates these assessments to help managers and executives identify areas needing support and track improvements over time.
 
 ### Core Philosophy
 
@@ -53,10 +53,10 @@ Monitor your team's health with detailed breakdowns and individual response trac
 
 ### One-Command Setup
 
-The easiest way to run Team360 locally:
+The easiest way to run Team Health Check locally:
 
 ```bash
-git clone https://github.com/anthropics/teams360.git
+git clone https://github.com/guidewire-oss/teams360.git
 cd teams360
 make run
 ```
@@ -77,7 +77,7 @@ If you prefer manual control or don't have Docker:
 #### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/anthropics/teams360.git
+git clone https://github.com/guidewire-oss/teams360.git
 cd teams360
 ```
 
@@ -141,7 +141,7 @@ Use these demo credentials to explore different user roles:
 
 ### Step 1: Initial Setup (Admin)
 
-Before teams can start using Team360, an administrator needs to configure the organization structure. Log in as an admin (`admin/admin`) and navigate to the Admin Dashboard (`/admin`).
+Before teams can start using Team Health Check, an administrator needs to configure the organization structure. Log in as an admin (`admin/admin`) and navigate to the Admin Dashboard (`/admin`).
 
 #### Configure Hierarchy Levels
 
@@ -196,11 +196,16 @@ Create user accounts for everyone who will participate in health checks.
 
 ### Step 2: Establish Assessment Periods
 
-Team360 automatically determines assessment periods based on the calendar:
-- **January - June**: Surveys contribute to "Previous Year - 2nd Half" (reflecting on the period just ended)
-- **July - December**: Surveys contribute to "Current Year - 1st Half"
+Team Health Check automatically determines each survey's assessment period from the submission date and the team's configured cadence:
 
-This approach encourages reflection on completed work rather than in-progress activities.
+| Cadence | Format | Example |
+|---------|--------|---------|
+| Monthly | `YYYY Mon` | `2026 Mar` |
+| Quarterly | `YYYY Q#` | `2026 Q1` |
+| Half-yearly (default) | `YYYY H#` | `2026 H1` |
+| Yearly | `YYYY` | `2026` |
+
+Earlier versions used a fixed half-year format (`YYYY - 1st Half` for Jul–Dec of `YYYY`, `YYYY - 2nd Half` for Jan–Jun of `YYYY + 1`). That format is still parsed for backward compatibility with existing sessions, but is no longer generated for new ones — see [Domain Model](docs/architecture/domain-model.md#assessment-period-logic).
 
 ### Step 3: Conduct Health Check Sessions
 
@@ -340,7 +345,7 @@ teams360/
 
 ### Using Make Commands
 
-Team360 uses a comprehensive Makefile for common development tasks. See [docs/MAKEFILE.md](docs/MAKEFILE.md) for full documentation.
+Team Health Check uses a comprehensive Makefile for common development tasks. See [docs/development/makefile.md](docs/development/makefile.md) for full documentation.
 
 ```bash
 # Quick start - run the full application
@@ -385,7 +390,7 @@ ginkgo -r ./...           # Run Ginkgo tests
 
 ### Testing
 
-Team360 uses a comprehensive testing strategy:
+Team Health Check uses a comprehensive testing strategy:
 
 | Test Type | Command | Description |
 |-----------|---------|-------------|
@@ -493,16 +498,16 @@ OAUTH_REDIRECT_URI=http://localhost:3000/auth/callback
 
 ### Configuring SSO (OIDC / OAuth 2.0)
 
-Team360 supports single sign-on via any OIDC-compliant provider (Keycloak, Okta, Auth0, Google, Azure AD, etc.) using the **Authorization Code + PKCE** flow. Username/password login continues to work alongside SSO.
+Team Health Check supports single sign-on via any OIDC-compliant provider (Keycloak, Okta, Auth0, Google, Azure AD, etc.) using the **Authorization Code + PKCE** flow. Username/password login continues to work alongside SSO.
 
 #### How it works
 
-1. Register Team360 as a **Single Page Application (public client)** in your provider — no client secret is needed.
+1. Register Team Health Check as a **Single Page Application (public client)** in your provider — no client secret is needed.
 2. Add `http://localhost:3000/auth/callback` (or your production URL) as an allowed redirect URI.
 3. Set the environment variables listed above in both `frontend/.env.local` and `backend/.env`.
 4. Restart both servers. A **Sign in with SSO** button will appear on the login page.
 
-When a user signs in via SSO, Team360 extracts their `email` from the provider's ID token and looks up the matching user in the database. The user must already exist — Team360 does not auto-create accounts from SSO logins.
+When a user signs in via SSO, Team Health Check extracts their `email` from the provider's ID token and looks up the matching user in the database. The user must already exist — Team Health Check does not auto-create accounts from SSO logins.
 
 #### Provider setup quick reference
 

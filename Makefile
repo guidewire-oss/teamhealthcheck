@@ -1,8 +1,8 @@
-# Root Makefile for Team360 Monorepo
+# Root Makefile for Team Health Check Monorepo
 # Orchestrates both Frontend (Next.js/TypeScript) and Backend (Go/Gin)
 #
 # Quick Start: make run
-# Documentation: docs/MAKEFILE.md
+# Documentation: docs/development/makefile.md
 
 # =============================================================================
 # Configuration
@@ -40,6 +40,7 @@ FRONTEND_PID := $(PID_DIR)/frontend.pid
 .PHONY: clean clean-frontend clean-backend clean-all
 .PHONY: db-start db-stop db-setup db-reset db-test-setup
 .PHONY: docker-build docker-run
+.PHONY: docs-build
 .PHONY: status info
 .PHONY: all ci
 .PHONY: otel-start otel-stop otel-status otel-logs run-with-otel
@@ -50,7 +51,7 @@ FRONTEND_PID := $(PID_DIR)/frontend.pid
 # =============================================================================
 
 help: ## Show this help message
-	@echo "$(BOLD)Team360 - Squad Health Check Application$(RESET)"
+	@echo "$(BOLD)Team Health Check Application$(RESET)"
 	@echo "Full-stack application with Go backend and Next.js frontend"
 	@echo ""
 	@echo "$(BOLD)$(CYAN)Quick Start:$(RESET) make run"
@@ -66,7 +67,7 @@ help: ## Show this help message
 	@echo "$(CYAN)Backend Targets:$(RESET)"
 	@grep -E '^[a-zA-Z_-]+:.*?##.*\[Backend\]' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(CYAN)%-22s$(RESET) %s\n", $$1, $$2}'
 	@echo ""
-	@echo "$(CYAN)Documentation:$(RESET) See docs/MAKEFILE.md for detailed documentation"
+	@echo "$(CYAN)Documentation:$(RESET) See docs/development/makefile.md for detailed documentation"
 
 # =============================================================================
 # Installation
@@ -88,7 +89,7 @@ install-backend: ## [Backend] Install Go dependencies
 # Running the Application
 # =============================================================================
 
-run: _ensure-deps _ensure-db _kill-servers _print-banner ## Run the full application locally
+run: _ensure-deps _ensure-db _kill-servers docs-build _print-banner ## Run the full application locally
 	@$(MAKE) -j2 _start-frontend _start-backend
 
 run-frontend: _ensure-deps ## [Frontend] Run only the frontend
@@ -99,11 +100,25 @@ run-backend: _ensure-deps _ensure-db ## [Backend] Run only the backend
 	@echo "$(CYAN)Starting backend on http://localhost:8080...$(RESET)"
 	@cd backend && DATABASE_URL="$(DATABASE_URL)" go run cmd/api/main.go
 
-dev: _ensure-deps _ensure-db _kill-servers _print-banner ## Run with hot reload (requires 'air' for backend)
+dev: _ensure-deps _ensure-db _kill-servers docs-build _print-banner ## Run with hot reload (requires 'air' for backend)
 	@echo "$(BOLD)$(CYAN)Development mode with hot reload$(RESET)"
 	@echo "$(YELLOW)Tip:$(RESET) Install 'air' for backend hot reload: go install github.com/air-verse/air@latest"
 	@echo ""
 	@$(MAKE) -j2 _start-frontend dev-backend
+
+docs-build: ## [Docs] Build MkDocs site into frontend/public/docs (served at /docs)
+	@if command -v mkdocs >/dev/null 2>&1; then \
+		echo "$(CYAN)Building documentation site...$(RESET)"; \
+		mkdocs build -d frontend/public/docs -q; \
+	elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then \
+		echo "$(CYAN)Building documentation site (via Docker)...$(RESET)"; \
+		docker run --rm -v "$(CURDIR)":/docs squidfunk/mkdocs-material:latest build -d /docs/frontend/public/docs -q || \
+			echo "$(YELLOW)Documentation build failed; continuing without generated docs.$(RESET)"; \
+	elif command -v docker >/dev/null 2>&1; then \
+		echo "$(YELLOW)Docker is installed but the daemon isn't running; skipping docs build.$(RESET)"; \
+	else \
+		echo "$(YELLOW)Neither mkdocs nor docker found, skipping docs build.$(RESET)"; \
+	fi
 
 dev-backend: ## [Backend] Run with hot reload using 'air'
 	@cd backend && if command -v air >/dev/null 2>&1; then \
@@ -122,10 +137,11 @@ _start-backend:
 
 _print-banner:
 	@echo ""
-	@echo "$(BOLD)$(CYAN)Starting Team360...$(RESET)"
+	@echo "$(BOLD)$(CYAN)Starting Team Health Check...$(RESET)"
 	@echo ""
-	@echo "  $(CYAN)Frontend:$(RESET) http://localhost:3000"
-	@echo "  $(CYAN)Backend:$(RESET)  http://localhost:8080"
+	@echo "  $(CYAN)Frontend:$(RESET)      http://localhost:3000"
+	@echo "  $(CYAN)Backend:$(RESET)       http://localhost:8080"
+	@echo "  $(CYAN)Documentation:$(RESET) http://localhost:3000/docs/"
 	@echo ""
 	@echo "$(BOLD)Demo Credentials:$(RESET)"
 	@echo "  demo/demo      - Team Member"
@@ -229,7 +245,7 @@ db-test-setup: db-start ## Setup test database
 
 build: build-frontend build-backend ## Build both frontend and backend for production
 
-build-frontend: ## [Frontend] Build Next.js for production
+build-frontend: docs-build ## [Frontend] Build Next.js for production
 	@echo "$(CYAN)Building frontend...$(RESET)"
 	@cd frontend && npm run build
 	@echo "$(GREEN)Frontend build complete!$(RESET)"
@@ -394,7 +410,7 @@ docker-run: docker-build ## Run in Docker containers
 # =============================================================================
 
 status: ## Show project status
-	@echo "$(BOLD)$(CYAN)Team360 Project Status$(RESET)"
+	@echo "$(BOLD)$(CYAN)Team Health Check Project Status$(RESET)"
 	@echo ""
 	@echo "$(CYAN)Frontend (Next.js 15 + TypeScript):$(RESET)"
 	@echo "  Location: ./frontend"
@@ -464,7 +480,7 @@ otel-logs: ## View OTel collector logs
 
 run-with-otel: _ensure-deps _ensure-db _kill-servers _ensure-otel ## Run full app with telemetry enabled
 	@echo ""
-	@echo "$(BOLD)$(CYAN)Starting Team360 with OpenTelemetry...$(RESET)"
+	@echo "$(BOLD)$(CYAN)Starting Team Health Check with OpenTelemetry...$(RESET)"
 	@echo ""
 	@echo "  $(CYAN)Frontend:$(RESET)   http://localhost:3000"
 	@echo "  $(CYAN)Backend:$(RESET)    http://localhost:8080"

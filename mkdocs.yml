@@ -1,0 +1,78 @@
+site_name: Team Health Check Documentation
+site_description: Team health check application based on Spotify's Squad Health Check Model
+repo_url: https://github.com/guidewire-oss/teams360
+edit_uri: edit/main/docs/
+
+# dir/index.html output so pages resolve at clean URLs (e.g. /docs/api/ instead
+# of /docs/api.html). frontend/next.config.ts + middleware.ts resolve directory
+# requests to their index.html locally, and the Go static server in main.go
+# does the same in production.
+use_directory_urls: true
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.footer
+    - content.code.copy
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+
+nav:
+  - Home: index.md
+  - Overview: overview.md
+  - Getting Started:
+      - Local Setup: getting-started/local-setup.md
+      - Environment & Access: getting-started/environments.md
+      - Authentication & Authorization: getting-started/auth.md
+      - Onboarding Checklist: getting-started/onboarding.md
+  - Architecture:
+      - Architecture & Key Flows: architecture/overview.md
+      - Domain Model: architecture/domain-model.md
+      - Database Schema: architecture/db-schema.md
+  - API Reference:
+      - Endpoints: api/endpoints.md
+      - Team Dashboard API: api/team-dashboard-api.md
+  - Operations:
+      - CI/CD & Deployment: operations/deployment.md
+      - Docker: operations/docker.md
+      - GitHub Actions: operations/github-actions.md
+      - Observability: operations/observability.md
+  - Development:
+      - Makefile Reference: development/makefile.md
+      - Code Review Findings: development/code-review.md

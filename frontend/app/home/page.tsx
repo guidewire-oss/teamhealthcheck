@@ -7,7 +7,7 @@ import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { API_BASE_URL } from '@/lib/api/client';
 import { getOrgConfig, getHierarchyLevel } from '@/lib/org-config';
 // Assessment period import removed — period is team-specific, computed on survey page
-import { LogOut, Building2, ChevronDown, ClipboardList, TrendingUp, Calendar, Clock, CalendarClock } from 'lucide-react';
+import { LogOut, Building2, ChevronDown, ClipboardList, TrendingUp, Calendar, Clock, CalendarClock, BookOpen } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts';
 import { getTeamInfoCached, TeamInfo } from '@/lib/api/teams';
 import OnboardingModal from '@/components/OnboardingModal';
@@ -246,6 +246,15 @@ export default function MemberHomePage() {
                     <p className="text-sm font-medium text-gray-900">{user.fullName || user.username}</p>
                     <p className="text-xs text-gray-500">{getUserLevelName()}</p>
                   </div>
+                  <a
+                    href={process.env.NEXT_PUBLIC_DOCS_URL || '/docs/'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center space-x-2"
+                  >
+                    <BookOpen className="h-4 w-4" />
+                    <span>Docs</span>
+                  </a>
                   <button
                     data-testid="logout-button"
                     onClick={handleLogout}

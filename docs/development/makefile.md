@@ -1,6 +1,6 @@
 # Makefile Documentation
 
-This document describes all available Make targets for the Team360 project. The Makefile orchestrates both the frontend (Next.js/TypeScript) and backend (Go/Gin) services.
+This document describes all available Make targets for the Team Health Check project. The Makefile orchestrates both the frontend (Next.js/TypeScript) and backend (Go/Gin) services.
 
 ## Quick Reference
 
@@ -8,7 +8,7 @@ This document describes all available Make targets for the Team360 project. The 
 |---------|-------------|
 | `make run` | Start the full application (recommended) |
 | `make dev` | Start with hot reload for development |
-| `make test` | Run all backend tests |
+| `make test` | Run frontend, backend, and E2E tests |
 | `make test-e2e` | Run E2E acceptance tests |
 | `make build` | Build for production |
 | `make help` | Show all available commands |
@@ -19,7 +19,7 @@ This document describes all available Make targets for the Team360 project. The 
 
 ```bash
 # Clone and run - that's it!
-git clone https://github.com/anthropics/teams360.git
+git clone https://github.com/guidewire-oss/teams360.git
 cd teams360
 make run
 ```
@@ -29,8 +29,9 @@ The `make run` command automatically:
 2. Installs backend Go dependencies (if missing)
 3. Starts PostgreSQL via Docker (if available and not running)
 4. Kills any existing servers on ports 3000/8080
-5. Starts both frontend and backend servers concurrently
-6. Displays demo credentials for login
+5. Builds the documentation site when MkDocs or Docker is available
+6. Starts both frontend and backend servers concurrently
+7. Displays demo credentials for login
 
 ### Environment Variables
 
@@ -90,7 +91,7 @@ make run
 
 **Output:**
 ```
-Starting Team360...
+Starting Team Health Check...
 
   Frontend: http://localhost:3000
   Backend:  http://localhost:8080
@@ -212,17 +213,16 @@ Build only the backend Go binary.
 ### Testing
 
 #### `make test`
-Run all backend tests.
+Run frontend, backend, and E2E tests.
 
 ```bash
 make test
 ```
 
-**Uses:** Ginkgo test framework
-**Excludes:** E2E acceptance tests (for speed)
+Use `make test-unit` to run frontend and backend tests without E2E.
 
 #### `make test-backend`
-Same as `make test` - runs backend unit and integration tests.
+Run backend unit and integration tests.
 
 #### `make test-backend-verbose`
 Run backend tests with verbose output and race detection.
@@ -270,7 +270,7 @@ make test-e2e
 **Logs:** Available at `/tmp/team360/backend.log` and `/tmp/team360/frontend.log`
 
 #### `make test-frontend`
-Run frontend tests (placeholder - not yet configured).
+Run frontend unit tests with Vitest.
 
 ---
 
@@ -363,7 +363,7 @@ make status
 
 **Output example:**
 ```
-Team360 Project Status
+Team Health Check Project Status
 
 Frontend (Next.js 15 + TypeScript):
   Location: ./frontend

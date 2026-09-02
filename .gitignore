@@ -32,6 +32,9 @@ vendor/
 /build
 /dist
 
+# Generated docs site (built via `make docs-build`, served from frontend/public/docs)
+/frontend/public/docs/
+
 # Go build artifacts
 backend/bin/
 backend/tmp/
