@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 // The component talks to the backend only through these functions, so mocking
@@ -15,6 +15,12 @@ vi.mock('@/lib/api/admin', () => ({
 }));
 
 import DataProviderConfig from '../DataProviderConfig';
+import {
+  readSyncState,
+  writeSyncState,
+  setActiveSyncPromise,
+  SYNC_STALE_TIMEOUT_MS,
+} from '@/lib/admin-sync-state';
 
 const READY = {
   provider: 'data-provider',
@@ -53,10 +59,17 @@ const renderReady = async (settings = READY) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
+  // The active-sync handle is module-level (deliberately, so an SPA remount
+  // can reattach to the real in-flight request) -- reset it between tests so
+  // one spec's in-flight promise can't leak into the next.
+  setActiveSyncPromise(null);
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  localStorage.clear();
+  setActiveSyncPromise(null);
 });
 
 describe('DataProviderConfig — Sync Now button', () => {
@@ -216,5 +229,142 @@ describe('DataProviderConfig — Sync Now button', () => {
     const banner = screen.getByTestId('provider-not-configured');
     expect(banner).toHaveTextContent('DATA_PROVIDER_BASE_URL');
     expect(banner).toHaveTextContent('DATA_PROVIDER_API_TOKEN');
+  });
+});
+
+describe('DataProviderConfig — persisted sync state (reload, tab switch, navigation)', () => {
+  it('persists an in-progress record to localStorage before/at the same time the request starts', async () => {
+    const user = userEvent.setup();
+    let release: (v: unknown) => void = () => {};
+    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    await renderReady();
+
+    await user.click(screen.getByTestId('sync-now-btn'));
+
+    await waitFor(() => {
+      const state = readSyncState();
+      expect(state?.status).toBe('in_progress');
+    });
+
+    release(SYNC_RESULT);
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
+  });
+
+  it('clears the persisted state and re-enables the button on success', async () => {
+    const user = userEvent.setup();
+    sync.mockResolvedValue(SYNC_RESULT);
+    await renderReady();
+
+    await user.click(screen.getByTestId('sync-now-btn'));
+    await screen.findByTestId('sync-result');
+
+    expect(readSyncState()).toBeNull();
+    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
+  });
+
+  it('clears the persisted state and re-enables the button on failure', async () => {
+    const user = userEvent.setup();
+    sync.mockRejectedValue(new Error('Synchronization failed'));
+    await renderReady();
+
+    await user.click(screen.getByTestId('sync-now-btn'));
+    await screen.findByTestId('provider-error');
+
+    expect(readSyncState()).toBeNull();
+    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
+  });
+
+  it('restores a disabled, syncing button on remount (refresh) when a fresh in-progress state is persisted', async () => {
+    writeSyncState('in_progress', Date.now());
+    // No live promise survives a real reload, and the sync API must not be
+    // called again just because a valid in-progress record exists.
+    getSettings.mockResolvedValue(READY);
+
+    render(<DataProviderConfig />);
+    await screen.findByTestId('sync-now-btn');
+
+    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+    expect(screen.getByTestId('sync-now-btn')).toHaveTextContent('Syncing...');
+    expect(sync).not.toHaveBeenCalled();
+  });
+
+  it('discards a stale in-progress state on remount and re-enables the button without calling the API', async () => {
+    writeSyncState('in_progress', Date.now() - (SYNC_STALE_TIMEOUT_MS + 1000));
+    getSettings.mockResolvedValue(READY);
+
+    render(<DataProviderConfig />);
+    await screen.findByTestId('sync-now-btn');
+
+    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
+    expect(sync).not.toHaveBeenCalled();
+    expect(readSyncState()).toBeNull();
+  });
+
+  it('self-clears a valid-but-unresolved in-progress state once the stale timeout elapses', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    writeSyncState('in_progress', Date.now());
+    getSettings.mockResolvedValue(READY);
+
+    render(<DataProviderConfig />);
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SYNC_STALE_TIMEOUT_MS + 100);
+    });
+
+    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
+    expect(readSyncState()).toBeNull();
+  });
+
+  it('reattaches to the real in-flight request on an SPA remount (tab switch/navigation) instead of starting a duplicate', async () => {
+    const user = userEvent.setup();
+    let release: (v: unknown) => void = () => {};
+    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+
+    const { unmount } = render(<DataProviderConfig />);
+    getSettings.mockResolvedValue(READY);
+    await screen.findByTestId('sync-now-btn');
+    await user.click(screen.getByTestId('sync-now-btn'));
+    await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
+
+    // Simulate switching to the Hierarchy tab and back: the component
+    // unmounts while the request is still pending, then remounts.
+    unmount();
+    render(<DataProviderConfig />);
+    await screen.findByTestId('sync-now-btn');
+
+    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+    expect(sync).toHaveBeenCalledTimes(1); // still just the one original call
+
+    release(SYNC_RESULT);
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
+    expect(await screen.findByTestId('sync-result')).toBeInTheDocument();
+    expect(readSyncState()).toBeNull();
+  });
+
+  it('does not treat an unmount/remount as a failure while the original request is still pending', async () => {
+    let release: (v: unknown) => void = () => {};
+    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    getSettings.mockResolvedValue(READY);
+
+    const { unmount } = render(<DataProviderConfig />);
+    await screen.findByTestId('sync-now-btn');
+    await userEvent.setup().click(screen.getByTestId('sync-now-btn'));
+    await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
+
+    unmount();
+    render(<DataProviderConfig />);
+    await screen.findByTestId('sync-now-btn');
+
+    expect(screen.queryByTestId('provider-error')).not.toBeInTheDocument();
+
+    release(SYNC_RESULT);
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
+  });
+
+  it('leaves an idle, enabled button on mount when no sync is active (unchanged existing behavior)', async () => {
+    await renderReady();
+    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
+    expect(readSyncState()).toBeNull();
   });
 });

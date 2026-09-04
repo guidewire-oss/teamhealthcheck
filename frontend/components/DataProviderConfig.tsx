@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { AlertCircle, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
 import {
   getOrganizationProviderSettings,
@@ -9,6 +9,7 @@ import {
   OrganizationProviderSettings,
   OrganizationSyncResult,
 } from "@/lib/api/admin";
+import { readSyncState, writeSyncState, clearSyncState, isStale, SYNC_STALE_TIMEOUT_MS, getActiveSyncPromise, setActiveSyncPromise } from "@/lib/admin-sync-state";
 
 /**
  * Manual trigger for the external organization-data provider sync.
@@ -24,11 +25,81 @@ export default function DataProviderConfig() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [syncing, setSyncing] = useState(false);
+  // Initialized synchronously from localStorage so a remount (tab switch,
+  // navigation, or page reload) never paints an enabled button before the
+  // persisted in-progress state has a chance to disable it.
+  const [syncing, setSyncing] = useState(() => {
+    const persisted = readSyncState();
+    return !!persisted && persisted.status === "in_progress" && !isStale(persisted);
+  });
   const [syncResult, setSyncResult] = useState<OrganizationSyncResult | null>(null);
+  const staleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Shared by the original click and by a remount that reattached to the
+  // still-running request, so both paths clear state and update the UI
+  // identically regardless of which component instance observes completion.
+  const settleSync = (outcome: { ok: true; result: OrganizationSyncResult } | { ok: false; error: any }) => {
+    if (staleTimerRef.current) clearTimeout(staleTimerRef.current);
+    clearSyncState();
+    setActiveSyncPromise(null);
+    setSyncing(false);
+    if (outcome.ok) {
+      setSyncResult(outcome.result);
+      // The admin client caches users and teams for two minutes. Without this
+      // the screen would keep showing pre-sync counts.
+      clearAdminCache();
+    } else {
+      setError(outcome.error?.message || "Synchronization failed");
+    }
+  };
 
   useEffect(() => {
     loadSettings();
+
+    let cancelled = false;
+
+    const liveSync = getActiveSyncPromise();
+    if (liveSync) {
+      // SPA navigation/tab switch: the JS module graph survived, so the
+      // original request is still genuinely running. Reattach to it instead
+      // of guessing from a snapshot -- this is authoritative, not a timeout.
+      setSyncing(true);
+      liveSync.then(
+        (result) => {
+          if (cancelled) return;
+          settleSync({ ok: true, result: result as OrganizationSyncResult });
+        },
+        (err) => {
+          if (cancelled) return;
+          settleSync({ ok: false, error: err });
+        }
+      );
+    } else {
+      // No live promise in this session -- either nothing is running, or a
+      // hard reload destroyed the module graph along with the real request
+      // (which the backend also aborts server-side; see admin-sync-state.ts).
+      // Fall back to the persisted snapshot, bounded by a stale timeout so a
+      // reload that outlives the real sync never disables the button forever.
+      const persisted = readSyncState();
+      if (persisted && persisted.status === "in_progress") {
+        if (isStale(persisted)) {
+          clearSyncState();
+          setSyncing(false);
+        } else {
+          setSyncing(true);
+          const remaining = SYNC_STALE_TIMEOUT_MS - (Date.now() - persisted.startedAt);
+          staleTimerRef.current = setTimeout(() => {
+            clearSyncState();
+            setSyncing(false);
+          }, remaining);
+        }
+      }
+    }
+
+    return () => {
+      cancelled = true;
+      if (staleTimerRef.current) clearTimeout(staleTimerRef.current);
+    };
   }, []);
 
   const loadSettings = async () => {
@@ -48,19 +119,20 @@ export default function DataProviderConfig() {
     // which would answer the second call with a 409.
     if (syncing) return;
 
+    // Persisted before the request starts so a reload/navigation immediately
+    // after the click still finds an in-progress record to restore.
+    writeSyncState("in_progress");
     setSyncing(true);
     setError(null);
     setSyncResult(null);
+
+    const promise = syncOrganizationProvider();
+    setActiveSyncPromise(promise);
     try {
-      const result = await syncOrganizationProvider();
-      setSyncResult(result);
-      // The admin client caches users and teams for two minutes. Without this
-      // the screen would keep showing pre-sync counts.
-      clearAdminCache();
+      const result = await promise;
+      settleSync({ ok: true, result });
     } catch (err: any) {
-      setError(err.message || "Synchronization failed");
-    } finally {
-      setSyncing(false);
+      settleSync({ ok: false, error: err });
     }
   };
 
