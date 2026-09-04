@@ -70,6 +70,7 @@ nav:
       - Team Dashboard API: api/team-dashboard-api.md
   - Operations:
       - CI/CD & Deployment: operations/deployment.md
+      - Repository Rename Migration: operations/repository-rename.md
       - Docker: operations/docker.md
       - GitHub Actions: operations/github-actions.md
       - Observability: operations/observability.md
