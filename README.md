@@ -321,6 +321,8 @@ teams360/
 └── docs/                    # Documentation
 ```
 
+See the [Organization Snapshot Contract](docs/organization-snapshot-contract.md) for integrating an external organization-data provider.
+
 ### Technology Stack
 
 **Frontend:**
