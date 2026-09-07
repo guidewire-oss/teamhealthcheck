@@ -32,9 +32,9 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Override API to use local database
+  # Override the unified app service to use the local database
   # ---------------------------------------------------------------------------
-  api:
+  teams360:
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/teams360?sslmode=disable
     depends_on:
