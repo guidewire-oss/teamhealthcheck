@@ -48,11 +48,6 @@ EOF
 echo "✅ Created Babel fallback configuration"
 
 echo ""
-echo "🌍 Step 5: Setting environment variables..."
-echo "export NODE_TLS_REJECT_UNAUTHORIZED=0" >> ~/.zshrc
-echo "export NODE_TLS_REJECT_UNAUTHORIZED=0" >> ~/.bash_profile
-
-echo ""
 echo "✨ Setup complete! Try running:"
 echo "   npm run dev"
 echo ""
