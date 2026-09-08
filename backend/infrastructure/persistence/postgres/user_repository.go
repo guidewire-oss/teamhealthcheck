@@ -736,6 +736,42 @@ func (r *UserRepository) FindTeamIDsForUser(ctx context.Context, userID string) 
 	return r.fetchTeamIDs(ctx, userID)
 }
 
+// FindTeamIDsForUsers batch-loads team memberships for every given user in a
+// single query — the same "avoid N+1" pattern already used by
+// FindSubordinates, applied here for callers (like the admin users list)
+// that otherwise called FindTeamIDsForUser once per user. Users with no
+// memberships are simply absent from the returned map.
+func (r *UserRepository) FindTeamIDsForUsers(ctx context.Context, userIDs []string) (map[string][]string, error) {
+	result := make(map[string][]string, len(userIDs))
+	if len(userIDs) == 0 {
+		return result, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT user_id, team_id
+		FROM team_members
+		WHERE user_id = ANY($1)
+		ORDER BY user_id, team_id
+	`, pq.Array(userIDs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to batch-load team memberships: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var userID, teamID string
+		if err := rows.Scan(&userID, &teamID); err != nil {
+			return nil, fmt.Errorf("failed to scan team membership: %w", err)
+		}
+		result[userID] = append(result[userID], teamID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return result, nil
+}
+
 // FindTeamsWhereUserIsLead retrieves all team IDs where the user is a team lead
 func (r *UserRepository) FindTeamsWhereUserIsLead(ctx context.Context, userID string) ([]string, error) {
 	rows, err := r.db.QueryContext(ctx, `

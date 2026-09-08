@@ -100,7 +100,7 @@ function CallbackHandler() {
       <div className="bg-white rounded-xl shadow-lg p-8 max-w-sm w-full text-center">
         <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mx-auto mb-4" />
         <p className="text-gray-600 font-medium">Completing sign-in...</p>
-        <p className="text-sm text-gray-400 mt-1">Please wait while we verify your identity.</p>
+        <p className="text-sm text-gray-900 mt-1">Please wait while we verify your identity.</p>
       </div>
     </div>
   );

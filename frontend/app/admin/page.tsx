@@ -41,18 +41,20 @@ import {
   Building2,
   AlertCircle,
   GitBranch,
+  BarChart3,
 } from "lucide-react";
 import HierarchyConfig from "@/components/HierarchyConfig";
 import DimensionConfig from "@/components/DimensionConfig";
 import SupervisorChainModal from "@/components/SupervisorChainModal";
 import TeamMembersModal from "@/components/TeamMembersModal";
+import SurveyCompletionDashboard from "@/components/SurveyCompletionDashboard";
 import DocsLink from "@/components/DocsLink";
 
 export default function AdminPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<
-    "hierarchy" | "teams" | "users" | "settings"
+    "hierarchy" | "teams" | "surveyCompletion" | "users" | "settings"
   >("hierarchy");
 
   // Teams tab state
@@ -419,10 +421,8 @@ export default function AdminPage() {
   };
 
   // Get user's teams
-  const getUserTeams = (userId: string): string => {
-    const userTeams = adminTeams.filter((team) =>
-      users.find((u) => u.id === userId)?.teamIds.includes(team.id),
-    );
+  const getUserTeams = (teamIds: string[]): string => {
+    const userTeams = adminTeams.filter((team) => teamIds.includes(team.id));
 
     if (userTeams.length === 0) return "-";
     if (userTeams.length === 1) return userTeams[0].name;
@@ -622,11 +622,11 @@ export default function AdminPage() {
       </div>
 
       <div className="container mx-auto px-4 py-8">
-        <div className="flex gap-4 mb-8 border-b">
+        <div className="flex gap-4 mb-8 border-b overflow-x-auto" data-testid="admin-tab-bar">
           <button
             data-testid="hierarchy-tab"
             onClick={() => setActiveTab("hierarchy")}
-            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
               activeTab === "hierarchy"
                 ? "text-indigo-600 border-indigo-600"
                 : "text-gray-500 border-transparent hover:text-gray-700"
@@ -640,7 +640,7 @@ export default function AdminPage() {
           <button
             data-testid="teams-tab"
             onClick={() => setActiveTab("teams")}
-            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
               activeTab === "teams"
                 ? "text-indigo-600 border-indigo-600"
                 : "text-gray-500 border-transparent hover:text-gray-700"
@@ -652,9 +652,23 @@ export default function AdminPage() {
             </div>
           </button>
           <button
+            data-testid="survey-completion-tab"
+            onClick={() => setActiveTab("surveyCompletion")}
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
+              activeTab === "surveyCompletion"
+                ? "text-indigo-600 border-indigo-600"
+                : "text-gray-500 border-transparent hover:text-gray-700"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <BarChart3 className="w-5 h-5" />
+              Survey completion
+            </div>
+          </button>
+          <button
             data-testid="users-tab"
             onClick={() => setActiveTab("users")}
-            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
               activeTab === "users"
                 ? "text-indigo-600 border-indigo-600"
                 : "text-gray-500 border-transparent hover:text-gray-700"
@@ -668,7 +682,7 @@ export default function AdminPage() {
           <button
             data-testid="settings-tab"
             onClick={() => setActiveTab("settings")}
-            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
               activeTab === "settings"
                 ? "text-indigo-600 border-indigo-600"
                 : "text-gray-500 border-transparent hover:text-gray-700"
@@ -1007,6 +1021,8 @@ export default function AdminPage() {
             )}
           </div>
         )}
+
+        {activeTab === "surveyCompletion" && <SurveyCompletionDashboard />}
 
         {activeTab === "users" && (
           <div>
@@ -1529,7 +1545,7 @@ export default function AdminPage() {
                         </td>
                         <td className="px-6 py-4">
                           <div className="text-sm text-gray-500">
-                            {getUserTeams(userItem.id)}
+                            {getUserTeams(userItem.teamIds)}
                           </div>
                         </td>
                         <td className="px-6 py-4">
