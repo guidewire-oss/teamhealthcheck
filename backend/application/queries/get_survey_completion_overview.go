@@ -11,10 +11,15 @@ import (
 	"github.com/agopalakrishnan/teams360/backend/domain/user"
 )
 
-const (
-	directorLevelPosition = 2
-	managerLevelPosition  = 3
-)
+// leadershipFloorPosition is the shallowest hierarchy_levels.position that
+// ever participates in the survey-completion hierarchy tree — that tier
+// (Director-equivalent, whatever it happens to be named) and everything
+// below it (Manager, Senior Manager, ... however many tiers an organization
+// defines) can nest in the tree; anyone above it (VP, Admin) never becomes a
+// node. This is what makes a Level-2 leader with no Level-2 (or lower)
+// parent a root even when their own reports_to points at a VP, rather than
+// nesting the whole tree under that VP.
+const leadershipFloorPosition = 2
 
 // GetSurveyCompletionOverviewQuery represents the query to build the
 // admin survey-completion dashboard for one assessment period.
@@ -23,25 +28,23 @@ type GetSurveyCompletionOverviewQuery struct {
 }
 
 // SurveyCompletionTeam is one team's completion snapshot for the requested
-// assessment period, along with the hierarchy owners used to group it in the
-// admin dashboard.
+// assessment period, plus the id of the single PersonNode it nests directly
+// under. OwnerUserID is "" when the team has no resolvable owner (no
+// supervisor recorded, or that supervisor sits above leadershipFloorPosition)
+// — such a team lands in the "Other" catch-all.
 //
-// DirectorID/Name/Email is the "effective" director to nest this team's
-// manager under (see resolveEffectiveDirector) — empty when the team has no
-// manager or no resolvable director. ManagerID/Name/Email is empty when the
-// team has no Level-3 supervisor of its own. TeamLeadID/Name/Email is the
-// Level-4 team lead, always populated — the reminder-target tree shows the
-// team lead alongside whichever director/manager owns the pod, and escalates
-// to the team lead alone when both are empty.
+// Completed and Total are both scoped to the SAME eligible population —
+// Level 4 (Team Lead) + Level 5 (Team Member) members only, from
+// team.Repository.FindEligibleMemberIDs — never a raw/unfiltered member
+// count. Not Started, Opted Out, and Opted In are derived purely from these
+// two fields plus HealthCheckEnabled; Complete additionally requires
+// PostWorkshopCompleted (see deriveSurveyCompletionStatus) — Completed and
+// Total alone can never disagree with the Individual Survey Completed value
+// shown for this same team, since that value IS Completed/Total.
 type SurveyCompletionTeam struct {
 	TeamID                string
 	TeamName              string
-	DirectorID            string
-	DirectorName          string
-	DirectorEmail         string
-	ManagerID             string
-	ManagerName           string
-	ManagerEmail          string
+	OwnerUserID           string
 	TeamLeadID            string
 	TeamLeadName          string
 	TeamLeadEmail         string
@@ -49,6 +52,25 @@ type SurveyCompletionTeam struct {
 	Total                 int
 	PostWorkshopCompleted bool
 	HealthCheckEnabled    bool
+}
+
+// PersonNode is one leadership user in the survey-completion hierarchy
+// tree: the closest supervisor of at least one team, or an ancestor (via
+// users.reports_to) of such a person, walked up to and including
+// leadershipFloorPosition. ParentID is "" when this person is a root —
+// their own reports_to is empty, unresolvable, or points to someone above
+// leadershipFloorPosition (see resolveParentID). This same rule applies
+// uniformly regardless of this person's own level, which is what allows a
+// Level-2 leader to nest under another Level-2 leader, a Level-3 leader to
+// nest under a Level-2 *or* another Level-3 leader, and so on to arbitrary
+// depth — no fixed two-tier assumption anywhere.
+type PersonNode struct {
+	UserID    string
+	Name      string
+	Email     string
+	LevelID   string
+	LevelName string
+	ParentID  string
 }
 
 // SurveyCompletionTrendPoint is one weekly bucket of cumulative individual
@@ -59,10 +81,13 @@ type SurveyCompletionTrendPoint struct {
 }
 
 // SurveyCompletionOverview is the full aggregated result for the admin
-// survey-completion dashboard.
+// survey-completion dashboard: every team (flat, for the summary cards),
+// every PersonNode needed to render the hierarchy those teams nest into,
+// and the completion trend series.
 type SurveyCompletionOverview struct {
 	AssessmentPeriod string
 	Teams            []SurveyCompletionTeam
+	Persons          []PersonNode
 	TimeSeries       []SurveyCompletionTrendPoint
 }
 
@@ -85,59 +110,47 @@ func NewGetSurveyCompletionOverviewHandler(teamRepo team.Repository, healthCheck
 	}
 }
 
-// resolveEffectiveDirector returns the director id to nest a team's manager
-// under: the team's own chain director if it has one, otherwise the
-// manager's reports_to director — but only when that reports_to user is
-// actually a director (guards against a manager reporting to another
-// manager, or to nobody). Returns "" when neither resolves, meaning the
-// manager (if any) becomes a top-level group of its own.
-func resolveEffectiveDirector(chainDirectorID, managerID string, managerByID, directorByID map[string]*user.User) string {
-	if chainDirectorID != "" {
-		return chainDirectorID
-	}
-	mgr, ok := managerByID[managerID]
-	if !ok || mgr.ReportsTo == nil {
-		return ""
-	}
-	if _, isDirector := directorByID[*mgr.ReportsTo]; !isDirector {
-		return ""
-	}
-	return *mgr.ReportsTo
+// isAboveLeadershipFloor reports whether the given hierarchy level id sits
+// strictly above leadershipFloorPosition (e.g. VP, Admin), or has no known
+// position at all — such a user never becomes a hierarchy tree node.
+func isAboveLeadershipFloor(levelID string, positionByLevelID map[string]int) bool {
+	position, ok := positionByLevelID[levelID]
+	return !ok || position < leadershipFloorPosition
 }
 
-// hierarchyLevelIDForPosition returns the id of the hierarchy level at the
-// given position (2 = Director, 3 = Manager), or "" if the organization has
-// no level configured at that position.
-func hierarchyLevelIDForPosition(levels []*organization.HierarchyLevel, position int) string {
-	for _, l := range levels {
-		if l.Position == position {
-			return l.ID
-		}
+// resolveParentID returns the user id this person's node should nest
+// under: their own reports_to, but only when that target exists, has a
+// hierarchy level, and that level is at or below leadershipFloorPosition.
+// Returns "" (this person is a root) otherwise. Applying this one rule
+// uniformly at every depth — rather than only between two fixed tiers — is
+// what makes the whole hierarchy recursive to arbitrary depth.
+func resolveParentID(u *user.User, usersByID map[string]*user.User, positionByLevelID map[string]int) string {
+	if u == nil || u.ReportsTo == nil {
+		return ""
 	}
-	return ""
+	parent, ok := usersByID[*u.ReportsTo]
+	if !ok || isAboveLeadershipFloor(parent.HierarchyLevelID, positionByLevelID) {
+		return ""
+	}
+	return parent.ID
 }
 
-// Handle executes the query.
-func (h *GetSurveyCompletionOverviewHandler) Handle(ctx context.Context, query GetSurveyCompletionOverviewQuery) (*SurveyCompletionOverview, error) {
-	teams, err := h.teamRepo.FindSurveyCompletionTeams(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load teams: %w", err)
-	}
+// teamProgress is one team's individual-survey completion state for the
+// requested assessment period: which users completed it, and whether a
+// post-workshop session was also completed.
+type teamProgress struct {
+	completedUsers map[string]bool
+	postWorkshop   bool
+}
 
-	sessions, err := h.healthCheckRepo.FindByAssessmentPeriod(ctx, query.AssessmentPeriod)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load sessions: %w", err)
-	}
-
-	managerByID, directorByID, err := h.loadHierarchyDirectory(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load hierarchy directory: %w", err)
-	}
-
-	type teamProgress struct {
-		completedUsers map[string]bool
-		postWorkshop   bool
-	}
+// buildTeamProgress groups completed sessions by team, keyed by survey
+// type. completedUsers is a set (never a count) so a user with more than
+// one completed individual-survey session row for this team — a
+// resubmission, a duplicate row, etc. — is only ever counted once; that
+// same set is later intersected with the eligible population by
+// eligibleTeamCompletion, so a completed session from a user who isn't
+// eligible for this team never inflates its completed count either.
+func buildTeamProgress(sessions []*healthcheck.HealthCheckSession) map[string]*teamProgress {
 	progress := make(map[string]*teamProgress)
 	for _, s := range sessions {
 		if !s.Completed {
@@ -154,97 +167,210 @@ func (h *GetSurveyCompletionOverviewHandler) Handle(ctx context.Context, query G
 			p.completedUsers[s.UserID] = true
 		}
 	}
+	return progress
+}
+
+// eligibleTeamCompletion is the single calculation every Individual Survey
+// Completed value, and every status/aggregate derived from it, must use:
+// completed is how many of eligibleUserIDs also appear in completedUserIDs
+// (the set built by buildTeamProgress); total is how many distinct users
+// eligibleUserIDs names. eligibleUserIDs is deduplicated here defensively
+// — a user counts at most once even if the caller's query ever returned
+// the same id twice for one team — even though FindEligibleMemberIDs
+// already applies its own DISTINCT. completedUserIDs may be nil (a team
+// with zero completed sessions this period), in which case completed is
+// always 0.
+func eligibleTeamCompletion(eligibleUserIDs []string, completedUserIDs map[string]bool) (completed, total int) {
+	seen := make(map[string]bool, len(eligibleUserIDs))
+	for _, uid := range eligibleUserIDs {
+		if seen[uid] {
+			continue
+		}
+		seen[uid] = true
+		total++
+		if completedUserIDs[uid] {
+			completed++
+		}
+	}
+	return completed, total
+}
+
+// countDistinctEligible returns the number of distinct users named by ids
+// — used for buildSurveyCompletionTrend's opted-in-members denominator,
+// with the same defensive deduplication eligibleTeamCompletion applies.
+func countDistinctEligible(ids []string) int {
+	seen := make(map[string]bool, len(ids))
+	count := 0
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		count++
+	}
+	return count
+}
+
+// Handle executes the query.
+func (h *GetSurveyCompletionOverviewHandler) Handle(ctx context.Context, query GetSurveyCompletionOverviewQuery) (*SurveyCompletionOverview, error) {
+	teams, err := h.teamRepo.FindSurveyCompletionTeams(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load teams: %w", err)
+	}
+
+	// The single authoritative eligible population for every status,
+	// filter, and aggregate this handler produces -- see
+	// team.Repository.FindEligibleMemberIDs.
+	eligibleMemberIDs, err := h.teamRepo.FindEligibleMemberIDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load eligible team members: %w", err)
+	}
+
+	sessions, err := h.healthCheckRepo.FindByAssessmentPeriod(ctx, query.AssessmentPeriod)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load sessions: %w", err)
+	}
+
+	usersByID, positionByLevelID, nameByLevelID, err := h.loadDirectory(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load hierarchy directory: %w", err)
+	}
+
+	progress := buildTeamProgress(sessions)
+
+	// Every leadership user needed for the tree: each team's own closest
+	// supervisor, plus every one of that person's ancestors (via
+	// reports_to), stopping the walk the moment resolveParentID returns ""
+	// (a root) or an already-visited person is reached (shared ancestor —
+	// no need to re-walk above them again).
+	personsByID := make(map[string]*PersonNode)
+	var personOrder []string
+
+	addPersonAndAncestors := func(startUserID string) {
+		userID := startUserID
+		for userID != "" {
+			if _, exists := personsByID[userID]; exists {
+				return
+			}
+			u, ok := usersByID[userID]
+			if !ok {
+				return
+			}
+			parentID := resolveParentID(u, usersByID, positionByLevelID)
+			personsByID[userID] = &PersonNode{
+				UserID:    u.ID,
+				Name:      u.Name,
+				Email:     u.Email,
+				LevelID:   u.HierarchyLevelID,
+				LevelName: nameByLevelID[u.HierarchyLevelID],
+				ParentID:  parentID,
+			}
+			personOrder = append(personOrder, userID)
+			userID = parentID
+		}
+	}
 
 	result := make([]SurveyCompletionTeam, 0, len(teams))
 	for _, t := range teams {
-		completed := 0
 		postWorkshop := false
+		var completedUsers map[string]bool
 		if p, ok := progress[t.ID]; ok {
-			completed = len(p.completedUsers)
+			completedUsers = p.completedUsers
 			postWorkshop = p.postWorkshop
 		}
+		completed, total := eligibleTeamCompletion(eligibleMemberIDs[t.ID], completedUsers)
 
-		directorID := resolveEffectiveDirector(t.ChainDirectorID, t.ManagerID, managerByID, directorByID)
+		// The team's closest supervisor only becomes its owner when they
+		// themselves are at or below leadershipFloorPosition — otherwise
+		// (e.g. team_supervisors somehow names a VP directly) the team has
+		// no resolvable owner and falls to "Other", consistent with the
+		// same floor applied to every ancestor.
+		ownerID := ""
+		if t.SupervisorID != "" {
+			if owner, ok := usersByID[t.SupervisorID]; ok && !isAboveLeadershipFloor(owner.HierarchyLevelID, positionByLevelID) {
+				ownerID = owner.ID
+				addPersonAndAncestors(ownerID)
+			}
+		}
 
-		sct := SurveyCompletionTeam{
+		result = append(result, SurveyCompletionTeam{
 			TeamID:                t.ID,
 			TeamName:              t.Name,
-			ManagerID:             t.ManagerID,
-			DirectorID:            directorID,
+			OwnerUserID:           ownerID,
 			TeamLeadID:            t.TeamLeadID,
 			TeamLeadName:          t.TeamLeadName,
 			TeamLeadEmail:         t.TeamLeadEmail,
 			Completed:             completed,
-			Total:                 t.MemberCount,
+			Total:                 total,
 			PostWorkshopCompleted: postWorkshop,
 			HealthCheckEnabled:    t.HealthCheckEnabled,
-		}
-		if mgr, ok := managerByID[t.ManagerID]; ok {
-			sct.ManagerName = mgr.Name
-			sct.ManagerEmail = mgr.Email
-		}
-		if dir, ok := directorByID[directorID]; ok {
-			sct.DirectorName = dir.Name
-			sct.DirectorEmail = dir.Email
-		}
-		result = append(result, sct)
+		})
+	}
+
+	persons := make([]PersonNode, 0, len(personOrder))
+	for _, id := range personOrder {
+		persons = append(persons, *personsByID[id])
 	}
 
 	return &SurveyCompletionOverview{
 		AssessmentPeriod: query.AssessmentPeriod,
 		Teams:            result,
-		TimeSeries:       buildSurveyCompletionTrend(teams, sessions),
+		Persons:          persons,
+		TimeSeries:       buildSurveyCompletionTrend(teams, eligibleMemberIDs, sessions),
 	}, nil
 }
 
-// loadHierarchyDirectory returns every Level-3 (manager) and Level-2
-// (director) user, keyed by id, for resolving each team's effective
-// director. Returns empty maps (not an error) when the organization has no
-// level configured at either position — every team then simply falls back
-// to the "Other" group.
-func (h *GetSurveyCompletionOverviewHandler) loadHierarchyDirectory(ctx context.Context) (managerByID, directorByID map[string]*user.User, err error) {
+// loadDirectory returns every user keyed by id, every hierarchy level's
+// position keyed by level id, and every hierarchy level's display name
+// keyed by level id — everything resolveParentID and the PersonNode builder
+// need, with no assumption baked in about how many levels exist or what
+// they're named.
+func (h *GetSurveyCompletionOverviewHandler) loadDirectory(ctx context.Context) (usersByID map[string]*user.User, positionByLevelID map[string]int, nameByLevelID map[string]string, err error) {
 	levels, err := h.orgRepo.FindHierarchyLevels(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to load hierarchy levels: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to load hierarchy levels: %w", err)
+	}
+	positionByLevelID = make(map[string]int, len(levels))
+	nameByLevelID = make(map[string]string, len(levels))
+	for _, l := range levels {
+		positionByLevelID[l.ID] = l.Position
+		nameByLevelID[l.ID] = l.Name
 	}
 
-	managerByID = make(map[string]*user.User)
-	directorByID = make(map[string]*user.User)
-
-	if managerLevelID := hierarchyLevelIDForPosition(levels, managerLevelPosition); managerLevelID != "" {
-		managers, err := h.userRepo.FindByHierarchyLevel(ctx, managerLevelID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to load managers: %w", err)
-		}
-		for _, m := range managers {
-			managerByID[m.ID] = m
-		}
+	users, err := h.userRepo.FindAll(ctx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to load users: %w", err)
+	}
+	usersByID = make(map[string]*user.User, len(users))
+	for _, u := range users {
+		usersByID[u.ID] = u
 	}
 
-	if directorLevelID := hierarchyLevelIDForPosition(levels, directorLevelPosition); directorLevelID != "" {
-		directors, err := h.userRepo.FindByHierarchyLevel(ctx, directorLevelID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to load directors: %w", err)
-		}
-		for _, d := range directors {
-			directorByID[d.ID] = d
-		}
-	}
+	return usersByID, positionByLevelID, nameByLevelID, nil
+}
 
-	return managerByID, directorByID, nil
+// parseSessionDate parses a health-check session's stored date, tried first
+// as a full RFC3339 timestamp and falling back to a bare date in case the
+// source data ever stores it without a time component.
+func parseSessionDate(raw string) (time.Time, error) {
+	if d, err := time.Parse(time.RFC3339, raw); err == nil {
+		return d, nil
+	}
+	return time.Parse("2006-01-02", raw)
 }
 
 // buildSurveyCompletionTrend computes cumulative individual-survey
-// completion, as a percentage of opted-in members, bucketed by calendar
-// week of the session date. Weeks are numbered as days-since-epoch/7 rather
-// than ISO week-of-year so a period spanning a year boundary still buckets
-// and orders correctly.
-func buildSurveyCompletionTrend(teams []team.SurveyCompletionRow, sessions []*healthcheck.HealthCheckSession) []SurveyCompletionTrendPoint {
+// completion, as a percentage of opted-in ELIGIBLE members (Level 4 + Level
+// 5 only, from eligibleMemberIDs — the same population every other status
+// and aggregate uses), bucketed by calendar week of the session date. Weeks
+// are numbered as days-since-epoch/7 rather than ISO week-of-year so a
+// period spanning a year boundary still buckets and orders correctly.
+func buildSurveyCompletionTrend(teams []team.SurveyCompletionRow, eligibleMemberIDs map[string][]string, sessions []*healthcheck.HealthCheckSession) []SurveyCompletionTrendPoint {
 	optedInMembers := 0
 	optedIn := make(map[string]bool)
 	for _, t := range teams {
 		if t.HealthCheckEnabled {
-			optedInMembers += t.MemberCount
+			optedInMembers += countDistinctEligible(eligibleMemberIDs[t.ID])
 			optedIn[t.ID] = true
 		}
 	}
@@ -252,31 +378,36 @@ func buildSurveyCompletionTrend(teams []team.SurveyCompletionRow, sessions []*he
 		return []SurveyCompletionTrendPoint{}
 	}
 
+	// A member can have more than one completed individual session for the
+	// same period (e.g. a resubmission) — the trend must count their
+	// completion on the EARLIEST of those dates, not whichever one this
+	// unsorted `sessions` slice happens to return first. Pass 1 finds that
+	// earliest date per (team, user); pass 2 (below) buckets by it.
 	type completionKey struct{ team, user string }
-	seen := make(map[completionKey]bool)
-	weekCounts := make(map[int]int)
-	minWeek, maxWeek := 0, 0
-	haveWeek := false
+	earliest := make(map[completionKey]time.Time)
 
 	for _, s := range sessions {
 		if !s.Completed || s.SurveyType == healthcheck.SurveyTypePostWorkshop || !optedIn[s.TeamID] {
 			continue
 		}
-		k := completionKey{s.TeamID, s.UserID}
-		if seen[k] {
+		d, err := parseSessionDate(s.Date)
+		if err != nil {
 			continue
 		}
-		d, err := time.Parse(time.RFC3339, s.Date)
-		if err != nil {
-			// Fall back to a bare date in case the source data ever stores
-			// it without a time component.
-			d, err = time.Parse("2006-01-02", s.Date)
-			if err != nil {
-				continue
-			}
+		k := completionKey{s.TeamID, s.UserID}
+		if existing, ok := earliest[k]; !ok || d.Before(existing) {
+			earliest[k] = d
 		}
-		seen[k] = true
+	}
 
+	if len(earliest) == 0 {
+		return []SurveyCompletionTrendPoint{}
+	}
+
+	weekCounts := make(map[int]int)
+	minWeek, maxWeek := 0, 0
+	haveWeek := false
+	for _, d := range earliest {
 		week := int(d.Unix() / (7 * 24 * 3600))
 		weekCounts[week]++
 		if !haveWeek {
@@ -289,10 +420,6 @@ func buildSurveyCompletionTrend(teams []team.SurveyCompletionRow, sessions []*he
 		if week > maxWeek {
 			maxWeek = week
 		}
-	}
-
-	if !haveWeek {
-		return []SurveyCompletionTrendPoint{}
 	}
 
 	points := make([]SurveyCompletionTrendPoint, 0, maxWeek-minWeek+1)

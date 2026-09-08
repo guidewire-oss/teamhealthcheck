@@ -12,14 +12,14 @@ import { isRemindable } from '@/lib/survey-completion-tree';
 import { STATUS_ORDER } from '@/lib/status-colors';
 import type {
   SurveyCompletionGroup,
-  SurveyCompletionManagerGroup,
   SurveyCompletionPerson,
+  SurveyCompletionPersonGroup,
   SurveyCompletionTeam,
   SurveyStatus,
 } from '@/lib/api/survey-completion';
 
 export type ReminderTreeNode =
-  | { type: 'person'; id: string; name: string; role: 'director' | 'manager'; children: ReminderTreeNode[] }
+  | { type: 'person'; id: string; name: string; level: string; children: ReminderTreeNode[] }
   | { type: 'team'; id: string; name: string; teamLeadName: string; status: SurveyStatus };
 
 export interface ReminderPlan {
@@ -39,12 +39,8 @@ function teamNode(team: SurveyCompletionTeam): ReminderTreeNode {
   };
 }
 
-function personNode(
-  person: SurveyCompletionPerson,
-  role: 'director' | 'manager',
-  children: ReminderTreeNode[],
-): ReminderTreeNode {
-  return { type: 'person', id: person.id, name: person.name, role, children };
+function personNode(person: SurveyCompletionPerson, children: ReminderTreeNode[]): ReminderTreeNode {
+  return { type: 'person', id: person.id, name: person.name, level: person.level, children };
 }
 
 function plural(count: number, noun: string): string {
@@ -52,75 +48,133 @@ function plural(count: number, noun: string): string {
 }
 
 /**
- * Team-level plan (single pod row's Remind button). The root is the highest
- * person who'll be reminded — the pod's manager if it has one, else its
- * director, else there's no supervisor and the tree is just the pod itself.
+ * Team-level plan (single pod row's Remind button). The root is the pod's
+ * direct owner if it has one, else there's no supervisor and the tree is
+ * just the pod itself.
  */
 export function buildTeamReminderPlan(
   team: SurveyCompletionTeam,
-  context: { manager?: SurveyCompletionPerson; director?: SurveyCompletionPerson },
+  context: { owner?: SurveyCompletionPerson },
 ): ReminderPlan {
   const leaf = teamNode(team);
-  const supervisor = context.manager ?? context.director;
-  const root = supervisor ? personNode(supervisor, context.manager ? 'manager' : 'director', [leaf]) : leaf;
+  const root = context.owner ? personNode(context.owner, [leaf]) : leaf;
 
+  // The preview tree shows the owner as a node right alongside the pod when
+  // there is one, which reads as "this leader is also part of who gets
+  // notified" — the toast must name them too, or it under-reports who the
+  // preview just showed as a recipient.
   return {
     root,
     podCount: 1,
-    subtitle: supervisor
-      ? `Reminding 1 pod under ${supervisor.name}`
+    subtitle: context.owner
+      ? `Reminding 1 pod under ${context.owner.name}`
       : `Reminding the team lead for ${team.teamName}`,
-    toastMessage: `Reminder sent to the team lead for ${team.teamName}.`,
+    toastMessage: context.owner
+      ? `Reminder sent to ${context.owner.name} and the team lead for ${team.teamName}.`
+      : `Reminder sent to the team lead for ${team.teamName}.`,
   };
 }
 
-/**
- * Manager-level plan (Remind (N) next to a manager row). Root is the
- * manager; one leaf per pending pod under them.
- */
-export function buildManagerReminderPlan(managerGroup: SurveyCompletionManagerGroup): ReminderPlan {
-  const pendingTeams = (managerGroup.teams ?? []).filter(isRemindable);
-  const root = personNode(managerGroup.manager, 'manager', pendingTeams.map(teamNode));
-  const podCount = pendingTeams.length;
-
-  return {
-    root,
-    podCount,
-    subtitle: `Reminding ${plural(podCount, 'pod')} under ${managerGroup.manager.name}`,
-    toastMessage: `Reminder sent to ${managerGroup.manager.name} and ${plural(podCount, 'team lead')}.`,
-  };
+interface Subtree {
+  node: ReminderTreeNode;
+  pendingCount: number;
+  // Number of descendant leaders (not including this node) that have at
+  // least one pending pod anywhere in their own subtree.
+  leaderCountInSubtree: number;
 }
 
-type DirectorGroup = Extract<SurveyCompletionGroup, { type: 'director' }>;
-
 /**
- * Director-level plan (Remind (N) next to a director row). Root is the
- * director; children are one node per manager under them who has at least
- * one pending pod (with that manager's pending pods nested underneath), plus
- * a leaf for each pending pod reporting directly to the director.
+ * Recursively builds this leader's reminder subtree: their own pending
+ * direct pods, plus (only) the children who themselves have at least one
+ * pending pod anywhere below them — an all-complete branch is dropped
+ * entirely, at any depth, exactly like the old two-tier behavior generalized
+ * to arbitrary depth.
  */
-export function buildDirectorReminderPlan(directorGroup: DirectorGroup): ReminderPlan {
-  const directPending = (directorGroup.directTeams ?? []).filter(isRemindable);
+function buildSubtree(group: SurveyCompletionPersonGroup): Subtree {
+  const directPending = (group.directTeams ?? []).filter(isRemindable);
 
-  const managerNodes: ReminderTreeNode[] = [];
-  let managerCount = 0;
+  const childNodes: ReminderTreeNode[] = [];
+  let leaderCount = 0;
   let podCount = directPending.length;
 
-  for (const managerGroup of directorGroup.managers ?? []) {
-    const pendingTeams = (managerGroup.teams ?? []).filter(isRemindable);
-    if (pendingTeams.length === 0) continue;
-    managerCount += 1;
-    podCount += pendingTeams.length;
-    managerNodes.push(personNode(managerGroup.manager, 'manager', pendingTeams.map(teamNode)));
+  for (const child of group.children ?? []) {
+    const sub = buildSubtree(child);
+    if (sub.pendingCount === 0) continue;
+    leaderCount += 1 + sub.leaderCountInSubtree;
+    podCount += sub.pendingCount;
+    childNodes.push(sub.node);
   }
 
-  const root = personNode(directorGroup.director, 'director', [...managerNodes, ...directPending.map(teamNode)]);
+  return {
+    node: personNode(group.person, [...childNodes, ...directPending.map(teamNode)]),
+    pendingCount: podCount,
+    leaderCountInSubtree: leaderCount,
+  };
+}
+
+/**
+ * Leader-level plan (Remind (N) next to any person row, at any depth).
+ * Root is that leader; children are one node per descendant leader who has
+ * at least one pending pod (nested arbitrarily deep, same as the real
+ * hierarchy), plus a leaf for each of the leader's own pending direct pods.
+ */
+export function buildPersonReminderPlan(group: SurveyCompletionPersonGroup): ReminderPlan {
+  const { node, pendingCount, leaderCountInSubtree } = buildSubtree(group);
 
   return {
-    root,
+    root: node,
+    podCount: pendingCount,
+    subtitle: `Reminding ${plural(pendingCount, 'pod')} under ${group.person.name}`,
+    toastMessage:
+      leaderCountInSubtree > 0
+        ? `Reminder sent to ${group.person.name}, ${plural(leaderCountInSubtree, 'leader')}, and ${plural(pendingCount, 'team lead')}.`
+        : `Reminder sent to ${group.person.name} and ${plural(pendingCount, 'team lead')}.`,
+  };
+}
+
+/**
+ * Org-wide bulk plan (the "Remind N lagging leaders" button above the
+ * table). Previously this button skipped the preview modal entirely and
+ * fired a canned toast straight away, and its count only ever looked at
+ * person-owned root groups — a pending pod with no resolvable owner (the
+ * "Other" bucket) was silently never remindable from this button at all.
+ * This builds one real plan, exactly like every other Remind button: one
+ * child node per root leader with at least one pending pod (via
+ * buildSubtree, unchanged), PLUS the "Other" group's own pending pods as
+ * sibling leaves — so Other's pending teams are always included in both
+ * the preview and the count, never dropped.
+ */
+export function buildOrgReminderPlan(groups: SurveyCompletionGroup[]): ReminderPlan {
+  const children: ReminderTreeNode[] = [];
+  let podCount = 0;
+  let leaderCount = 0;
+
+  for (const group of groups) {
+    if (group.type !== 'person') continue;
+    const sub = buildSubtree(group);
+    if (sub.pendingCount === 0) continue;
+    leaderCount += 1 + sub.leaderCountInSubtree;
+    podCount += sub.pendingCount;
+    children.push(sub.node);
+  }
+
+  const otherPending = groups
+    .filter((group): group is Extract<SurveyCompletionGroup, { type: 'other' }> => group.type === 'other')
+    .flatMap((group) => (group.teams ?? []).filter(isRemindable));
+  podCount += otherPending.length;
+  children.push(...otherPending.map(teamNode));
+
+  return {
+    root: { type: 'person', id: 'org-remind-all', name: 'All lagging teams', level: 'Org-wide', children },
     podCount,
-    subtitle: `Reminding ${plural(podCount, 'pod')} under ${directorGroup.director.name}`,
-    toastMessage: `Reminder sent to ${directorGroup.director.name}, ${plural(managerCount, 'manager')}, and ${plural(podCount, 'team lead')}.`,
+    subtitle:
+      leaderCount > 0
+        ? `Reminding ${plural(podCount, 'pod')} across ${plural(leaderCount, 'leader')}`
+        : `Reminding ${plural(podCount, 'pod')} with no assigned leader`,
+    toastMessage:
+      leaderCount > 0
+        ? `Reminder sent to ${plural(leaderCount, 'leader')} and ${plural(podCount, 'team lead')}.`
+        : `Reminder sent to ${plural(podCount, 'team lead')}.`,
   };
 }
 

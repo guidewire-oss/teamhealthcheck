@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { X, Send } from 'lucide-react';
 import { getStatusesInTree, type ReminderPlan, type ReminderTreeNode } from '@/lib/reminder-tree';
 import { STATUS_DOT_CLASS, STATUS_LABEL } from '@/lib/status-colors';
@@ -10,6 +11,8 @@ interface ReminderTreeModalProps {
   onCancel: () => void;
   onSend: () => void;
 }
+
+const TITLE_ID = 'reminder-tree-title';
 
 function getInitials(name: string): string {
   return name
@@ -24,14 +27,14 @@ function getInitials(name: string): string {
  * avatar/dot on the connecting line, plus a label to its right. Children (if
  * any) render indented underneath, still threaded onto the same line.
  */
-function TreeNode({ node }: { node: ReminderTreeNode }) {
+function TreeNode({ node, depth }: { node: ReminderTreeNode; depth: number }) {
   if (node.type === 'person') {
-    const isDirector = node.role === 'director';
+    const isRoot = depth === 0;
     return (
       <li className="relative pl-9">
         <span
           className={`absolute left-0 top-0.5 w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0 ${
-            isDirector ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-700 border-2 border-indigo-400'
+            isRoot ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-700 border-2 border-indigo-400'
           }`}
         >
           {getInitials(node.name)}
@@ -39,13 +42,13 @@ function TreeNode({ node }: { node: ReminderTreeNode }) {
         <div className="flex items-center gap-2 min-h-7">
           <span className="text-sm font-semibold text-gray-900">{node.name}</span>
           <span className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-gray-100 text-gray-600">
-            {isDirector ? 'L2' : 'Manager'}
+            {node.level}
           </span>
         </div>
         {node.children.length > 0 && (
           <ul className="mt-3 ml-3.5 pl-5 border-l-2 border-indigo-200 space-y-3">
             {node.children.map((child) => (
-              <TreeNode key={`${child.type}:${child.id}`} node={child} />
+              <TreeNode key={`${child.type}:${child.id}`} node={child} depth={depth + 1} />
             ))}
           </ul>
         )}
@@ -93,17 +96,47 @@ function Legend({ statuses, align }: { statuses: SurveyStatus[]; align: 'left' |
 
 export default function ReminderTreeModal({ plan, onCancel, onSend }: ReminderTreeModalProps) {
   const statuses = getStatusesInTree(plan.root);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const previouslyFocused = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    // Move focus into the dialog on open, and restore it to whatever
+    // triggered it (a Remind button) on close -- otherwise a keyboard/screen
+    // reader user is left with focus on a control that's still "inside" a
+    // now-invisible page, or dropped back to the top of the document.
+    previouslyFocused.current = document.activeElement as HTMLElement | null;
+    closeButtonRef.current?.focus();
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previouslyFocused.current?.focus();
+    };
+  }, [onCancel]);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div
         className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[85vh] overflow-y-auto"
         data-testid="reminder-tree-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={TITLE_ID}
       >
         <div className="p-6 border-b">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <h2 className="text-lg font-semibold text-gray-900">Who will get this reminder?</h2>
+              <h2 id={TITLE_ID} className="text-lg font-semibold text-gray-900">
+                Who will get this reminder?
+              </h2>
               <p className="text-sm text-gray-500 mt-1">{plan.subtitle}</p>
               <div className="sm:hidden mt-3">
                 <Legend statuses={statuses} align="left" />
@@ -114,10 +147,12 @@ export default function ReminderTreeModal({ plan, onCancel, onSend }: ReminderTr
                 <Legend statuses={statuses} align="right" />
               </div>
               <button
+                ref={closeButtonRef}
                 type="button"
                 onClick={onCancel}
-                className="text-gray-400 hover:text-gray-600"
+                className="text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded"
                 data-testid="reminder-tree-close"
+                aria-label="Close"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -127,7 +162,7 @@ export default function ReminderTreeModal({ plan, onCancel, onSend }: ReminderTr
 
         <div className="p-6">
           <ul className="space-y-3" data-testid="reminder-tree">
-            <TreeNode node={plan.root} />
+            <TreeNode node={plan.root} depth={0} />
           </ul>
         </div>
 

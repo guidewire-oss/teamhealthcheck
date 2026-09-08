@@ -1,11 +1,13 @@
 package dto
 
-// SurveyCompletionPersonDTO identifies a director or manager in the admin
-// survey-completion dashboard's hierarchy.
+// SurveyCompletionPersonDTO identifies one leadership user in the admin
+// survey-completion dashboard's hierarchy tree.
 type SurveyCompletionPersonDTO struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Email   string `json:"email,omitempty"`
+	LevelID string `json:"levelId"` // hierarchy_level_id, schema-driven
+	Level   string `json:"level"`   // hierarchy_levels.name — the display/role label, never invented
 }
 
 // SurveyCompletionTeamDTO is one team's row in the admin survey-completion
@@ -24,38 +26,26 @@ type SurveyCompletionTeamDTO struct {
 	TeamLeadName *string `json:"teamLeadName,omitempty"`
 }
 
-// SurveyCompletionManagerGroupDTO is a Level-3 manager's row, nested under
-// its director (or standing alone as a top-level group — see
-// SurveyCompletionGroupDTO.Type).
-type SurveyCompletionManagerGroupDTO struct {
-	Manager           SurveyCompletionPersonDTO `json:"manager"`
-	TotalTeams        int                       `json:"totalTeams"`
-	OptedInTeams      int                       `json:"optedInTeams"`
-	CompletionPercent int                       `json:"completionPercent"`
-	RemindCount       int                       `json:"remindCount"`
-	Teams             []SurveyCompletionTeamDTO `json:"teams"`
-}
-
-// SurveyCompletionGroupDTO is one top-level row in the admin
-// survey-completion table: a director, a manager standing in for a missing
-// director, or the catch-all "Other" group.
+// SurveyCompletionGroupDTO is one row in the admin survey-completion
+// table's recursive hierarchy: either a leadership person (with their own
+// direct pods and, recursively, their own children), or the catch-all
+// "Other" group for pods with no resolvable leadership owner. There is no
+// separate type per hierarchy tier — the same shape nests to whatever depth
+// the organization's own reports_to chains actually go.
 type SurveyCompletionGroupDTO struct {
-	Type              string                     `json:"type"` // director | manager | other
-	Director          *SurveyCompletionPersonDTO `json:"director,omitempty"`
-	Manager           *SurveyCompletionPersonDTO `json:"manager,omitempty"` // type=manager only
+	Type              string                     `json:"type"`             // person | other
+	Person            *SurveyCompletionPersonDTO `json:"person,omitempty"` // type=person only
 	Label             string                     `json:"label,omitempty"`  // type=other only, e.g. "Other"
 	TotalTeams        int                        `json:"totalTeams"`
 	OptedInTeams      int                        `json:"optedInTeams"`
 	CompletionPercent int                        `json:"completionPercent"`
 	RemindCount       int                        `json:"remindCount"`
-	// DirectTeams/Managers are for type=director only — always present as
-	// [] rather than omitted, even when empty (e.g. a director with no
-	// managers, or a director whose only teams are under managers), since
-	// the frontend always spreads/maps over them without a null check.
-	DirectTeams []SurveyCompletionTeamDTO         `json:"directTeams"`
-	Managers    []SurveyCompletionManagerGroupDTO `json:"managers"`
-	// Teams is for type=manager and type=other only — same "always an
-	// array" contract as above.
+	// DirectTeams/Children are for type=person only — always present as []
+	// rather than omitted, even when empty, since the frontend always
+	// spreads/maps over them without a null check.
+	DirectTeams []SurveyCompletionTeamDTO  `json:"directTeams"`
+	Children    []SurveyCompletionGroupDTO `json:"children"`
+	// Teams is for type=other only — same "always an array" contract.
 	Teams []SurveyCompletionTeamDTO `json:"teams"`
 }
 

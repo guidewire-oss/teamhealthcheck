@@ -21,21 +21,30 @@ import { getAssessmentPeriods } from "@/lib/api/health-checks";
 import {
   getSurveyCompletion,
   type SurveyCompletionGroup,
-  type SurveyCompletionManagerGroup,
   type SurveyCompletionOverview,
-  type SurveyCompletionPerson,
+  type SurveyCompletionPersonGroup,
   type SurveyCompletionTeam,
   type SurveyStatus,
 } from "@/lib/api/survey-completion";
 import {
+  buildFullyCompletedGroups,
+  buildHierarchyAggregateIndex,
   buildVisibleGroups,
+  buildVisibleHierarchyAggregateIndex,
+  countVisibleTeams,
+  getPartialCompletionBadgeClass,
+  getPodCompletionPercent,
+  getPodDisplayStatus,
+  isPaleRedPodRow,
+  isParentStatusHiddenFor,
   isRemindable,
+  isRowBackgroundHiddenFor,
   type CardFilter,
   type VisibleGroup,
 } from "@/lib/survey-completion-tree";
 import {
-  buildDirectorReminderPlan,
-  buildManagerReminderPlan,
+  buildOrgReminderPlan,
+  buildPersonReminderPlan,
   buildTeamReminderPlan,
   type ReminderPlan,
 } from "@/lib/reminder-tree";
@@ -49,10 +58,13 @@ import { STATUS_BADGE_CLASS, STATUS_LABEL } from "@/lib/status-colors";
  * mock data or local fixture here. Whatever database the backend's
  * DATABASE_URL points at is what this dashboard shows.
  *
- * The table groups teams into a Director (Level 2) -> Manager (Level 3) ->
- * Team hierarchy (see lib/survey-completion-tree.ts for the filtering
- * logic). A manager with no resolvable director stands alone as a top-level
- * row; a team with neither falls into the catch-all "Other" group.
+ * The table renders a fully recursive leadership hierarchy (see
+ * lib/survey-completion-tree.ts for the filtering logic): a leader nests
+ * under whichever leader their own reports_to chain resolves to, to
+ * whatever depth the organization's own data actually goes — there is no
+ * fixed two-tier assumption. A leader with no resolvable parent stands
+ * alone as a top-level row; a team with no resolvable owner falls into the
+ * catch-all "Other" group.
  *
  * The "Remind" buttons are UI-only for now (a local toast) — there is no
  * backend endpoint for sending reminders yet.
@@ -87,6 +99,7 @@ export interface SurveyCompletionData {
   notStarted: number;
   optedOut: number;
   teamStats: {
+    teamId: string;
     teamName: string;
     completed: number;
     total: number;
@@ -104,6 +117,17 @@ const FILTER_LABELS: Record<CardFilter, string> = {
   opted_out: "Opted out",
 };
 
+// Fixed Tailwind class palettes for indenting nested rows — Tailwind's JIT
+// scanner needs literal class names, not dynamically interpolated ones, so
+// depth is capped rather than computing "pl-" + n. Capping visually is fine
+// too: a chain nested this deep is already an edge case.
+const HEADER_INDENT_CLASSES = ["", "pl-6", "pl-12", "pl-16", "pl-20", "pl-24"];
+const TEAM_INDENT_CLASSES = ["pl-12", "pl-16", "pl-20", "pl-24", "pl-28", "pl-32"];
+
+function indentClassFor(classes: string[], depth: number): string {
+  return classes[Math.min(depth, classes.length - 1)];
+}
+
 function getInitials(name: string): string {
   return name
     .split(" ")
@@ -112,12 +136,12 @@ function getInitials(name: string): string {
     .toUpperCase();
 }
 
-function teamsInGroup(group: SurveyCompletionOverview["groups"][number]): SurveyCompletionTeam[] {
+function teamsInGroup(group: SurveyCompletionGroup): SurveyCompletionTeam[] {
   // Defensive against a malformed/older API response — the backend always
   // sends [] rather than omitting these, but don't let a shape mismatch
   // white-screen the whole dashboard.
-  if (group.type === "director") {
-    return [...(group.directTeams ?? []), ...(group.managers ?? []).flatMap((m) => m.teams ?? [])];
+  if (group.type === "person") {
+    return [...(group.directTeams ?? []), ...(group.children ?? []).flatMap(teamsInGroup)];
   }
   return group.teams ?? [];
 }
@@ -133,6 +157,7 @@ function toSurveyCompletionData(overview: SurveyCompletionOverview): SurveyCompl
     optedOut: overview.optedOut,
     teamStats: overview.groups.flatMap((group) =>
       teamsInGroup(group).map((team) => ({
+        teamId: team.teamId,
         teamName: team.teamName,
         completed: team.completed,
         total: team.total,
@@ -141,6 +166,17 @@ function toSurveyCompletionData(overview: SurveyCompletionOverview): SurveyCompl
     ),
     timeSeries: overview.timeSeries,
   };
+}
+
+/** Recursively finds a leader's raw (unfiltered) group anywhere in the tree. */
+function findPersonGroup(groups: SurveyCompletionGroup[], id: string): SurveyCompletionPersonGroup | undefined {
+  for (const g of groups) {
+    if (g.type !== "person") continue;
+    if (g.person.id === id) return g;
+    const found = findPersonGroup(g.children, id);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 function MetricCard({
@@ -186,12 +222,25 @@ function MetricCard({
   );
 }
 
+// StatusBadge is used only for pod rows (TeamRow) in this file — the exact
+// wording requested for pods ("Completed", "In Progress") differs slightly
+// from lib/status-colors.ts's shared STATUS_LABEL ("Complete", "In
+// progress"), which is still used verbatim everywhere else (reminder tree,
+// other dashboards). This override is scoped to this one component so
+// nothing outside the Pods section is affected; colors still come from the
+// shared STATUS_BADGE_CLASS palette.
+const POD_STATUS_LABEL: Record<SurveyStatus, string> = {
+  ...STATUS_LABEL,
+  complete: "Completed",
+  in_progress: "In Progress",
+};
+
 function StatusBadge({ status }: { status: SurveyStatus }) {
   return (
     <span
       className={`inline-flex items-center justify-center w-full max-w-[120px] px-2.5 py-1 rounded-full text-xs font-semibold ${STATUS_BADGE_CLASS[status]}`}
     >
-      {STATUS_LABEL[status]}
+      {POD_STATUS_LABEL[status]}
     </span>
   );
 }
@@ -204,35 +253,97 @@ function ChevronToggle({ expanded }: { expanded: boolean }) {
   );
 }
 
-function TeamRow({
+// Exported for isolated testing of the pod row's status/percentage
+// rendering — see components/__tests__/SurveyCompletionDashboard.test.tsx.
+// Not used outside this module in application code.
+export function TeamRow({
   team,
   indentClass,
   onRemind,
+  showPercentBadge,
 }: {
   team: SurveyCompletionTeam;
   indentClass: string;
   onRemind: () => void;
+  // True only while the "Total Teams" / "All Teams" or "In Progress"
+  // filter is active (see isRowBackgroundHiddenFor) — scoped purely to
+  // this pod row: no row background at all (status-driven or hover), and
+  // partial completion renders as a color-tiered badge instead of plain
+  // red text. Every other filter keeps the existing row background/hover
+  // and plain-text behavior unchanged.
+  showPercentBadge?: boolean;
 }) {
+  // Pods only ever display an EFFECTIVE status/percentage here, never the
+  // raw backend status directly — see getPodDisplayStatus for why (it only
+  // ever differs from team.status for the 100%-by-rounding edge case on an
+  // in_progress pod). This is scoped to pod rows alone: Director/Manager
+  // header rows (GroupHeaderRow) are untouched and keep using their own
+  // backend-computed completionPercent/remindCount as before.
+  //
+  // Both the percent text and the status badge live together in the
+  // Status column only (below) — the team-name cell never carries any
+  // status/percent text, and the "Individual survey completed" column
+  // shows the raw submitted-count, not a derived percentage.
+  const displayStatus = getPodDisplayStatus(team);
+  const percent = getPodCompletionPercent(team);
+  // Not Started and partial/In Progress pods get a consistent pale red row
+  // background — driven by the exact same displayStatus the Status column
+  // itself renders from, never a second, independently-guessed condition.
+  // Under Total Teams/In Progress (showPercentBadge), the row itself never
+  // gets any background — color lives only in the Status-column badge.
+  const rowBackgroundClass = !showPercentBadge && isPaleRedPodRow(displayStatus) ? "bg-red-50" : "";
+  const rowHoverClass = showPercentBadge ? "" : "hover:bg-indigo-50/40";
+
   return (
-    <tr className="border-b border-gray-100 last:border-b-0 hover:bg-indigo-50/40 transition-colors">
+    <tr
+      className={`border-b border-gray-100 last:border-b-0 transition-colors ${rowHoverClass} ${rowBackgroundClass}`}
+    >
       <td className={`px-5 py-3 text-sm text-gray-900 ${indentClass}`}>{team.teamName}</td>
       <td
         className={`px-5 py-3 text-sm font-semibold ${
-          team.status === "opted_out"
-            ? "text-gray-900"
-            : team.completed === team.total
-              ? "text-green-700"
-              : "text-gray-900"
+          displayStatus === "complete" ? "text-green-700" : "text-gray-900"
         }`}
+        data-testid="survey-team-individual-completed"
       >
-        {team.status === "opted_out" ? "—" : `${team.completed} / ${team.total}`}
+        {/* Individual Survey Completed: completed_count / eligible_count,
+            straight from the API's individual-survey fields, for EVERY
+            pod row regardless of canonical status or which filter is
+            currently active -- an Opted Out pod's eligible members still
+            have a real (usually 0) completed count, and 0 is never
+            rendered as blank/"—". Only the Post-workshop column (below)
+            has a genuine null case, because that field is itself nullable
+            for an opted-out team; this field is a plain number pair and
+            is never null. */}
+        {team.completed} / {team.total}
       </td>
       <td className="px-5 py-3 text-sm text-gray-900">
         {team.postWorkshopCompleted === null ? "—" : team.postWorkshopCompleted ? "Yes" : "No"}
       </td>
       <td className="px-5 py-3">
-        <div className="flex justify-center">
-          <StatusBadge status={team.status} />
+        <div className="flex flex-col items-center gap-1">
+          {displayStatus === "in_progress" ? (
+            showPercentBadge ? (
+              // Total Teams / All Teams and In Progress: partial completion
+              // renders as a pill badge — same structural shape as the
+              // green "Completed" badge (StatusBadge) — colored red below
+              // 50% and yellow at 50% and up (getPartialCompletionBadgeClass)
+              // — instead of the plain red text used everywhere else.
+              <span
+                className={`inline-flex items-center justify-center w-full max-w-[120px] px-2.5 py-1 rounded-full text-xs font-semibold ${getPartialCompletionBadgeClass(percent)}`}
+                data-testid="survey-team-percent"
+              >
+                {percent}% completed
+              </span>
+            ) : (
+              // Every other filter: partial completion shows only the red
+              // percentage — no separate "In Progress" badge alongside it.
+              <span className="text-xs font-bold text-red-700" data-testid="survey-team-percent">
+                {percent}% completed
+              </span>
+            )
+          ) : (
+            <StatusBadge status={displayStatus} />
+          )}
         </div>
       </td>
       <td className="px-5 py-3 text-right">
@@ -242,6 +353,7 @@ function TeamRow({
           className={`px-3 py-1.5 border border-gray-300 rounded-lg text-xs font-semibold text-gray-700 hover:border-indigo-400 hover:text-indigo-600 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 whitespace-nowrap ${
             isRemindable(team) ? "" : "invisible"
           }`}
+          data-testid="survey-remind-team"
         >
           Remind
         </button>
@@ -250,9 +362,11 @@ function TeamRow({
   );
 }
 
-function GroupHeaderRow({
+// Exported for isolated testing of the Fully-Completed leader badge — see
+// components/__tests__/SurveyCompletionDashboard.test.tsx. Not used outside
+// this module in application code.
+export function GroupHeaderRow({
   name,
-  badge,
   totalTeams,
   optedInTeams,
   completionPercent,
@@ -261,9 +375,11 @@ function GroupHeaderRow({
   onToggle,
   onRemind,
   indentClass,
+  showFullyCompletedBadge,
+  hideStatusColumn,
+  hierarchyAggregate,
 }: {
   name: string;
-  badge?: string;
   totalTeams: number;
   optedInTeams: number;
   completionPercent: number;
@@ -272,9 +388,39 @@ function GroupHeaderRow({
   onToggle: () => void;
   onRemind: () => void;
   indentClass?: string;
+  // True only when rendering under the "Fully Completed" filter. Every
+  // leader shown there is, by construction (see
+  // isPersonSubtreeFullyCompleted / buildFullyCompletedGroups), guaranteed
+  // to have every descendant pod at 100% — so this always swaps in the
+  // same green "Completed" tag pods use, never a percentage or "In
+  // Progress", and never needs a per-render re-check of its own.
+  //
+  // Not Started and Opted Out never swap this badge either — see
+  // hideStatusColumn below, which hides the whole Status column for those
+  // filters instead. A leader row never shows "Not started"/"Opted out" of
+  // its own, no matter how uniform its subtree is; those pod statuses
+  // appear only on the actual pod rows' Status column (see TeamRow).
+  showFullyCompletedBadge?: boolean;
+  // True only under the "Not Started" or "Opted Out" filters (see
+  // isParentStatusHiddenFor) — every leader row's Status column renders
+  // completely empty: no percent badge, no derived status, nothing beside
+  // its name. A leader shown there is pure hierarchy context for its
+  // matching pods; only the actual pod rows ever show "Not started" /
+  // "Opted out".
+  hideStatusColumn?: boolean;
+  // Set under any filter that shows a plain percent badge at all: "Total
+  // Teams" / "All Teams" and "Opted In" (see computeHierarchyAggregate,
+  // aggregated from EVERY leaf pod in the leader's whole reporting subtree)
+  // or "In Progress" (see computeVisibleGroupAggregate, aggregated from only
+  // the teams currently listed under this leader in the filtered view).
+  // When present, this always wins over the plain completionPercent-based
+  // badge below (but never over showFullyCompletedBadge/hideStatusColumn,
+  // which only ever apply under a different filter and so never coexist
+  // with this one in practice).
+  hierarchyAggregate?: { percent: number; displayStatus: SurveyStatus };
 }) {
   return (
-    <tr className="bg-gray-50 border-b border-gray-200">
+    <tr className="bg-gray-50 border-b border-gray-200" data-testid="survey-group-header">
       <td colSpan={3} className="px-5 py-3">
         <button
           type="button"
@@ -287,25 +433,39 @@ function GroupHeaderRow({
           </span>
           <div>
             <span className="text-sm font-bold text-gray-900">{name}</span>
-            {badge && (
-              <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-indigo-100 text-indigo-700 align-middle">
-                {badge}
-              </span>
-            )}
             <span className="text-sm text-gray-500 ml-2">
               {totalTeams} teams &middot; {optedInTeams} opted in
             </span>
           </div>
         </button>
       </td>
-      <td className="px-5 py-3 text-center">
-        <span
-          className={`inline-flex items-center justify-center w-full max-w-[120px] px-2.5 py-1 rounded-full text-xs font-bold ${
-            completionPercent >= 50 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800"
-          }`}
-        >
-          {completionPercent}% complete
-        </span>
+      <td className="px-5 py-3 text-center" data-testid="survey-group-status-cell">
+        {hideStatusColumn ? null : showFullyCompletedBadge ? (
+          <StatusBadge status="complete" />
+        ) : hierarchyAggregate ? (
+          hierarchyAggregate.displayStatus === "in_progress" ? (
+            // Same compact badge shape/coloring a pod's own partial
+            // completion uses under Total Teams / In Progress
+            // (getPartialCompletionBadgeClass) — red below 50%, yellow at
+            // 50% and up — never plain text, so a Level-2 row's badge
+            // always matches the Status column's existing pod styling.
+            <span
+              className={`inline-flex items-center justify-center w-full max-w-[120px] px-2.5 py-1 rounded-full text-xs font-semibold ${getPartialCompletionBadgeClass(hierarchyAggregate.percent)}`}
+            >
+              {hierarchyAggregate.percent}% completed
+            </span>
+          ) : (
+            <StatusBadge status={hierarchyAggregate.displayStatus} />
+          )
+        ) : (
+          <span
+            className={`inline-flex items-center justify-center w-full max-w-[120px] px-2.5 py-1 rounded-full text-xs font-bold ${
+              completionPercent >= 50 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800"
+            }`}
+          >
+            {completionPercent}% complete
+          </span>
+        )}
       </td>
       <td className="px-5 py-3 text-right">
         <button
@@ -336,6 +496,105 @@ function OtherHeaderRow({ name, expanded, onToggle }: { name: string; expanded: 
   );
 }
 
+type VisiblePersonGroup = Extract<VisibleGroup, { type: "person" }>;
+
+/**
+ * Renders one leader's header row, its direct pods, and — recursively —
+ * every child leader's own rows underneath. Collapsing this leader's row
+ * hides this whole subtree, since the recursive calls simply don't happen
+ * when `expanded` is false.
+ */
+function PersonGroupRows({
+  group,
+  depth,
+  isExpanded,
+  onToggle,
+  onRemindLeader,
+  onRemindTeam,
+  showFullyCompletedBadge,
+  hideStatusColumn,
+  hierarchyAggregateIndex,
+  showPercentBadge,
+}: {
+  group: VisiblePersonGroup;
+  depth: number;
+  isExpanded: (key: string) => boolean;
+  onToggle: (key: string) => void;
+  onRemindLeader: (id: string) => void;
+  onRemindTeam: (team: SurveyCompletionTeam, ownerId: string) => void;
+  // True only while the "Fully Completed" filter is active. Every group
+  // reaching this component was built by buildFullyCompletedGroups, so
+  // every leader (and every pod under them) is guaranteed fully completed —
+  // this just controls the badge rendered, not which rows appear.
+  showFullyCompletedBadge?: boolean;
+  // True only while the "Not Started" or "Opted Out" filter is active (see
+  // isParentStatusHiddenFor) — every leader row's Status column renders
+  // completely empty, regardless of depth.
+  hideStatusColumn?: boolean;
+  // Set while "Total Teams" / "All Teams" or "Opted In" is active — every
+  // person id's whole-subtree completion aggregate (see
+  // buildHierarchyAggregateIndex), computed once from the raw tree — OR
+  // while "In Progress" is active — every person id's aggregate over only
+  // the teams currently listed under them in this filtered view (see
+  // buildVisibleHierarchyAggregateIndex). Looked up per node below either
+  // way.
+  hierarchyAggregateIndex?: Map<string, { percent: number; displayStatus: SurveyStatus } | null>;
+  // True only while the "Total Teams" / "All Teams" or "In Progress" filter
+  // is active (see isRowBackgroundHiddenFor) — passed straight through to
+  // every pod row (TeamRow) at any depth so its own row background/hover
+  // is removed and its partial-completion display switches to the
+  // color-tiered badge style.
+  showPercentBadge?: boolean;
+}) {
+  const expanded = isExpanded(group.key);
+  const hierarchyAggregate = hierarchyAggregateIndex?.get(group.id) ?? undefined;
+
+  return (
+    <Fragment>
+      <GroupHeaderRow
+        name={group.name}
+        totalTeams={group.totalTeams}
+        optedInTeams={group.optedInTeams}
+        completionPercent={group.completionPercent}
+        remindCount={group.remindCount}
+        expanded={expanded}
+        onToggle={() => onToggle(group.key)}
+        onRemind={() => onRemindLeader(group.id)}
+        indentClass={indentClassFor(HEADER_INDENT_CLASSES, depth)}
+        showFullyCompletedBadge={showFullyCompletedBadge}
+        hideStatusColumn={hideStatusColumn}
+        hierarchyAggregate={hierarchyAggregate}
+      />
+      {expanded &&
+        group.visibleDirectTeams.map((team) => (
+          <TeamRow
+            key={team.teamId}
+            team={team}
+            indentClass={indentClassFor(TEAM_INDENT_CLASSES, depth)}
+            onRemind={() => onRemindTeam(team, group.id)}
+            showPercentBadge={showPercentBadge}
+          />
+        ))}
+      {expanded &&
+        group.visibleChildren.map((child) => (
+          <PersonGroupRows
+            key={child.key}
+            group={child as VisiblePersonGroup}
+            depth={depth + 1}
+            isExpanded={isExpanded}
+            onToggle={onToggle}
+            onRemindLeader={onRemindLeader}
+            onRemindTeam={onRemindTeam}
+            showFullyCompletedBadge={showFullyCompletedBadge}
+            hideStatusColumn={hideStatusColumn}
+            hierarchyAggregateIndex={hierarchyAggregateIndex}
+            showPercentBadge={showPercentBadge}
+          />
+        ))}
+    </Fragment>
+  );
+}
+
 export default function SurveyCompletionDashboard() {
   const [periods, setPeriods] = useState<string[]>([]);
   const [timePeriod, setTimePeriod] = useState<string | undefined>(undefined);
@@ -348,7 +607,6 @@ export default function SurveyCompletionDashboard() {
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const [expandedManagerRows, setExpandedManagerRows] = useState<Set<string>>(new Set());
   const [reminderPlan, setReminderPlan] = useState<ReminderPlan | null>(null);
 
   // Load the list of assessment periods once, for the period dropdown.
@@ -365,6 +623,15 @@ export default function SurveyCompletionDashboard() {
     let cancelled = false;
     setIsLoading(true);
     setError(null);
+    // Clear the previous period's data immediately, before the new fetch
+    // resolves. Without this, overview stays populated from the last
+    // successful load, so the `isLoading && !overview` / `error && !overview`
+    // guards below never fire again on a period switch — a slow or failed
+    // fetch for the newly selected period would otherwise leave the OLD
+    // period's data on screen, silently mislabeled under the new period
+    // (and any fetch error would be swallowed entirely, with no visible
+    // indication anything went wrong).
+    setOverview(null);
 
     getSurveyCompletion(timePeriod)
       .then((data) => {
@@ -411,51 +678,18 @@ export default function SurveyCompletionDashboard() {
     });
   };
 
-  const toggleManagerRow = (managerId: string) => {
-    setExpandedManagerRows((current) => {
-      const next = new Set(current);
-      if (next.has(managerId)) next.delete(managerId);
-      else next.add(managerId);
-      return next;
-    });
+  // Reminder plans are always built from the raw, unfiltered tree — not the
+  // search/filter-narrowed VisibleGroup — so the plan and its counts always
+  // match the real dataset regardless of what's currently on screen.
+  const openTeamReminder = (team: SurveyCompletionTeam, ownerId?: string) => {
+    const owner = ownerId ? findPersonGroup(overview?.groups ?? [], ownerId)?.person : undefined;
+    setReminderPlan(buildTeamReminderPlan(team, { owner }));
   };
 
-  const findDirectorGroup = (directorId: string): Extract<SurveyCompletionGroup, { type: "director" }> | undefined => {
-    return overview?.groups.find(
-      (g): g is Extract<SurveyCompletionGroup, { type: "director" }> => g.type === "director" && g.director.id === directorId,
-    );
-  };
-
-  const findManagerGroup = (managerId: string): SurveyCompletionManagerGroup | undefined => {
-    for (const g of overview?.groups ?? []) {
-      if (g.type === "manager" && g.manager.id === managerId) {
-        return { manager: g.manager, totalTeams: g.totalTeams, optedInTeams: g.optedInTeams, completionPercent: g.completionPercent, remindCount: g.remindCount, teams: g.teams };
-      }
-      if (g.type === "director") {
-        const mg = (g.managers ?? []).find((m) => m.manager.id === managerId);
-        if (mg) return mg;
-      }
-    }
-    return undefined;
-  };
-
-  const openTeamReminder = (
-    team: SurveyCompletionTeam,
-    context: { manager?: SurveyCompletionPerson; director?: SurveyCompletionPerson },
-  ) => {
-    setReminderPlan(buildTeamReminderPlan(team, context));
-  };
-
-  const openManagerReminder = (managerId: string) => {
-    const managerGroup = findManagerGroup(managerId);
-    if (!managerGroup) return;
-    setReminderPlan(buildManagerReminderPlan(managerGroup));
-  };
-
-  const openDirectorReminder = (directorId: string) => {
-    const directorGroup = findDirectorGroup(directorId);
-    if (!directorGroup) return;
-    setReminderPlan(buildDirectorReminderPlan(directorGroup));
+  const openPersonReminder = (id: string) => {
+    const group = findPersonGroup(overview?.groups ?? [], id);
+    if (!group) return;
+    setReminderPlan(buildPersonReminderPlan(group));
   };
 
   const handleSendReminder = () => {
@@ -488,22 +722,69 @@ export default function SurveyCompletionDashboard() {
   }
 
   const data = toSurveyCompletionData(overview);
-  const laggingGroupCount = overview.groups.filter(
-    (group) => group.type !== "other" && group.remindCount > 0,
-  ).length;
+  // The org-wide bulk plan, built once per render from the raw, unfiltered
+  // tree (same "always the real dataset" rule the single team/leader plans
+  // already follow) — includes the "Other" group's own pending pods, which
+  // the previous laggingGroupCount-only-counts-owned-leaders logic silently
+  // dropped from both the button's count and its (nonexistent) preview.
+  const orgReminderPlan = buildOrgReminderPlan(overview.groups);
 
   const searchActive = searchQuery.trim().length > 0;
-  const visibleGroups = buildVisibleGroups(overview.groups, searchQuery, activeFilter);
-  const visibleCount = visibleGroups.reduce((sum, group) => {
-    if (group.type === "director") {
-      return sum + group.visibleDirectTeams.length + group.visibleManagers.reduce((s, m) => s + m.visibleTeams.length, 0);
-    }
-    return sum + group.visibleTeams.length;
-  }, 0);
+  // The "Fully Completed" filter is hierarchy-aware: a leader qualifies
+  // only when every descendant pod in their whole reporting subtree is at
+  // 100% (see isPersonSubtreeFullyCompleted), not merely "has a matching
+  // pod somewhere below them" like every other filter. It therefore needs
+  // its own builder, sharing the same underlying pod/subtree helpers so the
+  // rows shown here can never disagree with what a pod's own Status column
+  // displays.
+  const isFullyCompletedFilter = activeFilter === "complete";
+  const visibleGroups = isFullyCompletedFilter
+    ? buildFullyCompletedGroups(overview.groups, searchQuery)
+    : buildVisibleGroups(overview.groups, searchQuery, activeFilter);
+  const visibleCount = countVisibleTeams(visibleGroups);
   const noResults = searchActive && visibleCount === 0;
 
-  const isGroupExpanded = (group: VisibleGroup) => searchActive || expandedGroups.has(group.key);
-  const isManagerExpanded = (managerId: string) => searchActive || expandedManagerRows.has(managerId);
+  // Under the Not Started or Opted Out filter, a leader row is pure
+  // hierarchy context for its matching pods -- its Status column renders
+  // nothing at all (see isParentStatusHiddenFor, the single shared rule
+  // for this).
+  const hideParentStatusColumn = isParentStatusHiddenFor(activeFilter);
+
+  // Every leader's percentage/status is a hierarchy-wide aggregate,
+  // recalculated from EVERY relevant leaf pod in their whole reporting
+  // subtree (see computeHierarchyAggregate) rather than the backend's own
+  // per-node completionPercent (a different metric -- "what fraction of
+  // this subtree's PODS are fully complete" -- not a Status %). This applies
+  // under every filter that shows a plain percent badge at all: Total Teams
+  // / All Teams and Opted In both read from the FULL unfiltered subtree
+  // (buildHierarchyAggregateIndex) -- opted_out pods are already excluded by
+  // computeHierarchyAggregate itself, so both filters agree on the same
+  // number for the same leader.
+  //
+  // In Progress instead reads from only the teams CURRENTLY LISTED under
+  // each leader in this filtered view (buildVisibleHierarchyAggregateIndex,
+  // over visibleGroups) -- e.g. a manager showing Danville (5/9 = 56%) and
+  // Sausalito (5/9 = 56%) here reads 56%, not a number diluted by that
+  // manager's other, hidden (complete/not_started/opted_out) pods.
+  //
+  // Fully Completed (its own green badge, never a percent) and Not
+  // Started/Opted Out (status column hidden entirely) never need this index.
+  const isInProgressFilter = activeFilter === "in_progress";
+  const usesRawHierarchyAggregate = !hideParentStatusColumn && !isFullyCompletedFilter && !isInProgressFilter;
+  const hierarchyAggregateIndex = isInProgressFilter
+    ? buildVisibleHierarchyAggregateIndex(visibleGroups)
+    : usesRawHierarchyAggregate
+      ? buildHierarchyAggregateIndex(overview.groups)
+      : undefined;
+
+  // Under Total Teams / All Teams AND In Progress, every pod row's Status
+  // column becomes the only place color appears -- no row background at
+  // all (status-driven or hover) -- and partial completion renders as a
+  // color-tiered badge instead of plain red text (see
+  // isRowBackgroundHiddenFor, the single shared rule for this).
+  const showPercentBadge = isRowBackgroundHiddenFor(activeFilter);
+
+  const isGroupExpanded = (key: string) => searchActive || expandedGroups.has(key);
 
   return (
     <div className="space-y-6" data-testid="survey-dashboard">
@@ -613,7 +894,11 @@ export default function SurveyCompletionDashboard() {
       {/* Clicking "Overall completion" swaps this whole area for the
           analytics view; "Back to teams list" swaps it back. */}
       {showOverallAnalytics ? (
-        <OverallAnalyticsView data={data} onBack={() => setShowOverallAnalytics(false)} />
+        <OverallAnalyticsView
+          data={data}
+          assessmentPeriod={overview.assessmentPeriod}
+          onBack={() => setShowOverallAnalytics(false)}
+        />
       ) : (
       <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 p-5 border-b">
@@ -635,7 +920,7 @@ export default function SurveyCompletionDashboard() {
             )}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <div className="relative">
               <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
@@ -644,24 +929,18 @@ export default function SurveyCompletionDashboard() {
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search teams or leaders"
                 data-testid="survey-search-input"
-                className="w-56 pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                className="w-full sm:w-56 pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               />
             </div>
             <button
               type="button"
-              onClick={() =>
-                showToast(
-                  `Reminders sent to ${laggingGroupCount} lagging leader${
-                    laggingGroupCount === 1 ? "" : "s"
-                  }`,
-                )
-              }
-              disabled={laggingGroupCount === 0}
+              onClick={() => setReminderPlan(orgReminderPlan)}
+              disabled={orgReminderPlan.podCount === 0}
               data-testid="survey-remind-all"
               className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
             >
               <Send className="w-4 h-4" />
-              Remind {laggingGroupCount} lagging leader{laggingGroupCount === 1 ? "" : "s"}
+              Remind {orgReminderPlan.podCount} pending pod{orgReminderPlan.podCount === 1 ? "" : "s"}
             </button>
           </div>
         </div>
@@ -695,89 +974,47 @@ export default function SurveyCompletionDashboard() {
                   </td>
                 </tr>
               )}
-              {visibleGroups.map((group) => (
-                <Fragment key={group.key}>
-                  {group.type === "other" ? (
+              {visibleGroups.map((group) =>
+                group.type === "other" ? (
+                  <Fragment key={group.key}>
                     <OtherHeaderRow
                       name={group.name}
-                      expanded={isGroupExpanded(group)}
+                      expanded={isGroupExpanded(group.key)}
                       onToggle={() => toggleGroup(group.key)}
                     />
-                  ) : (
-                    <GroupHeaderRow
-                      name={group.name}
-                      badge={group.type === "manager" ? "Manager" : undefined}
-                      totalTeams={group.totalTeams}
-                      optedInTeams={group.optedInTeams}
-                      completionPercent={group.completionPercent}
-                      remindCount={group.remindCount}
-                      expanded={isGroupExpanded(group)}
-                      onToggle={() => toggleGroup(group.key)}
-                      onRemind={() =>
-                        group.type === "director" ? openDirectorReminder(group.id) : openManagerReminder(group.id)
-                      }
-                    />
-                  )}
-
-                  {isGroupExpanded(group) &&
-                    (group.type === "director" ? (
-                      <>
-                        {group.visibleDirectTeams.map((team) => (
-                          <TeamRow
-                            key={team.teamId}
-                            team={team}
-                            indentClass="pl-12"
-                            onRemind={() => openTeamReminder(team, { director: { id: group.id, name: group.name } })}
-                          />
-                        ))}
-                        {group.visibleManagers.map((manager) => (
-                          <Fragment key={manager.id}>
-                            <GroupHeaderRow
-                              name={manager.name}
-                              totalTeams={manager.totalTeams}
-                              optedInTeams={manager.optedInTeams}
-                              completionPercent={manager.completionPercent}
-                              remindCount={manager.remindCount}
-                              expanded={isManagerExpanded(manager.id)}
-                              onToggle={() => toggleManagerRow(manager.id)}
-                              onRemind={() => openManagerReminder(manager.id)}
-                              indentClass="pl-6"
-                            />
-                            {isManagerExpanded(manager.id) &&
-                              manager.visibleTeams.map((team) => (
-                                <TeamRow
-                                  key={team.teamId}
-                                  team={team}
-                                  indentClass="pl-20"
-                                  onRemind={() => openTeamReminder(team, { manager: { id: manager.id, name: manager.name } })}
-                                />
-                              ))}
-                          </Fragment>
-                        ))}
-                      </>
-                    ) : (
+                    {isGroupExpanded(group.key) &&
                       group.visibleTeams.map((team) => (
                         <TeamRow
                           key={team.teamId}
                           team={team}
                           indentClass="pl-12"
-                          onRemind={() =>
-                            openTeamReminder(
-                              team,
-                              group.type === "manager" ? { manager: { id: group.id, name: group.name } } : {},
-                            )
-                          }
+                          onRemind={() => openTeamReminder(team)}
+                          showPercentBadge={showPercentBadge}
                         />
-                      ))
-                    ))}
-                </Fragment>
-              ))}
+                      ))}
+                  </Fragment>
+                ) : (
+                  <PersonGroupRows
+                    key={group.key}
+                    group={group}
+                    depth={0}
+                    isExpanded={isGroupExpanded}
+                    onToggle={toggleGroup}
+                    onRemindLeader={openPersonReminder}
+                    onRemindTeam={openTeamReminder}
+                    showFullyCompletedBadge={isFullyCompletedFilter}
+                    hideStatusColumn={hideParentStatusColumn}
+                    hierarchyAggregateIndex={hierarchyAggregateIndex}
+                    showPercentBadge={showPercentBadge}
+                  />
+                ),
+              )}
             </tbody>
           </table>
         </div>
 
         <p className="px-5 py-4 text-xs text-gray-500 italic border-t">
-          Reminders go to each team&apos;s director or manager about teams that aren&apos;t fully complete;
+          Reminders go to each team&apos;s leadership owner about teams that aren&apos;t fully complete;
           &quot;Other&quot; teams remind their team lead directly. Opted-out teams are never included.
         </p>
       </div>

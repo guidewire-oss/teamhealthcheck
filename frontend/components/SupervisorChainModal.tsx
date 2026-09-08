@@ -83,7 +83,7 @@ export default function SupervisorChainModal({
               </p>
 
               {chain.length === 0 ? (
-                <p className="text-sm text-gray-900 italic py-4 text-center">
+                <p className="text-sm text-gray-400 italic py-4 text-center">
                   No supervisor chain found. Ensure the team lead has a &quot;Reports To&quot; user assigned.
                 </p>
               ) : (

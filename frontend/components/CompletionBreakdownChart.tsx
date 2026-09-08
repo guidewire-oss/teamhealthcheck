@@ -1,6 +1,7 @@
 "use client";
 
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { formatSlicePercent } from "@/lib/status-breakdown-percent";
 import type { SurveyStatus } from "./SurveyCompletionDashboard";
 
 interface CompletionBreakdownChartProps {
@@ -42,13 +43,12 @@ function BreakdownTooltip({
 }) {
   if (!active || !payload || !payload.length) return null;
   const slice = payload[0].payload;
-  const percent = slice.total ? Math.round((slice.value / slice.total) * 100) : 0;
 
   return (
     <div className="bg-gray-900 text-white text-xs rounded-lg px-3 py-2 shadow-lg">
       <div className="font-semibold">{slice.label}</div>
       <div className="text-gray-300 mt-0.5">
-        {slice.value} teams &middot; {percent}%
+        {slice.value} teams &middot; {formatSlicePercent(slice.value, slice.total)}
       </div>
     </div>
   );
@@ -77,7 +77,6 @@ export default function CompletionBreakdownChart({
           nameKey="label"
           cx="50%"
           cy="50%"
-          innerRadius={55}
           outerRadius={85}
           paddingAngle={2}
           isAnimationActive
@@ -92,7 +91,15 @@ export default function CompletionBreakdownChart({
           verticalAlign="bottom"
           height={36}
           iconType="circle"
-          formatter={(value: string) => <span className="text-xs text-gray-600">{value}</span>}
+          formatter={(value: string, entry: { payload?: unknown }) => {
+            const slice = entry?.payload as BreakdownSlice | undefined;
+            const percentText = slice ? formatSlicePercent(slice.value, slice.total) : "";
+            return (
+              <span className="text-xs text-gray-600">
+                {value} ({percentText})
+              </span>
+            );
+          }}
         />
       </PieChart>
     </ResponsiveContainer>

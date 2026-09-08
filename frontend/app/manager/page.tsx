@@ -677,7 +677,7 @@ export default function ManagerPage() {
               <div>
                 <h3 className="text-xl font-semibold text-gray-900">Health Trends Over Time</h3>
                 {trendsView === 'dimensions' && trendsData.length > 0 && (
-                  <p className="text-xs text-gray-900 mt-0.5">
+                  <p className="text-xs text-gray-400 mt-0.5">
                     One card per dimension — score vs. time
                     {selectedTrendTeam === ''
                       ? ' · averaged across all teams'
@@ -798,7 +798,7 @@ export default function ManagerPage() {
                                   ? 'text-green-600'
                                   : direction === 'down'
                                   ? 'text-red-600'
-                                  : 'text-gray-900'
+                                  : 'text-gray-400'
                               }
                             >
                               {direction === 'up'
@@ -844,14 +844,14 @@ export default function ManagerPage() {
                               </LineChart>
                             </ResponsiveContainer>
                           ) : (
-                            <div className="h-[52px] flex items-center justify-center text-xs text-gray-900">
+                            <div className="h-[52px] flex items-center justify-center text-xs text-gray-300">
                               Single period
                             </div>
                           )}
 
                           {/* Latest period label */}
                           {data.length > 0 && (
-                            <p className="text-xs text-gray-900 truncate text-right">
+                            <p className="text-xs text-gray-400 truncate text-right">
                               {data[data.length - 1].period}
                             </p>
                           )}
@@ -1086,7 +1086,7 @@ export default function ManagerPage() {
                   <div className={`text-5xl font-bold mb-2 ${
                     dashboardData.teams.length > 0
                       ? getHealthColor(dashboardData.teams.reduce((sum, t) => sum + t.overallHealth, 0) / dashboardData.teams.length).replace('bg-', 'text-').replace('-100', '-600')
-                      : 'text-gray-900'
+                      : 'text-gray-400'
                   }`}>
                     {dashboardData.teams.length > 0
                       ? formatHealthScore(
@@ -1267,7 +1267,7 @@ export default function ManagerPage() {
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
               </div>
             ) : actionSummary.length === 0 ? (
-              <div className="text-center py-12 text-gray-900">
+              <div className="text-center py-12 text-gray-400">
                 <ListTodo className="w-10 h-10 mx-auto mb-3 text-gray-200" />
                 <p className="font-medium text-gray-500">No action items found</p>
                 <p className="text-sm mt-1">Team Leads create action items on their team dashboards.</p>

@@ -26,7 +26,9 @@ func NewUserAdminHandler(userRepo user.Repository, teamRepo team.Repository) *Us
 
 // ListUsers handles GET /api/v1/admin/users
 func (h *UserAdminHandler) ListUsers(c *gin.Context) {
-	users, err := h.userRepo.FindAll(c.Request.Context())
+	ctx := c.Request.Context()
+
+	users, err := h.userRepo.FindAll(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
 			Error:   "Failed to query users",
@@ -35,11 +37,27 @@ func (h *UserAdminHandler) ListUsers(c *gin.Context) {
 		return
 	}
 
+	// Batch-load every user's team memberships in one query instead of one
+	// round trip per user — with real production-sized user counts, the old
+	// per-user loop here was the actual cause of the Users tab hanging on
+	// "Loading users..." for a long time.
+	userIDs := make([]string, len(users))
+	for i, usr := range users {
+		userIDs[i] = usr.ID
+	}
+	teamIDsByUser, err := h.userRepo.FindTeamIDsForUsers(ctx, userIDs)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to query team memberships",
+			Message: err.Error(),
+		})
+		return
+	}
+
 	// Convert to DTOs
 	userDTOs := make([]dto.AdminUserDTO, len(users))
 	for i, usr := range users {
-		// Fetch team IDs
-		teamIds, _ := h.userRepo.FindTeamIDsForUser(c.Request.Context(), usr.ID)
+		teamIds := teamIDsByUser[usr.ID]
 		if teamIds == nil {
 			teamIds = []string{}
 		}

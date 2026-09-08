@@ -1,82 +1,71 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { BarChart, Bar, Cell, LabelList, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import type { SurveyStatus, SurveyCompletionData } from "./SurveyCompletionDashboard";
+import { buildInProgressBars } from "@/lib/team-completion-filter";
+import { STATUS_BADGE_CLASS } from "@/lib/status-colors";
+import type { SurveyCompletionData } from "./SurveyCompletionDashboard";
 
 interface TeamCompletionBarChartProps {
   teamStats: SurveyCompletionData["teamStats"];
 }
 
-// Same palette used for the status pills/badges in the "All teams" table.
-const STATUS_CHART_COLOR: Record<SurveyStatus, string> = {
-  complete: "#10B981",
-  in_progress: "#F59E0B",
-  not_started: "#EF4444",
-  opted_out: "#9CA3AF",
+// The exact wording requested for this specific badge -- "Completed" (not
+// lib/status-colors.ts's "Complete") and "In Progress" (capital P, matching
+// the filter tab's own label). Colors still come from the shared
+// STATUS_BADGE_CLASS palette, so this is a wording-only override scoped to
+// this one badge; every other status label elsewhere in the app is
+// unaffected.
+const DISPLAY_STATUS_LABEL: Record<"complete" | "in_progress", string> = {
+  complete: "Completed",
+  in_progress: "In Progress",
 };
 
-interface BarDatum {
-  teamName: string;
-  percent: number;
-  completed: number;
-  total: number;
-  color: string;
-  [key: string]: unknown; // satisfies Recharts' generic chart-data-input shape
-}
-
-function TeamBarTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: BarDatum }> }) {
-  if (!active || !payload || !payload.length) return null;
-  const d = payload[0].payload;
-
-  return (
-    <div className="bg-gray-900 text-white text-xs rounded-lg px-3 py-2 shadow-lg">
-      <div className="font-semibold">{d.teamName}</div>
-      <div className="text-gray-300 mt-0.5">
-        {d.completed} of {d.total} completed ({d.percent}%)
-      </div>
-    </div>
-  );
-}
-
+/**
+ * Plain HTML rows (not a Recharts chart) so the percent text and status
+ * badge are both always visible and reliably testable -- a Recharts
+ * LabelList/Tooltip can't guarantee that (SVG label content isn't a
+ * reliable jsdom assertion target, and a Tooltip only shows on hover).
+ *
+ * This list only ever shows genuinely in-progress teams/pods -- Completed
+ * teams (including a raw in_progress team whose percentage rounds up to
+ * 100%), Not Started, and Opted Out are all excluded by buildInProgressBars
+ * -- so every badge below always reads "In Progress" and is never green.
+ * Search and ascending-percent sorting still run first, on whatever the
+ * caller already narrowed down -- see lib/team-completion-filter.ts.
+ */
 export default function TeamCompletionBarChart({ teamStats }: TeamCompletionBarChartProps) {
-  // Opted-out teams have no meaningful completion percentage — omit them
-  // rather than showing a misleading 0% bar.
-  const bars: BarDatum[] = teamStats
-    .filter((team) => team.status !== "opted_out" && team.total > 0)
-    .map((team) => ({
-      teamName: team.teamName,
-      percent: Math.round((team.completed / team.total) * 100),
-      completed: team.completed,
-      total: team.total,
-      color: STATUS_CHART_COLOR[team.status],
-    }))
-    .sort((a, b) => b.percent - a.percent);
+  const bars = buildInProgressBars(teamStats);
 
   return (
-    <ResponsiveContainer width="100%" height={Math.max(180, bars.length * 34)}>
-      <BarChart data={bars} layout="vertical" margin={{ top: 4, right: 40, left: 8, bottom: 4 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" horizontal={false} />
-        <XAxis
-          type="number"
-          domain={[0, 100]}
-          tickFormatter={(v) => `${v}%`}
-          tick={{ fontSize: 11, fill: "#9ca3af" }}
-        />
-        <YAxis type="category" dataKey="teamName" width={70} tick={{ fontSize: 12, fill: "#374151" }} />
-        <Tooltip content={<TeamBarTooltip />} cursor={{ fill: "#f3f4f6" }} />
-        <Bar dataKey="percent" radius={[0, 4, 4, 0]} isAnimationActive animationDuration={600}>
-          {bars.map((bar) => (
-            <Cell key={bar.teamName} fill={bar.color} />
-          ))}
-          <LabelList
-            dataKey="percent"
-            position="right"
-            formatter={(label: ReactNode) => `${label}%`}
-            style={{ fontSize: 11, fill: "#374151", fontWeight: 600 }}
-          />
-        </Bar>
-      </BarChart>
-    </ResponsiveContainer>
+    <ul className="space-y-2.5" data-testid="team-completion-list">
+      {bars.map((bar) => (
+        <li
+          key={bar.teamId}
+          className="flex items-center gap-3"
+          data-testid="team-completion-row"
+          title={`${bar.completed} of ${bar.total} completed`}
+        >
+          <span className="w-20 flex-shrink-0 text-xs text-gray-700 truncate">{bar.teamName}</span>
+          <div className="flex-1 h-2.5 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all"
+              style={{ width: `${Math.min(100, bar.percent)}%`, backgroundColor: bar.color }}
+              data-testid="team-completion-progress-bar"
+            />
+          </div>
+          <span
+            className="text-xs font-semibold text-gray-700 flex-shrink-0 whitespace-nowrap"
+            data-testid="team-completion-percent"
+          >
+            {bar.percent}% completed
+          </span>
+          <span
+            className={`px-2 py-0.5 rounded-full text-xs font-semibold flex-shrink-0 whitespace-nowrap ${STATUS_BADGE_CLASS[bar.status]}`}
+            data-testid="team-completion-status-badge"
+          >
+            {DISPLAY_STATUS_LABEL[bar.status]}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }

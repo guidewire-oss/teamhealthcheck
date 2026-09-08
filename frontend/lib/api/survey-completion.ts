@@ -18,8 +18,9 @@ export interface SurveyCompletionTeam {
   // backend has no post-workshop data to report in that case.
   postWorkshopCompleted: boolean | null;
   status: SurveyStatus;
-  // Set only for teams in the "Other" group (no Level-2/Level-3 owner) —
-  // the Level-4 team lead reminders escalate to.
+  // Set whenever the team has a Level-4 team lead — used both for the
+  // "Other" group's escalation target and to label this pod's leaf in every
+  // reminder-target tree.
   teamLeadId?: string;
   teamLeadName?: string;
 }
@@ -28,10 +29,37 @@ export interface SurveyCompletionPerson {
   id: string;
   name: string;
   email?: string;
+  // hierarchy_level_id — schema-driven, not a display string.
+  levelId: string;
+  // hierarchy_levels.name — the human-readable role/sub-level label, e.g.
+  // "Senior Director", "Director", "Senior Manager", "Manager". Never
+  // invented client-side; always whatever the organization's own hierarchy
+  // configuration calls that level.
+  level: string;
 }
 
-export interface SurveyCompletionManagerGroup {
-  manager: SurveyCompletionPerson;
+/**
+ * A leadership person's row in the recursive hierarchy — their own direct
+ * pods and, recursively, their own children (always other person groups;
+ * "Other" is exclusively a top-level catch-all, never nested under a
+ * leader). There is no separate type per tier — the same shape nests to
+ * whatever depth an organization's reports_to chains actually go.
+ */
+export interface SurveyCompletionPersonGroup {
+  type: 'person';
+  person: SurveyCompletionPerson;
+  totalTeams: number;
+  optedInTeams: number;
+  completionPercent: number;
+  remindCount: number;
+  directTeams: SurveyCompletionTeam[];
+  children: SurveyCompletionPersonGroup[];
+}
+
+/** The catch-all top-level group for pods with no resolvable leadership owner. */
+export interface SurveyCompletionOtherGroup {
+  type: 'other';
+  label: string;
   totalTeams: number;
   optedInTeams: number;
   completionPercent: number;
@@ -39,41 +67,8 @@ export interface SurveyCompletionManagerGroup {
   teams: SurveyCompletionTeam[];
 }
 
-/**
- * One top-level row in the survey-completion table:
- * - "director": a Level-2 director, with direct teams and nested Level-3 managers.
- * - "manager": a Level-3 manager with no resolvable director, standing alone.
- * - "other": the catch-all group for teams with neither a director nor a manager.
- */
-export type SurveyCompletionGroup =
-  | {
-      type: 'director';
-      director: SurveyCompletionPerson;
-      totalTeams: number;
-      optedInTeams: number;
-      completionPercent: number;
-      remindCount: number;
-      directTeams: SurveyCompletionTeam[];
-      managers: SurveyCompletionManagerGroup[];
-    }
-  | {
-      type: 'manager';
-      manager: SurveyCompletionPerson;
-      totalTeams: number;
-      optedInTeams: number;
-      completionPercent: number;
-      remindCount: number;
-      teams: SurveyCompletionTeam[];
-    }
-  | {
-      type: 'other';
-      label: string;
-      totalTeams: number;
-      optedInTeams: number;
-      completionPercent: number;
-      remindCount: number;
-      teams: SurveyCompletionTeam[];
-    };
+/** One top-level row in the survey-completion table: a leader, or "Other". */
+export type SurveyCompletionGroup = SurveyCompletionPersonGroup | SurveyCompletionOtherGroup;
 
 export interface SurveyCompletionTrendPoint {
   label: string;

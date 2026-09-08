@@ -421,10 +421,8 @@ export default function AdminPage() {
   };
 
   // Get user's teams
-  const getUserTeams = (userId: string): string => {
-    const userTeams = adminTeams.filter((team) =>
-      users.find((u) => u.id === userId)?.teamIds.includes(team.id),
-    );
+  const getUserTeams = (teamIds: string[]): string => {
+    const userTeams = adminTeams.filter((team) => teamIds.includes(team.id));
 
     if (userTeams.length === 0) return "-";
     if (userTeams.length === 1) return userTeams[0].name;
@@ -624,11 +622,11 @@ export default function AdminPage() {
       </div>
 
       <div className="container mx-auto px-4 py-8">
-        <div className="flex gap-4 mb-8 border-b">
+        <div className="flex gap-4 mb-8 border-b overflow-x-auto" data-testid="admin-tab-bar">
           <button
             data-testid="hierarchy-tab"
             onClick={() => setActiveTab("hierarchy")}
-            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
               activeTab === "hierarchy"
                 ? "text-indigo-600 border-indigo-600"
                 : "text-gray-500 border-transparent hover:text-gray-700"
@@ -642,7 +640,7 @@ export default function AdminPage() {
           <button
             data-testid="teams-tab"
             onClick={() => setActiveTab("teams")}
-            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
               activeTab === "teams"
                 ? "text-indigo-600 border-indigo-600"
                 : "text-gray-500 border-transparent hover:text-gray-700"
@@ -656,7 +654,7 @@ export default function AdminPage() {
           <button
             data-testid="survey-completion-tab"
             onClick={() => setActiveTab("surveyCompletion")}
-            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
               activeTab === "surveyCompletion"
                 ? "text-indigo-600 border-indigo-600"
                 : "text-gray-500 border-transparent hover:text-gray-700"
@@ -670,7 +668,7 @@ export default function AdminPage() {
           <button
             data-testid="users-tab"
             onClick={() => setActiveTab("users")}
-            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
               activeTab === "users"
                 ? "text-indigo-600 border-indigo-600"
                 : "text-gray-500 border-transparent hover:text-gray-700"
@@ -684,7 +682,7 @@ export default function AdminPage() {
           <button
             data-testid="settings-tab"
             onClick={() => setActiveTab("settings")}
-            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
               activeTab === "settings"
                 ? "text-indigo-600 border-indigo-600"
                 : "text-gray-500 border-transparent hover:text-gray-700"
@@ -1547,7 +1545,7 @@ export default function AdminPage() {
                         </td>
                         <td className="px-6 py-4">
                           <div className="text-sm text-gray-500">
-                            {getUserTeams(userItem.id)}
+                            {getUserTeams(userItem.teamIds)}
                           </div>
                         </td>
                         <td className="px-6 py-4">
@@ -1729,7 +1727,7 @@ export default function AdminPage() {
                       </thead>
                       <tbody className="divide-y">
                         {teams.length === 0 ? (
-                          <tr><td colSpan={2} className="px-4 py-3 text-gray-900 text-center">No teams configured</td></tr>
+                          <tr><td colSpan={2} className="px-4 py-3 text-gray-400 text-center">No teams configured</td></tr>
                         ) : teams.map((t) => (
                           <tr key={t.id}>
                             <td className="px-4 py-2 font-medium text-gray-900">{t.name}</td>
@@ -1737,7 +1735,7 @@ export default function AdminPage() {
                               {t.distributionListEmail ? (
                                 <span className="text-gray-700">{t.distributionListEmail}</span>
                               ) : (
-                                <span className="text-gray-900">Not set</span>
+                                <span className="text-gray-400">Not set</span>
                               )}
                             </td>
                           </tr>
