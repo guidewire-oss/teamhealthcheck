@@ -18,11 +18,14 @@ type Team struct {
 	MemberCount           int              `json:"memberCount"`
 	SupervisorChain       []SupervisorLink `json:"supervisorChain"`
 	DistributionListEmail *string          `json:"distributionListEmail,omitempty"`
-	Department            string           `json:"department,omitempty"`
-	Division              string           `json:"division,omitempty"`
-	Tags                  []string         `json:"tags,omitempty"`
-	CreatedAt             time.Time        `json:"createdAt,omitempty"`
-	UpdatedAt             time.Time        `json:"updatedAt,omitempty"`
+	// HealthCheckEnabled reports whether the team participates in health checks.
+	// An external organization snapshot may set it; see docs/organization-snapshot-contract.md.
+	HealthCheckEnabled bool      `json:"healthCheckEnabled"`
+	Department         string    `json:"department,omitempty"`
+	Division           string    `json:"division,omitempty"`
+	Tags               []string  `json:"tags,omitempty"`
+	CreatedAt          time.Time `json:"createdAt,omitempty"`
+	UpdatedAt          time.Time `json:"updatedAt,omitempty"`
 }
 
 // TeamMember represents a member of a team

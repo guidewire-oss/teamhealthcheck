@@ -44,6 +44,7 @@ import {
 } from "lucide-react";
 import HierarchyConfig from "@/components/HierarchyConfig";
 import DimensionConfig from "@/components/DimensionConfig";
+import DataProviderConfig from "@/components/DataProviderConfig";
 import SupervisorChainModal from "@/components/SupervisorChainModal";
 import TeamMembersModal from "@/components/TeamMembersModal";
 import DocsLink from "@/components/DocsLink";
@@ -1611,6 +1612,10 @@ export default function AdminPage() {
               </h2>
 
               <div className="space-y-6">
+                <div data-testid="data-provider-settings">
+                  <DataProviderConfig />
+                </div>
+
                 <div data-testid="dimensions-settings">
                   <DimensionConfig />
                 </div>

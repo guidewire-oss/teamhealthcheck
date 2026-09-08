@@ -26,10 +26,11 @@ func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, e
 	var teamLeadName sql.NullString
 	var cadence sql.NullString
 	var distributionListEmail sql.NullString
+	var healthCheckEnabled sql.NullBool
 	var createdAt, updatedAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, `
-		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, u.full_name
+		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name
 		FROM teams t
 		LEFT JOIN users u ON t.team_lead_id = u.id
 		WHERE t.id = $1
@@ -41,6 +42,7 @@ func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, e
 		&createdAt,
 		&updatedAt,
 		&distributionListEmail,
+		&healthCheckEnabled,
 		&teamLeadName,
 	)
 
@@ -66,6 +68,7 @@ func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, e
 	if distributionListEmail.Valid {
 		t.DistributionListEmail = &distributionListEmail.String
 	}
+	t.HealthCheckEnabled = !healthCheckEnabled.Valid || healthCheckEnabled.Bool
 	if createdAt.Valid {
 		t.CreatedAt = createdAt.Time
 	}
@@ -105,7 +108,7 @@ func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, e
 // FindAll retrieves all teams
 func (r *TeamRepository) FindAll(ctx context.Context) ([]*team.Team, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, u.full_name
+		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name
 		FROM teams t
 		LEFT JOIN users u ON t.team_lead_id = u.id
 		ORDER BY t.name
@@ -137,7 +140,7 @@ func (r *TeamRepository) FindAllWithDetails(ctx context.Context) ([]team.Team, e
 // FindByLeadID retrieves all teams led by a specific user
 func (r *TeamRepository) FindByLeadID(ctx context.Context, leadID string) ([]*team.Team, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, u.full_name
+		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name
 		FROM teams t
 		LEFT JOIN users u ON t.team_lead_id = u.id
 		WHERE t.team_lead_id = $1
@@ -155,7 +158,7 @@ func (r *TeamRepository) FindByLeadID(ctx context.Context, leadID string) ([]*te
 // FindBySupervisorID retrieves all teams where a user is in the supervisor chain
 func (r *TeamRepository) FindBySupervisorID(ctx context.Context, supervisorID string) ([]*team.Team, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT DISTINCT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, u.full_name
+		SELECT DISTINCT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name
 		FROM teams t
 		INNER JOIN team_supervisors ts ON t.id = ts.team_id
 		LEFT JOIN users u ON t.team_lead_id = u.id
@@ -535,6 +538,7 @@ func (r *TeamRepository) scanTeams(ctx context.Context, rows *sql.Rows) ([]*team
 		var teamLeadName sql.NullString
 		var cadence sql.NullString
 		var distributionListEmail sql.NullString
+		var healthCheckEnabled sql.NullBool
 		var createdAt, updatedAt sql.NullTime
 
 		err := rows.Scan(
@@ -545,6 +549,7 @@ func (r *TeamRepository) scanTeams(ctx context.Context, rows *sql.Rows) ([]*team
 			&createdAt,
 			&updatedAt,
 			&distributionListEmail,
+			&healthCheckEnabled,
 			&teamLeadName,
 		)
 		if err != nil {
@@ -566,6 +571,9 @@ func (r *TeamRepository) scanTeams(ctx context.Context, rows *sql.Rows) ([]*team
 		if distributionListEmail.Valid {
 			t.DistributionListEmail = &distributionListEmail.String
 		}
+		// NOT NULL in the schema; treat an unexpected NULL as participating,
+		// matching the column default.
+		t.HealthCheckEnabled = !healthCheckEnabled.Valid || healthCheckEnabled.Bool
 		if createdAt.Valid {
 			t.CreatedAt = createdAt.Time
 		}

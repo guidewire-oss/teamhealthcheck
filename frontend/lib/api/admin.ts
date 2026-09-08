@@ -741,3 +741,80 @@ export function clearAdminCache(): void {
 export function clearAdminCacheKeys(...keys: string[]): void {
   keys.forEach((key) => adminCache.delete(key));
 }
+
+// ============================================================================
+// ORGANIZATION PROVIDER API METHODS
+// ============================================================================
+
+/**
+ * Whether the external organization-data provider is configured.
+ *
+ * There is no token field: the provider credential lives only in the
+ * backend's environment configuration, never in the database or this response.
+ */
+export interface OrganizationProviderSettings {
+  provider: string;
+  /** DATA_PROVIDER_BASE_URL is set on the backend and passed construction-time validation. */
+  baseUrlConfigured: boolean;
+  /** DATA_PROVIDER_API_TOKEN is set on the backend. */
+  tokenConfigured: boolean;
+  /** Every prerequisite is met, so a sync can run. */
+  readyToSync: boolean;
+}
+
+/** A snapshot user that could not be imported, and why. */
+export interface SkippedProviderUser {
+  userId: string;
+  username: string;
+  hierarchyLevelId: string;
+  reason: string;
+}
+
+/** The outcome of one synchronization run. */
+export interface OrganizationSyncResult {
+  status: string;
+  teamsSynced: number;
+  usersSynced: number;
+  membershipsSynced: number;
+  membershipsRemoved: number;
+  healthChecksDisabled: number;
+  healthChecksEnabled: number;
+  usersDeleted: number;
+  teamsDeleted: number;
+  /** Action items removed as a side effect of the deletions above (cascaded, not held back). */
+  actionItemsDeleted: number;
+  usersSkipped: number;
+  skippedUsers?: SkippedProviderUser[];
+  managerLinksCleared: number;
+  teamLeadsCleared: number;
+  membershipsDiscarded: number;
+  startedAt: string;
+  completedAt: string;
+}
+
+/**
+ * Fetches organization provider configuration readiness.
+ *
+ * There is no token field anywhere in this response: the provider credential
+ * lives only in the backend's environment configuration
+ * (DATA_PROVIDER_BASE_URL / DATA_PROVIDER_API_TOKEN) and is never entered,
+ * stored, or displayed through this UI.
+ */
+export async function getOrganizationProviderSettings(): Promise<OrganizationProviderSettings> {
+  return createApiClient<OrganizationProviderSettings>(
+    `${API_BASE_URL}/api/v1/admin/settings/organization-provider`
+  );
+}
+
+/**
+ * Triggers a manual organization sync
+ *
+ * Rewrites users, teams and memberships, so callers must clear the admin cache
+ * on success or the UI will keep serving pre-sync counts for up to two minutes.
+ */
+export async function syncOrganizationProvider(): Promise<OrganizationSyncResult> {
+  return createApiClient<OrganizationSyncResult>(
+    `${API_BASE_URL}/api/v1/admin/organization-provider/sync`,
+    { method: 'POST' }
+  );
+}

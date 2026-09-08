@@ -34,8 +34,18 @@ func TestNewClient_RejectsEmptyAPIToken(t *testing.T) {
 	}
 }
 
+func TestNewClient_RejectsWhitespaceOnlyAPIToken(t *testing.T) {
+	client, err := NewClient(&Config{BaseURL: "https://provider.example.com", APIToken: "   "})
+	if err != ErrEmptyAPIToken {
+		t.Fatalf("err = %v, want %v", err, ErrEmptyAPIToken)
+	}
+	if client != nil {
+		t.Fatalf("expected nil client, got %+v", client)
+	}
+}
+
 func TestNewClient_RejectsRelativeBaseURL(t *testing.T) {
-	_, err := NewClient(&Config{BaseURL: "/pods", APIToken: "secret-token"})
+	_, err := NewClient(&Config{BaseURL: "/resource", APIToken: "secret-token"})
 	if err == nil {
 		t.Fatal("expected an error for a relative base URL, got nil")
 	}
@@ -55,11 +65,12 @@ func TestNewClient_RejectsHostlessBaseURL(t *testing.T) {
 	}
 }
 
-func TestClient_Do_SendsAPITokenHeader(t *testing.T) {
-	var receivedHeader, receivedPath string
+func TestClient_Do_SendsAPIKeyHeader(t *testing.T) {
+	var receivedHeader, receivedPath, receivedAccept string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedHeader = r.Header.Get("x-api-token")
+		receivedHeader = r.Header.Get("x-api-key")
 		receivedPath = r.URL.Path
+		receivedAccept = r.Header.Get("Accept")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -69,7 +80,7 @@ func TestClient_Do_SendsAPITokenHeader(t *testing.T) {
 		t.Fatalf("NewClient returned error: %v", err)
 	}
 
-	resp, err := client.Do(context.Background(), http.MethodGet, "/pods", nil)
+	resp, err := client.Do(context.Background(), http.MethodGet, "/resource", nil)
 	if err != nil {
 		t.Fatalf("Do returned error: %v", err)
 	}
@@ -79,10 +90,13 @@ func TestClient_Do_SendsAPITokenHeader(t *testing.T) {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 	if receivedHeader != "secret-token" {
-		t.Errorf("x-api-token header = %q, want %q", receivedHeader, "secret-token")
+		t.Errorf("x-api-key header = %q, want %q", receivedHeader, "secret-token")
 	}
-	if receivedPath != "/pods" {
-		t.Errorf("path = %q, want %q", receivedPath, "/pods")
+	if receivedPath != "/resource" {
+		t.Errorf("path = %q, want %q", receivedPath, "/resource")
+	}
+	if receivedAccept != "application/json" {
+		t.Errorf("Accept = %q, want %q", receivedAccept, "application/json")
 	}
 }
 
@@ -99,27 +113,27 @@ func TestClient_Do_JoinsBaseURLAndPathRegardlessOfSlashes(t *testing.T) {
 		t.Fatalf("NewClient returned error: %v", err)
 	}
 
-	resp, err := client.Do(context.Background(), http.MethodGet, "/pods", nil)
+	resp, err := client.Do(context.Background(), http.MethodGet, "/resource", nil)
 	if err != nil {
 		t.Fatalf("Do returned error: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if receivedPath != "/pods" {
-		t.Errorf("path = %q, want %q", receivedPath, "/pods")
+	if receivedPath != "/resource" {
+		t.Errorf("path = %q, want %q", receivedPath, "/resource")
 	}
 }
 
 func TestClient_Do_RejectsCrossOriginRedirect(t *testing.T) {
 	var otherHostReceivedHeader string
 	otherHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		otherHostReceivedHeader = r.Header.Get("x-api-token")
+		otherHostReceivedHeader = r.Header.Get("x-api-key")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer otherHost.Close()
 
 	originHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, otherHost.URL+"/pods", http.StatusFound)
+		http.Redirect(w, r, otherHost.URL+"/resource", http.StatusFound)
 	}))
 	defer originHost.Close()
 
@@ -128,7 +142,7 @@ func TestClient_Do_RejectsCrossOriginRedirect(t *testing.T) {
 		t.Fatalf("NewClient returned error: %v", err)
 	}
 
-	resp, err := client.Do(context.Background(), http.MethodGet, "/pods", nil)
+	resp, err := client.Do(context.Background(), http.MethodGet, "/resource", nil)
 	if err == nil {
 		t.Fatal("expected an error rejecting the cross-origin redirect, got nil")
 	}
@@ -136,7 +150,7 @@ func TestClient_Do_RejectsCrossOriginRedirect(t *testing.T) {
 		resp.Body.Close()
 	}
 	if otherHostReceivedHeader != "" {
-		t.Fatalf("x-api-token leaked to the redirect target: %q", otherHostReceivedHeader)
+		t.Fatalf("x-api-key leaked to the redirect target: %q", otherHostReceivedHeader)
 	}
 }
 
@@ -154,7 +168,7 @@ func TestClient_Do_RespectsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err = client.Do(ctx, http.MethodGet, "/pods", nil)
+	_, err = client.Do(ctx, http.MethodGet, "/resource", nil)
 	if err == nil {
 		t.Fatal("expected an error from a cancelled context, got nil")
 	}
