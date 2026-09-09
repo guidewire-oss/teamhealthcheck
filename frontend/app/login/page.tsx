@@ -11,8 +11,8 @@ import { Lock, User, AlertCircle, Users, LogIn } from 'lucide-react';
 export default function LoginPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
-        <p className="text-gray-500">Loading...</p>
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-slate-900 dark:to-slate-950 flex items-center justify-center">
+        <p className="text-gray-500 dark:text-slate-400">Loading...</p>
       </div>
     }>
       <LoginPageContent />
@@ -101,24 +101,24 @@ function LoginPageContent() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-slate-900 dark:to-slate-950 flex items-center justify-center p-4">
       <div className="max-w-4xl w-full">
-        <div className="bg-white rounded-2xl shadow-xl overflow-hidden">
+        <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl overflow-hidden border border-gray-200 dark:border-slate-800">
           <div className={`grid ${isDemoMode ? 'md:grid-cols-2' : ''}`}>
             {/* Login Form */}
             <div className="p-8">
               <div className="text-center mb-8">
-                <div className="inline-flex items-center justify-center w-16 h-16 bg-indigo-100 rounded-full mb-4">
-                  <Lock className="w-8 h-8 text-indigo-600" />
+                <div className="inline-flex items-center justify-center w-16 h-16 bg-indigo-100 dark:bg-indigo-950/70 rounded-full mb-4">
+                  <Lock className="w-8 h-8 text-indigo-600 dark:text-indigo-400" />
                 </div>
-                <h1 className="text-3xl font-bold text-gray-900">Team Health Check</h1>
-                <p className="text-gray-500 mt-2">Sign in to continue</p>
+                <h1 className="text-3xl font-bold text-gray-900 dark:text-slate-100">Team Health Check</h1>
+                <p className="text-gray-500 dark:text-slate-400 mt-2">Sign in to continue</p>
               </div>
 
               {sessionExpired && (
                 <div
                   data-testid="session-expired-banner"
-                  className="mb-6 flex items-center gap-2 text-amber-700 text-sm bg-amber-50 border border-amber-200 p-3 rounded-lg"
+                  className="mb-6 flex items-center gap-2 text-amber-700 dark:text-amber-300 text-sm bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 p-3 rounded-lg"
                 >
                   <AlertCircle className="w-4 h-4 flex-shrink-0" />
                   <span>Your session has expired. Please log in again.</span>
@@ -127,7 +127,7 @@ function LoginPageContent() {
 
               <form onSubmit={handleLogin} className="space-y-6">
                 <div>
-                  <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-2">
+                  <label htmlFor="username" className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-2">
                     Username
                   </label>
                   <div className="relative">
@@ -137,7 +137,7 @@ function LoginPageContent() {
                       type="text"
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
-                      className="w-full px-4 py-3 pl-10 border border-gray-300 rounded-lg text-gray-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder:text-gray-400"
+                      className="w-full px-4 py-3 pl-10 border border-gray-300 dark:border-slate-700 rounded-lg text-gray-900 dark:text-slate-100 bg-white dark:bg-slate-800 focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder:text-gray-400 dark:placeholder:text-slate-500"
                       placeholder="Enter username"
                       required
                     />
@@ -146,7 +146,7 @@ function LoginPageContent() {
                 </div>
 
                 <div>
-                  <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-2">
+                  <label htmlFor="password" className="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-2">
                     Password
                   </label>
                   <div className="relative">
@@ -156,7 +156,7 @@ function LoginPageContent() {
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="w-full px-4 py-3 pl-10 border border-gray-300 rounded-lg text-gray-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder:text-gray-400"
+                      className="w-full px-4 py-3 pl-10 border border-gray-300 dark:border-slate-700 rounded-lg text-gray-900 dark:text-slate-100 bg-white dark:bg-slate-800 focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder:text-gray-400 dark:placeholder:text-slate-500"
                       placeholder="Enter password"
                       required
                     />
@@ -165,7 +165,7 @@ function LoginPageContent() {
                 </div>
 
                 {error && (
-                  <div className="flex items-center gap-2 text-red-600 text-sm bg-red-50 p-3 rounded-lg" data-testid="login-error">
+                  <div className="flex items-center gap-2 text-red-600 dark:text-red-400 text-sm bg-red-50 dark:bg-red-950/40 p-3 rounded-lg" data-testid="login-error">
                     <AlertCircle className="w-4 h-4" />
                     <span>{error}</span>
                   </div>
@@ -182,14 +182,14 @@ function LoginPageContent() {
               {ssoConfig && (
                 <>
                   <div className="flex items-center gap-3 mt-6">
-                    <div className="flex-1 h-px bg-gray-200" />
-                    <span className="text-sm text-gray-400">or</span>
-                    <div className="flex-1 h-px bg-gray-200" />
+                    <div className="flex-1 h-px bg-gray-200 dark:bg-slate-700" />
+                    <span className="text-sm text-gray-400 dark:text-slate-500">or</span>
+                    <div className="flex-1 h-px bg-gray-200 dark:bg-slate-700" />
                   </div>
                   <button
                     onClick={handleSSOLogin}
                     disabled={ssoLoading}
-                    className="w-full mt-4 flex items-center justify-center gap-2 border border-gray-300 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="w-full mt-4 flex items-center justify-center gap-2 border border-gray-300 dark:border-slate-700 text-gray-700 dark:text-slate-300 bg-white dark:bg-slate-800 py-3 rounded-lg font-semibold hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <LogIn className="w-5 h-5" />
                     {ssoLoading ? 'Redirecting\u2026' : 'Sign in with SSO'}
@@ -199,60 +199,60 @@ function LoginPageContent() {
             </div>
 
             {/* Demo Credentials Info - only shown when APP_ENV=demo */}
-            {isDemoMode && <div className="bg-gradient-to-br from-indigo-50 to-blue-50 p-8 border-l">
-              <h3 className="text-lg font-semibold text-gray-900 mb-6 flex items-center gap-2">
-                <Users className="w-5 h-5 text-indigo-600" />
+            {isDemoMode && <div className="bg-gradient-to-br from-indigo-50 to-blue-50 dark:from-slate-800 dark:to-slate-900 p-8 border-l dark:border-slate-800">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-slate-100 mb-6 flex items-center gap-2">
+                <Users className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                 Demo Login Credentials
               </h3>
 
               <div className="space-y-4">
-                <div className="bg-white rounded-lg p-4 border border-indigo-100">
-                  <h4 className="font-semibold text-gray-900 mb-3 text-sm">Organizational Hierarchy</h4>
+                <div className="bg-white dark:bg-slate-800 rounded-lg p-4 border border-indigo-100 dark:border-slate-700">
+                  <h4 className="font-semibold text-gray-900 dark:text-slate-100 mb-3 text-sm">Organizational Hierarchy</h4>
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between items-center py-1">
-                      <span className="text-gray-700 font-medium">VP:</span>
-                      <code className="bg-gray-200 px-2 py-1 rounded text-xs font-mono text-gray-800">vp/demo</code>
+                      <span className="text-gray-700 dark:text-slate-300 font-medium">VP:</span>
+                      <code className="bg-gray-200 dark:bg-slate-700 px-2 py-1 rounded text-xs font-mono text-gray-800 dark:text-slate-200">vp/demo</code>
                     </div>
                     <div className="flex justify-between items-center py-1">
-                      <span className="text-gray-700 font-medium">Director:</span>
-                      <code className="bg-gray-200 px-2 py-1 rounded text-xs font-mono text-gray-800">director1/demo</code>
+                      <span className="text-gray-700 dark:text-slate-300 font-medium">Director:</span>
+                      <code className="bg-gray-200 dark:bg-slate-700 px-2 py-1 rounded text-xs font-mono text-gray-800 dark:text-slate-200">director1/demo</code>
                     </div>
                     <div className="flex justify-between items-center py-1">
-                      <span className="text-gray-700 font-medium">Manager:</span>
-                      <code className="bg-gray-200 px-2 py-1 rounded text-xs font-mono text-gray-800">manager1/demo</code>
+                      <span className="text-gray-700 dark:text-slate-300 font-medium">Manager:</span>
+                      <code className="bg-gray-200 dark:bg-slate-700 px-2 py-1 rounded text-xs font-mono text-gray-800 dark:text-slate-200">manager1/demo</code>
                     </div>
                     <div className="flex justify-between items-center py-1">
-                      <span className="text-gray-700 font-medium">Team Lead:</span>
-                      <code className="bg-gray-200 px-2 py-1 rounded text-xs font-mono text-gray-800">teamlead1/demo</code>
+                      <span className="text-gray-700 dark:text-slate-300 font-medium">Team Lead:</span>
+                      <code className="bg-gray-200 dark:bg-slate-700 px-2 py-1 rounded text-xs font-mono text-gray-800 dark:text-slate-200">teamlead1/demo</code>
                     </div>
                     <div className="flex justify-between items-center py-1">
-                      <span className="text-gray-700 font-medium">Team Member:</span>
-                      <code className="bg-gray-200 px-2 py-1 rounded text-xs font-mono text-gray-800">demo/demo</code>
+                      <span className="text-gray-700 dark:text-slate-300 font-medium">Team Member:</span>
+                      <code className="bg-gray-200 dark:bg-slate-700 px-2 py-1 rounded text-xs font-mono text-gray-800 dark:text-slate-200">demo/demo</code>
                     </div>
-                    <div className="flex justify-between items-center py-1 border-t border-gray-200 mt-2 pt-2">
-                      <span className="text-gray-700 font-medium">Admin:</span>
-                      <code className="bg-red-100 px-2 py-1 rounded text-xs font-mono text-red-800 font-semibold">admin/admin</code>
+                    <div className="flex justify-between items-center py-1 border-t border-gray-200 dark:border-slate-700 mt-2 pt-2">
+                      <span className="text-gray-700 dark:text-slate-300 font-medium">Admin:</span>
+                      <code className="bg-red-100 dark:bg-red-950/60 px-2 py-1 rounded text-xs font-mono text-red-800 dark:text-red-300 font-semibold">admin/admin</code>
                     </div>
                   </div>
                 </div>
 
-                <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
-                  <p className="text-xs text-blue-700 leading-relaxed">
+                <div className="bg-blue-50 dark:bg-slate-800 rounded-lg p-4 border border-blue-200 dark:border-slate-700">
+                  <p className="text-xs text-blue-700 dark:text-blue-300 leading-relaxed">
                     <strong className="block mb-2">All Accounts:</strong>
-                    {'\u2022'} All passwords are <strong>&quot;demo&quot;</strong> except admin<br/>
-                    {'\u2022'} Use director1, director2, manager1-3, teamlead1-5<br/>
-                    {'\u2022'} Or team members: alice, bob, carol, david, eve<br/>
-                    {'\u2022'} Admin password is <strong>&quot;admin&quot;</strong>
+                    {'•'} All passwords are <strong>&quot;demo&quot;</strong> except admin<br/>
+                    {'•'} Use director1, director2, manager1-3, teamlead1-5<br/>
+                    {'•'} Or team members: alice, bob, carol, david, eve<br/>
+                    {'•'} Admin password is <strong>&quot;admin&quot;</strong>
                   </p>
                 </div>
 
-                <div className="bg-green-50 rounded-lg p-4 border border-green-200">
-                  <p className="text-xs text-green-700 leading-relaxed">
+                <div className="bg-green-50 dark:bg-slate-800 rounded-lg p-4 border border-green-200 dark:border-slate-700">
+                  <p className="text-xs text-green-700 dark:text-green-300 leading-relaxed">
                     <strong className="block mb-1">What Each User Sees:</strong>
-                    {'\u2022'} <strong>VP/Directors/Managers:</strong> Manager Dashboard<br/>
-                    {'\u2022'} <strong>Team Leads:</strong> Team Dashboard<br/>
-                    {'\u2022'} <strong>Team Members:</strong> Member Home (Survey History)<br/>
-                    {'\u2022'} <strong>Admin:</strong> System Configuration
+                    {'•'} <strong>VP/Directors/Managers:</strong> Manager Dashboard<br/>
+                    {'•'} <strong>Team Leads:</strong> Team Dashboard<br/>
+                    {'•'} <strong>Team Members:</strong> Member Home (Survey History)<br/>
+                    {'•'} <strong>Admin:</strong> System Configuration
                   </p>
                 </div>
               </div>
