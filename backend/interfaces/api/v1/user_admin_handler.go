@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/team"
@@ -11,6 +12,11 @@ import (
 	"github.com/agopalakrishnan/teams360/backend/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
+)
+
+const (
+	defaultUsersPageSize = 25
+	maxUsersPageSize     = 100
 )
 
 // UserAdminHandler handles user-related admin HTTP requests
@@ -25,10 +31,18 @@ func NewUserAdminHandler(userRepo user.Repository, teamRepo team.Repository) *Us
 }
 
 // ListUsers handles GET /api/v1/admin/users
+// Supports pagination (page, pageSize) and filtering (search, role) applied
+// at the database level.
 func (h *UserAdminHandler) ListUsers(c *gin.Context) {
-	ctx := c.Request.Context()
+	page := parsePositiveIntParam(c, "page", 1)
+	pageSize := min(parsePositiveIntParam(c, "pageSize", defaultUsersPageSize), maxUsersPageSize)
 
-	users, err := h.userRepo.FindAll(ctx)
+	filter := user.ListFilter{
+		Search:         strings.TrimSpace(c.Query("search")),
+		HierarchyLevel: strings.TrimSpace(c.Query("role")),
+	}
+
+	users, total, err := h.userRepo.FindPage(c.Request.Context(), filter, page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
 			Error:   "Failed to query users",
@@ -37,27 +51,10 @@ func (h *UserAdminHandler) ListUsers(c *gin.Context) {
 		return
 	}
 
-	// Batch-load every user's team memberships in one query instead of one
-	// round trip per user — with real production-sized user counts, the old
-	// per-user loop here was the actual cause of the Users tab hanging on
-	// "Loading users..." for a long time.
-	userIDs := make([]string, len(users))
-	for i, usr := range users {
-		userIDs[i] = usr.ID
-	}
-	teamIDsByUser, err := h.userRepo.FindTeamIDsForUsers(ctx, userIDs)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
-			Error:   "Failed to query team memberships",
-			Message: err.Error(),
-		})
-		return
-	}
-
-	// Convert to DTOs
+	// Convert to DTOs (team IDs already batch-loaded by FindPage)
 	userDTOs := make([]dto.AdminUserDTO, len(users))
 	for i, usr := range users {
-		teamIds := teamIDsByUser[usr.ID]
+		teamIds := usr.TeamIDs
 		if teamIds == nil {
 			teamIds = []string{}
 		}
@@ -76,10 +73,62 @@ func (h *UserAdminHandler) ListUsers(c *gin.Context) {
 		}
 	}
 
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+
 	c.JSON(http.StatusOK, dto.UsersResponse{
 		Users: userDTOs,
-		Total: len(userDTOs),
+		Pagination: dto.PaginationDTO{
+			Page:            page,
+			PageSize:        pageSize,
+			TotalItems:      total,
+			TotalPages:      totalPages,
+			HasNextPage:     page < totalPages,
+			HasPreviousPage: page > 1,
+		},
 	})
+}
+
+// ListUsersLite handles GET /api/v1/admin/users/lite
+// Returns minimal user data for the full user set, for dropdowns/pickers
+// that need every user without the cost of the full paginated listing.
+func (h *UserAdminHandler) ListUsersLite(c *gin.Context) {
+	users, err := h.userRepo.FindAllLite(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to query users",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	userDTOs := make([]dto.UserLiteDTO, len(users))
+	for i, usr := range users {
+		userDTOs[i] = dto.UserLiteDTO{
+			ID:             usr.ID,
+			Username:       usr.Username,
+			FullName:       usr.Name,
+			HierarchyLevel: usr.HierarchyLevelID,
+		}
+	}
+
+	c.JSON(http.StatusOK, dto.UsersLiteResponse{Users: userDTOs})
+}
+
+// parsePositiveIntParam reads an integer query param, returning def if it is
+// absent, non-numeric, or not positive.
+func parsePositiveIntParam(c *gin.Context, name string, def int) int {
+	raw := c.Query(name)
+	if raw == "" {
+		return def
+	}
+	val, err := strconv.Atoi(raw)
+	if err != nil || val < 1 {
+		return def
+	}
+	return val
 }
 
 // CreateUser handles POST /api/v1/admin/users

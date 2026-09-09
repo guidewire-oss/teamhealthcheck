@@ -34,6 +34,7 @@ func SetupAdminRoutes(router *gin.Engine, orgRepo organization.Repository, userR
 		users := admin.Group("/users")
 		{
 			users.GET("", handler.ListUsers)
+			users.GET("/lite", handler.ListUsersLite)
 			users.POST("", handler.CreateUser)
 			users.PUT("/:id", handler.UpdateUser)
 			users.DELETE("/:id", handler.DeleteUser)

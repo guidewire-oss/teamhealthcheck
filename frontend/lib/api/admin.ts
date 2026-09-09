@@ -90,9 +90,37 @@ export interface UpdateUserRequest {
   reportsTo?: string | null;
 }
 
+export interface PaginationMeta {
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
+}
+
 export interface UsersListResponse {
   users: AdminUser[];
-  total: number;
+  pagination: PaginationMeta;
+}
+
+export interface ListUsersParams {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  role?: string;
+  signal?: AbortSignal;
+}
+
+export interface UserLite {
+  id: string;
+  username: string;
+  fullName: string;
+  hierarchyLevel: string;
+}
+
+export interface UsersLiteResponse {
+  users: UserLite[];
 }
 
 // ============================================================================
@@ -322,12 +350,38 @@ export async function deleteHierarchyLevel(levelId: string): Promise<void> {
 // ============================================================================
 
 /**
- * Fetches all users
+ * Fetches one page of users, with optional search/role filtering applied
+ * server-side.
  *
- * @returns List of all users with pagination info
+ * @param params - Pagination (page, pageSize), filters (search, role), and an
+ *   optional AbortSignal to cancel a stale in-flight request
+ * @returns The requested page of users plus pagination metadata
  */
-export async function listUsers(): Promise<UsersListResponse> {
-  return createApiClient<UsersListResponse>(`${API_BASE_URL}/api/v1/admin/users`);
+export async function listUsers(params: ListUsersParams = {}): Promise<UsersListResponse> {
+  const { page, pageSize, search, role, signal } = params;
+  const query = new URLSearchParams();
+  if (page !== undefined) query.set('page', String(page));
+  if (pageSize !== undefined) query.set('pageSize', String(pageSize));
+  if (search) query.set('search', search);
+  if (role) query.set('role', role);
+
+  const qs = query.toString();
+  return createApiClient<UsersListResponse>(
+    `${API_BASE_URL}/api/v1/admin/users${qs ? `?${qs}` : ''}`,
+    signal ? { signal } : undefined
+  );
+}
+
+/**
+ * Fetches minimal data (id, username, fullName, hierarchyLevel) for every
+ * user. Intended for dropdowns/pickers (team lead, reports-to) that need the
+ * full user set without the cost of the paginated listing's team-membership
+ * joins.
+ *
+ * @returns All users in minimal form
+ */
+export async function listUsersLite(): Promise<UsersLiteResponse> {
+  return createApiClient<UsersLiteResponse>(`${API_BASE_URL}/api/v1/admin/users/lite`);
 }
 
 /**
@@ -701,13 +755,6 @@ async function getCached<T>(key: string, fetcher: () => Promise<T>): Promise<T> 
  */
 export async function listHierarchyLevelsCached(): Promise<HierarchyLevel[]> {
   return getCached('hierarchy-levels', listHierarchyLevels);
-}
-
-/**
- * Cached users list fetch
- */
-export async function listUsersCached(): Promise<UsersListResponse> {
-  return getCached('users-list', listUsers);
 }
 
 /**

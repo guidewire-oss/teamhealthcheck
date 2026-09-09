@@ -30,6 +30,12 @@ type User struct {
 	UpdatedAt        time.Time `json:"updatedAt,omitempty"`
 }
 
+// ListFilter holds search/role filter criteria for paginated user listing.
+type ListFilter struct {
+	Search         string // matches username, full name, or email (case-insensitive substring)
+	HierarchyLevel string // exact match on hierarchy_level_id, empty = no filter
+}
+
 // Repository defines the interface for user data access
 type Repository interface {
 	FindByID(ctx context.Context, id string) (*User, error)
@@ -39,6 +45,12 @@ type Repository interface {
 	FindByHierarchyLevel(ctx context.Context, levelID string) ([]*User, error)
 	FindSubordinates(ctx context.Context, supervisorID string) ([]*User, error)
 	FindSupervisorChainUp(ctx context.Context, userID string) ([]*User, error)
+	// FindPage returns one page of users (deterministic order: username ASC)
+	// matching filter, along with the total count matching that filter.
+	FindPage(ctx context.Context, filter ListFilter, page, pageSize int) ([]*User, int, error)
+	// FindAllLite returns minimal user data (no team IDs) for every user, for
+	// dropdowns that need the full set without the cost of the full listing.
+	FindAllLite(ctx context.Context) ([]*User, error)
 	Save(ctx context.Context, user *User) error
 	Update(ctx context.Context, user *User) error
 	Delete(ctx context.Context, id string) error
