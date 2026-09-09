@@ -25,10 +25,22 @@ import (
 	migratePostgres "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/lib/pq"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
+
+	_ "github.com/agopalakrishnan/teams360/backend/docs/swagger"
 )
 
+// @title Team360 API
+// @version 1.0
+// @description Team360 Health Check Application REST API. Assesses team health across 11 dimensions with hierarchical org support.
+// @BasePath /api/v1
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+// @description Type "Bearer" followed by a space and the JWT token.
 func main() {
 	ctx := context.Background()
 
@@ -204,9 +216,7 @@ func main() {
 	router.Use(middleware.MaxBodySizeMiddleware(10 * 1024 * 1024)) // 10MB max body size
 
 	// Health check endpoint (used by tests and load balancers)
-	router.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "healthy"})
-	})
+	router.GET("/health", healthLivenessHandler)
 
 	// Setup API routes with repository injection
 	v1.SetupHealthCheckRoutes(router, healthCheckRepo, orgRepo, jwtService, notificationService)
@@ -220,6 +230,12 @@ func main() {
 	v1.SetupProtectedUserRoutes(router, db, jwtService) // Protected routes requiring JWT
 	v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, jwtService)
 	v1.SetupPasswordResetRoutes(router, passwordResetService, userRepo)
+
+	// Swagger UI - dev/staging only, disabled by default (never expose in production)
+	if os.Getenv("ENABLE_SWAGGER_UI") == "true" {
+		router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+		log.Info("Swagger UI enabled at /swagger/index.html")
+	}
 
 	// Static file serving for frontend SPA
 	webDir := os.Getenv("WEB_DIR")
@@ -324,6 +340,18 @@ func main() {
 	// Wait for interrupt signal
 	<-quit
 	log.Info("shutting down server gracefully...")
+}
+
+// healthLivenessHandler handles GET /health.
+//
+// @Summary Liveness check
+// @Description Returns 200 with a simple status payload. Used by tests and load balancers. Public endpoint.
+// @Tags Health
+// @Produce json
+// @Success 200 {object} map[string]string "status"
+// @Router /health [get]
+func healthLivenessHandler(c *gin.Context) {
+	c.JSON(200, gin.H{"status": "healthy"})
 }
 
 func directoryRedirectPath(urlPath string, isDir bool) (string, bool) {

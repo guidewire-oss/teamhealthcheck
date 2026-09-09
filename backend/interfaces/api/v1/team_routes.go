@@ -28,6 +28,18 @@ func NewTeamHandler(healthCheckRepo healthcheck.Repository, teamRepo team.Reposi
 
 // GetTeamSessions handles GET /api/v1/teams/:teamId
 // Returns all health check sessions for a team with their responses
+//
+// @Summary List a team's health check sessions
+// @Description Returns every health check session for the given team with its full per-dimension responses, optionally narrowed to one assessment period via a query parameter, along with the total number of sessions returned. Access requires membership on the team.
+// @Tags Teams
+// @Produce json
+// @Param teamId path string true "Team ID"
+// @Param assessmentPeriod query string false "Filter by assessment period"
+// @Success 200 {object} dto.HealthCheckSessionsResponse
+// @Failure 400 {object} dto.ErrorResponse "Team ID is required"
+// @Failure 500 {object} dto.ErrorResponse "Failed to fetch team sessions"
+// @Security BearerAuth
+// @Router /teams/{teamId}/sessions [get]
 func (h *TeamHandler) GetTeamSessions(c *gin.Context) {
 	teamID := c.Param("teamId")
 
@@ -82,6 +94,18 @@ func (h *TeamHandler) GetTeamSessions(c *gin.Context) {
 
 // GetTeamInfo handles GET /api/v1/teams/:teamId/info
 // Returns team details (id, name, cadence, members)
+//
+// @Summary Get team info
+// @Description Returns the given team's name, cadence, team lead ID and name, and full member list (ID, username, full name). Returns a 404 if the team does not exist. Access requires membership on the team.
+// @Tags Teams
+// @Produce json
+// @Param teamId path string true "Team ID"
+// @Success 200 {object} dto.TeamInfoResponse
+// @Failure 400 {object} dto.ErrorResponse "Team ID is required"
+// @Failure 404 {object} dto.ErrorResponse "Team not found"
+// @Failure 500 {object} dto.ErrorResponse "Failed to fetch team members"
+// @Security BearerAuth
+// @Router /teams/{teamId}/info [get]
 func (h *TeamHandler) GetTeamInfo(c *gin.Context) {
 	teamID := c.Param("teamId")
 
@@ -133,6 +157,15 @@ func (h *TeamHandler) GetTeamInfo(c *gin.Context) {
 
 // ListTeams handles GET /api/v1/teams
 // Returns a list of all teams
+//
+// @Summary List all teams
+// @Description Returns every team in the organization as a summary: ID, name, cadence, member count, and team lead ID and name, plus the total team count. Available to any authenticated user regardless of team membership.
+// @Tags Teams
+// @Produce json
+// @Success 200 {object} dto.TeamListResponse
+// @Failure 500 {object} dto.ErrorResponse "Failed to fetch teams"
+// @Security BearerAuth
+// @Router /teams [get]
 func (h *TeamHandler) ListTeams(c *gin.Context) {
 	// Use repository to fetch all teams with details
 	teams, err := h.teamRepo.FindAllWithDetails(c.Request.Context())

@@ -32,7 +32,7 @@ FRONTEND_PID := $(PID_DIR)/frontend.pid
 # =============================================================================
 
 .PHONY: help
-.PHONY: install install-frontend install-backend
+.PHONY: install install-frontend install-backend swagger-gen swagger-check
 .PHONY: run run-frontend run-backend dev dev-backend
 .PHONY: build build-frontend build-backend
 .PHONY: test test-unit test-frontend test-frontend-unit test-frontend-watch test-frontend-coverage test-backend test-backend-unit test-backend-verbose test-backend-coverage test-backend-watch test-e2e
@@ -254,6 +254,20 @@ build-backend: ## [Backend] Build Go API binary
 	@echo "$(CYAN)Building backend...$(RESET)"
 	@cd backend && go build -o bin/team360-api ./cmd/api/main.go
 	@echo "$(GREEN)Backend build complete: backend/bin/team360-api$(RESET)"
+
+swagger-gen: ## [Backend] Regenerate Swagger/OpenAPI docs from annotations
+	@echo "$(CYAN)Generating Swagger docs...$(RESET)"
+	@command -v swag >/dev/null 2>&1 || { \
+		echo "$(RED)swag CLI not found. Install it with:$(RESET)"; \
+		echo "  go install github.com/swaggo/swag/cmd/swag@latest"; \
+		exit 1; \
+	}
+	@cd backend && swag init -g cmd/api/main.go -o docs/swagger --parseInternal
+	@cd backend && go run ./cmd/swagger-examples
+	@echo "$(GREEN)Swagger docs generated: backend/docs/swagger$(RESET)"
+
+swagger-check: swagger-gen ## [Backend] Verify Swagger docs are up to date (fails if generation causes a diff)
+	@git diff --exit-code backend/docs/swagger || (echo "$(RED)Swagger docs out of date — run 'make swagger-gen' and commit the changes$(RESET)" && exit 1)
 
 # =============================================================================
 # Testing

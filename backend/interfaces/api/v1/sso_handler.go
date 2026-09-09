@@ -20,9 +20,9 @@ import (
 
 // ssoCallbackRequest is sent by the frontend after the OAuth redirect.
 type ssoCallbackRequest struct {
-	Code         string `json:"code" binding:"required"`
-	CodeVerifier string `json:"code_verifier" binding:"required"`
-}
+	Code         string `json:"code" binding:"required" example:"4/0AY0e-g6i9XqZ8..."`
+	CodeVerifier string `json:"code_verifier" binding:"required" example:"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"`
+} //@name SSOCallbackRequest
 
 // oauthTokenResponse is the raw response from the provider's token endpoint.
 type oauthTokenResponse struct {
@@ -44,6 +44,19 @@ func NewSSOHandler(userRepo user.Repository, jwtService *services.JWTService) *S
 // Callback exchanges the authorization code + PKCE verifier for provider tokens,
 // extracts the email from the id_token, looks the user up in the DB, and issues
 // our own JWT token pair — the same structure as a regular password login.
+//
+// @Summary SSO OAuth callback
+// @Description Completes the OAuth PKCE flow: exchanges the authorization code and code verifier for the provider's tokens, reads the email claim from the returned ID token, and looks up a matching local user by that email. If the account exists and is configured for SSO, issues our own JWT access/refresh token pair in the same shape as a password login. Fails with a 503 if SSO is not configured on the server, and with a 401 if the token exchange fails, no account matches the email, or the matched account is not an SSO account. This is a public endpoint that does not require a prior session.
+// @Tags Auth
+// @Accept json
+// @Produce json
+// @Param body body ssoCallbackRequest true "Authorization code and PKCE verifier"
+// @Success 200 {object} dto.LoginResponse
+// @Failure 400 {object} dto.ErrorResponse "Missing code or code_verifier"
+// @Failure 401 {object} dto.ErrorResponse "Token exchange failed, no account found, or account does not support SSO"
+// @Failure 500 {object} dto.ErrorResponse "Failed to generate authentication tokens"
+// @Failure 503 {object} dto.ErrorResponse "SSO is not configured on this server"
+// @Router /auth/sso/callback [post]
 func (h *SSOHandler) Callback(c *gin.Context) {
 	ctx := c.Request.Context()
 	log := logger.Get().WithContext(ctx)

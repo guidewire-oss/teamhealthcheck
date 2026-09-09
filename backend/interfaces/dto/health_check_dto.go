@@ -10,7 +10,7 @@ type SubmitHealthCheckRequest struct {
 	SurveyType       string                       `json:"surveyType,omitempty"`
 	Responses        []HealthCheckResponseRequest `json:"responses" binding:"required,min=1,dive"`
 	Completed        bool                         `json:"completed"`
-}
+} //@name SubmitHealthCheckRequest
 
 // HealthCheckResponseRequest represents a single dimension response
 type HealthCheckResponseRequest struct {
@@ -18,7 +18,7 @@ type HealthCheckResponseRequest struct {
 	Score       int    `json:"score" binding:"required,min=1,max=3"`
 	Trend       string `json:"trend" binding:"required,oneof=improving stable declining"`
 	Comment     string `json:"comment,omitempty"`
-}
+} //@name HealthCheckResponseRequest
 
 // HealthCheckSessionResponse represents the response after creating/fetching a session
 type HealthCheckSessionResponse struct {
@@ -31,7 +31,7 @@ type HealthCheckSessionResponse struct {
 	Responses        []HealthCheckResponseResponse `json:"responses"`
 	Completed        bool                          `json:"completed"`
 	CreatedAt        string                        `json:"createdAt,omitempty"`
-}
+} //@name HealthCheckSessionResponse
 
 // TeamSubmissionStatusResponse represents the submission status for post-workshop surveys
 type TeamSubmissionStatusResponse struct {
@@ -41,7 +41,7 @@ type TeamSubmissionStatusResponse struct {
 	SubmittedMembers   int    `json:"submittedMembers"`
 	AllSubmitted       bool   `json:"allSubmitted"`
 	PostWorkshopExists bool   `json:"postWorkshopExists"`
-}
+} //@name TeamSubmissionStatusResponse
 
 // HealthCheckResponseResponse represents a dimension response in the response
 type HealthCheckResponseResponse struct {
@@ -49,7 +49,7 @@ type HealthCheckResponseResponse struct {
 	Score       int    `json:"score"`
 	Trend       string `json:"trend"`
 	Comment     string `json:"comment,omitempty"`
-}
+} //@name HealthCheckResponseResponse
 
 // HealthDimensionResponse represents a health dimension
 type HealthDimensionResponse struct {
@@ -60,22 +60,22 @@ type HealthDimensionResponse struct {
 	BadDescription  string  `json:"badDescription"`
 	IsActive        bool    `json:"isActive,omitempty"`
 	Weight          float64 `json:"weight,omitempty"`
-}
+} //@name HealthDimensionResponse
 
 // HealthDimensionsResponse is the response containing all dimensions
 type HealthDimensionsResponse struct {
 	Dimensions []HealthDimensionResponse `json:"dimensions"`
-}
+} //@name HealthDimensionsResponse
 
 // HealthCheckSessionsResponse is the response containing multiple sessions
 type HealthCheckSessionsResponse struct {
 	Sessions []HealthCheckSessionResponse `json:"sessions"`
 	Total    int                          `json:"total,omitempty"`
-}
+} //@name HealthCheckSessionsResponse
 
 // ErrorResponse represents an error response
 type ErrorResponse struct {
 	Error   string `json:"error"`
 	Message string `json:"message,omitempty"`
 	Code    string `json:"code,omitempty"`
-}
+} //@name ErrorResponse

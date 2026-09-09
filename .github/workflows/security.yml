@@ -36,8 +36,12 @@ jobs:
         with:
           # Fail on high or critical vulnerabilities
           fail-on-severity: high
-          # Allow specific licenses commonly used in OSS
-          allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD
+          # Allow specific licenses commonly used in OSS.
+          # CC-BY-3.0 is included because github.com/swaggo/swag's detected
+          # license expression is "Apache-2.0 AND CC-BY-3.0 AND MIT" (its own
+          # LICENSE file is plain MIT; the CC-BY-3.0 component comes from
+          # vendored OpenAPI schema/example content, not code).
+          allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, CC-BY-3.0
 
   # =============================================================================
   # Container Image Scanning (on releases)

@@ -1,0 +1,3099 @@
+basePath: /api/v1
+definitions:
+    ActionItemResponse:
+        properties:
+            assessmentPeriod:
+                example: 2025 - 1st Half
+                type: string
+            assignedTo:
+                example: alice
+                type: string
+            assigneeName:
+                example: Alice Cooper
+                type: string
+            createdAt:
+                example: "2026-09-08T10:21:33Z"
+                type: string
+            createdBy:
+                example: teamlead1
+                type: string
+            createdByName:
+                example: Team Lead - Phoenix Squad
+                type: string
+            description:
+                example: Codebase health scored 2.6. Add tests to the payments and auth packages first.
+                type: string
+            dimensionId:
+                example: health
+                type: string
+            dimensionName:
+                example: Health of Codebase
+                type: string
+            dueDate:
+                example: "2026-12-15T00:00:00Z"
+                type: string
+            id:
+                example: c256e36d-a791-4474-a258-88aa25e6dc6f
+                type: string
+            status:
+                example: open
+                type: string
+            teamId:
+                example: team-phoenix
+                type: string
+            title:
+                example: Increase unit test coverage above 80%
+                type: string
+            updatedAt:
+                example: "2026-09-08T10:21:33Z"
+                type: string
+        type: object
+    ActionItemsResponse:
+        properties:
+            actionItems:
+                items:
+                    $ref: '#/definitions/ActionItemResponse'
+                type: array
+        type: object
+    AddTeamMemberRequest:
+        properties:
+            userId:
+                example: alice
+                type: string
+        required:
+            - userId
+        type: object
+    AdminTeamDTO:
+        properties:
+            cadence:
+                example: quarterly
+                type: string
+            createdAt:
+                example: "2026-09-08T10:20:19.860027Z"
+                type: string
+            distributionListEmail:
+                example: phoenix-squad@teams360.demo
+                type: string
+            id:
+                example: team-phoenix
+                type: string
+            memberCount:
+                example: 4
+                type: integer
+            name:
+                example: Phoenix Squad
+                type: string
+            teamLeadId:
+                example: teamlead1
+                type: string
+            teamLeadName:
+                example: Team Lead - Phoenix Squad
+                type: string
+            updatedAt:
+                example: "2026-09-08T10:20:19.860027Z"
+                type: string
+        type: object
+    AdminUserDTO:
+        properties:
+            authType:
+                example: local
+                type: string
+            createdAt:
+                example: "2026-09-08T10:20:19.860027Z"
+                type: string
+            email:
+                example: alice@teams360.demo
+                type: string
+            fullName:
+                example: Alice Cooper
+                type: string
+            hierarchyLevel:
+                example: level-5
+                type: string
+            id:
+                example: alice
+                type: string
+            reportsTo:
+                example: teamlead1
+                type: string
+            teamIds:
+                example:
+                    - team-phoenix
+                items:
+                    type: string
+                type: array
+            updatedAt:
+                example: "2026-09-08T10:20:19.860027Z"
+                type: string
+            username:
+                example: alice
+                type: string
+        type: object
+    BrandingSettings:
+        properties:
+            companyName:
+                example: My Company
+                maxLength: 100
+                type: string
+            logoURL:
+                example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==
+                type: string
+        required:
+            - companyName
+        type: object
+    CreateActionItemRequest:
+        properties:
+            assessmentPeriod:
+                example: 2025 - 1st Half
+                type: string
+            assignedTo:
+                example: alice
+                type: string
+            description:
+                example: Codebase health scored 2.6. Add tests to the payments and auth packages first.
+                type: string
+            dimensionId:
+                example: health
+                type: string
+            dueDate:
+                description: ISO date string YYYY-MM-DD
+                example: "2026-12-15"
+                type: string
+            title:
+                example: Increase unit test coverage above 80%
+                maxLength: 500
+                type: string
+        required:
+            - title
+        type: object
+    CreateDimensionRequest:
+        properties:
+            badDescription:
+                example: Raising concerns here gets you punished
+                type: string
+            description:
+                example: We can speak up about problems without fear of blame
+                type: string
+            goodDescription:
+                example: We can speak up about problems without fear of blame
+                type: string
+            id:
+                example: psychological-safety
+                type: string
+            isActive:
+                example: true
+                type: boolean
+            name:
+                example: Psychological Safety
+                type: string
+            weight:
+                example: 1
+                maximum: 10
+                minimum: 0
+                type: number
+        required:
+            - badDescription
+            - goodDescription
+            - id
+            - name
+        type: object
+    CreateHierarchyLevelRequest:
+        properties:
+            id:
+                description: Optional - will be auto-generated from name if not provided
+                example: principal-engineer
+                type: string
+            name:
+                description: Required - used to generate ID if not provided
+                example: Principal Engineer
+                type: string
+            permissions:
+                $ref: '#/definitions/HierarchyPermissionsDTO'
+        required:
+            - name
+        type: object
+    CreateTeamRequest:
+        properties:
+            cadence:
+                enum:
+                    - monthly
+                    - quarterly
+                    - half-yearly
+                    - yearly
+                example: quarterly
+                type: string
+            distributionListEmail:
+                example: orion-squad@teams360.demo
+                type: string
+            id:
+                description: Optional - will be auto-generated from name if not provided
+                example: team-orion
+                type: string
+            name:
+                description: Required - used to generate ID if not provided
+                example: Orion Squad
+                type: string
+            teamLeadId:
+                example: teamlead1
+                type: string
+        required:
+            - cadence
+            - name
+        type: object
+    CreateUserRequest:
+        properties:
+            authType:
+                description: '"local" (default) or "sso"'
+                enum:
+                    - local
+                    - sso
+                example: local
+                type: string
+            email:
+                example: frank@teams360.demo
+                type: string
+            fullName:
+                example: Frank Miller
+                type: string
+            hierarchyLevel:
+                example: level-5
+                type: string
+            id:
+                description: Optional - will be auto-generated from username if not provided
+                example: frank
+                type: string
+            password:
+                description: Required for local users, omit for SSO users
+                example: demo
+                type: string
+            reportsTo:
+                example: teamlead1
+                type: string
+            username:
+                description: Required - used to generate ID if not provided
+                example: frank
+                type: string
+        required:
+            - email
+            - fullName
+            - hierarchyLevel
+            - username
+        type: object
+    DimensionDistribution:
+        properties:
+            dimensionId:
+                example: health
+                type: string
+            green:
+                description: score = 3
+                example: 3
+                type: integer
+            red:
+                description: score = 1
+                example: 0
+                type: integer
+            yellow:
+                description: score = 2
+                example: 2
+                type: integer
+        type: object
+    DimensionSummary:
+        properties:
+            avgScore:
+                example: 3
+                type: number
+            dimensionId:
+                example: mission
+                type: string
+            responseCount:
+                example: 5
+                type: integer
+        type: object
+    DimensionTrend:
+        properties:
+            dimensionId:
+                example: speed
+                type: string
+            scores:
+                description: matches periods array order
+                example:
+                    - 2.5
+                    - 3
+                    - 3
+                items:
+                    type: number
+                type: array
+        type: object
+    DimensionsResponse:
+        properties:
+            dimensions:
+                items:
+                    $ref: '#/definitions/HealthDimensionDTO'
+                type: array
+        type: object
+    ErrorResponse:
+        properties:
+            code:
+                example: TEAM_NOT_FOUND
+                type: string
+            error:
+                example: Team not found
+                type: string
+            message:
+                example: No team exists with id team-unknown
+                type: string
+        type: object
+    ForgotPasswordRequest:
+        properties:
+            email:
+                example: demo@teams360.demo
+                type: string
+        required:
+            - email
+        type: object
+    HealthCheckResponseRequest:
+        properties:
+            comment:
+                example: Roadmap is much clearer since the last planning session.
+                type: string
+            dimensionId:
+                example: mission
+                type: string
+            score:
+                example: 3
+                maximum: 3
+                minimum: 1
+                type: integer
+            trend:
+                enum:
+                    - improving
+                    - stable
+                    - declining
+                example: improving
+                type: string
+        required:
+            - dimensionId
+            - score
+            - trend
+        type: object
+    HealthCheckResponseResponse:
+        properties:
+            comment:
+                example: Roadmap is much clearer since the last planning session.
+                type: string
+            dimensionId:
+                example: mission
+                type: string
+            score:
+                example: 3
+                type: integer
+            trend:
+                example: improving
+                type: string
+        type: object
+    HealthCheckSessionResponse:
+        properties:
+            assessmentPeriod:
+                example: 2025 - 1st Half
+                type: string
+            completed:
+                example: true
+                type: boolean
+            createdAt:
+                example: "2026-09-08T10:21:33Z"
+                type: string
+            date:
+                example: "2026-09-08T10:21:33Z"
+                type: string
+            id:
+                example: demo-session-phoenix-2025h1-1
+                type: string
+            responses:
+                items:
+                    $ref: '#/definitions/HealthCheckResponseResponse'
+                type: array
+            surveyType:
+                example: regular
+                type: string
+            teamId:
+                example: team-phoenix
+                type: string
+            userId:
+                example: demo
+                type: string
+        type: object
+    HealthCheckSessionsResponse:
+        properties:
+            sessions:
+                items:
+                    $ref: '#/definitions/HealthCheckSessionResponse'
+                type: array
+            total:
+                example: 18
+                type: integer
+        type: object
+    HealthDimensionDTO:
+        properties:
+            badDescription:
+                example: We have no idea why we are here. There is no high level picture or focus.
+                type: string
+            createdAt:
+                example: "2026-09-08T08:54:03.311781Z"
+                type: string
+            description:
+                example: We know exactly why we are here, and we are really excited about it
+                type: string
+            goodDescription:
+                example: We know exactly why we are here, and we are really excited about it
+                type: string
+            id:
+                example: mission
+                type: string
+            isActive:
+                example: true
+                type: boolean
+            name:
+                example: Mission
+                type: string
+            updatedAt:
+                example: "2026-09-08T08:54:03.311781Z"
+                type: string
+            weight:
+                example: 1
+                type: number
+        type: object
+    HealthDimensionResponse:
+        properties:
+            badDescription:
+                example: We have no idea why we are here. There is no high level picture or focus.
+                type: string
+            description:
+                example: We know exactly why we are here, and we are really excited about it
+                type: string
+            goodDescription:
+                example: We know exactly why we are here, and we are really excited about it
+                type: string
+            id:
+                example: mission
+                type: string
+            isActive:
+                example: true
+                type: boolean
+            name:
+                example: Mission
+                type: string
+            weight:
+                example: 1
+                type: number
+        type: object
+    HealthDimensionsResponse:
+        properties:
+            dimensions:
+                items:
+                    $ref: '#/definitions/HealthDimensionResponse'
+                type: array
+        type: object
+    HierarchyLevelDTO:
+        properties:
+            createdAt:
+                example: "2026-09-08T08:54:03.311781Z"
+                type: string
+            id:
+                example: level-3
+                type: string
+            name:
+                example: Manager
+                type: string
+            permissions:
+                $ref: '#/definitions/HierarchyPermissionsDTO'
+            position:
+                example: 3
+                type: integer
+            updatedAt:
+                example: "2026-09-08T08:54:03.311781Z"
+                type: string
+        type: object
+    HierarchyLevelsResponse:
+        properties:
+            levels:
+                items:
+                    $ref: '#/definitions/HierarchyLevelDTO'
+                type: array
+        type: object
+    HierarchyPermissionsDTO:
+        properties:
+            canEditTeams:
+                example: false
+                type: boolean
+            canManageUsers:
+                example: false
+                type: boolean
+            canTakeSurvey:
+                example: false
+                type: boolean
+            canViewAllTeams:
+                example: true
+                type: boolean
+            canViewAnalytics:
+                example: true
+                type: boolean
+        type: object
+    IndividualDimensionResp:
+        properties:
+            comment:
+                example: Roadmap is much clearer since the last planning session.
+                type: string
+            dimensionId:
+                example: mission
+                type: string
+            score:
+                example: 3
+                maximum: 3
+                minimum: 1
+                type: integer
+            trend:
+                enum:
+                    - improving
+                    - stable
+                    - declining
+                example: improving
+                type: string
+        type: object
+    IndividualResponses:
+        properties:
+            responses:
+                items:
+                    $ref: '#/definitions/IndividualUserResponse'
+                type: array
+            teamId:
+                example: team-phoenix
+                type: string
+        type: object
+    IndividualUserResponse:
+        properties:
+            date:
+                example: "2026-09-08T10:21:33Z"
+                type: string
+            dimensions:
+                items:
+                    $ref: '#/definitions/IndividualDimensionResp'
+                type: array
+            sessionId:
+                example: demo-session-phoenix-2025h1-1
+                type: string
+            surveyType:
+                example: regular
+                type: string
+            userId:
+                example: alice
+                type: string
+            userName:
+                example: Alice Cooper
+                type: string
+        type: object
+    LoginRequest:
+        properties:
+            password:
+                example: demo
+                type: string
+            username:
+                example: demo
+                type: string
+        required:
+            - password
+            - username
+        type: object
+    LoginResponse:
+        properties:
+            accessToken:
+                example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJkZW1vIn0.signature
+                type: string
+            expiresIn:
+                description: Access token expiry in seconds
+                example: 900
+                type: integer
+            refreshToken:
+                example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlblR5cGUiOiJyZWZyZXNoIn0.signature
+                type: string
+            user:
+                $ref: '#/definitions/UserDTO'
+        type: object
+    ManagerDimensionTrend:
+        properties:
+            dimensionId:
+                example: mission
+                type: string
+            scores:
+                description: matches periods array order
+                example:
+                    - 2.5
+                    - 3
+                    - 3
+                items:
+                    type: number
+                type: array
+        type: object
+    ManagerRadarResponse:
+        properties:
+            assessmentPeriod:
+                example: 2025 - 1st Half
+                type: string
+            dimensions:
+                items:
+                    $ref: '#/definitions/DimensionSummary'
+                type: array
+            managerId:
+                example: manager1
+                type: string
+        type: object
+    ManagerTeamsHealthResponse:
+        properties:
+            assessmentPeriod:
+                example: 2025 - 1st Half
+                type: string
+            managerId:
+                example: manager1
+                type: string
+            teams:
+                items:
+                    $ref: '#/definitions/TeamHealthSummary'
+                type: array
+            totalTeams:
+                example: 2
+                type: integer
+        type: object
+    ManagerTrendsResponse:
+        properties:
+            dimensions:
+                items:
+                    $ref: '#/definitions/ManagerDimensionTrend'
+                type: array
+            managerId:
+                example: manager1
+                type: string
+            periods:
+                example:
+                    - 2024 - 1st Half
+                    - 2024 - 2nd Half
+                    - 2025 - 1st Half
+                items:
+                    type: string
+                type: array
+        type: object
+    MessageResponse:
+        properties:
+            message:
+                example: Hierarchy level deleted successfully
+                type: string
+        type: object
+    NotificationSettings:
+        properties:
+            emailEnabled:
+                example: false
+                type: boolean
+            notifyManagers:
+                example: false
+                type: boolean
+            notifyOnSubmission:
+                example: false
+                type: boolean
+            reminderDaysBefore:
+                example: 7
+                type: integer
+            reminderRecipients:
+                example:
+                    - manager1@teams360.demo
+                items:
+                    type: string
+                type: array
+            slackEnabled:
+                example: false
+                type: boolean
+            smtpConfigured:
+                example: false
+                type: boolean
+        type: object
+    RefreshTokenRequest:
+        properties:
+            refreshToken:
+                example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlblR5cGUiOiJyZWZyZXNoIn0.signature
+                type: string
+        required:
+            - refreshToken
+        type: object
+    RefreshTokenResponse:
+        properties:
+            accessToken:
+                example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJkZW1vIn0.signature
+                type: string
+            expiresIn:
+                description: Access token expiry in seconds
+                example: 900
+                type: integer
+        type: object
+    ResetPasswordRequest:
+        properties:
+            newPassword:
+                example: MyNewPassw0rd!
+                type: string
+            token:
+                example: 9f8c1d2e-4b7a-4c3f-9e21-7a5b6c8d0e1f
+                type: string
+        required:
+            - newPassword
+            - token
+        type: object
+    ResponseDistribution:
+        properties:
+            distribution:
+                items:
+                    $ref: '#/definitions/DimensionDistribution'
+                type: array
+            teamId:
+                example: team-phoenix
+                type: string
+        type: object
+    RetentionPolicy:
+        properties:
+            anonymizeAfterDays:
+                example: 360
+                type: integer
+            archiveEnabled:
+                example: false
+                type: boolean
+            keepSessionsMonths:
+                example: 12
+                type: integer
+        type: object
+    SSOCallbackRequest:
+        properties:
+            code:
+                example: 4/0AY0e-g6i9XqZ8...
+                type: string
+            code_verifier:
+                example: dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+                type: string
+        required:
+            - code
+            - code_verifier
+        type: object
+    SubmitHealthCheckRequest:
+        properties:
+            assessmentPeriod:
+                example: 2025 - 1st Half
+                type: string
+            completed:
+                example: true
+                type: boolean
+            date:
+                example: "2026-09-08T10:21:33Z"
+                type: string
+            id:
+                example: demo-session-phoenix-2025h1-1
+                type: string
+            responses:
+                items:
+                    $ref: '#/definitions/HealthCheckResponseRequest'
+                minItems: 1
+                type: array
+            surveyType:
+                example: regular
+                type: string
+            teamId:
+                example: team-phoenix
+                type: string
+            userId:
+                example: demo
+                type: string
+        required:
+            - date
+            - responses
+            - teamId
+            - userId
+        type: object
+    SubordinateDTO:
+        properties:
+            hierarchyLevelId:
+                example: level-5
+                type: string
+            id:
+                example: alice
+                type: string
+            name:
+                example: Alice Cooper
+                type: string
+            reportsTo:
+                example: teamlead1
+                type: string
+            teamIds:
+                example:
+                    - team-phoenix
+                items:
+                    type: string
+                type: array
+            username:
+                example: alice
+                type: string
+        type: object
+    SubordinatesResponse:
+        properties:
+            managerId:
+                example: manager1
+                type: string
+            subordinates:
+                items:
+                    $ref: '#/definitions/SubordinateDTO'
+                type: array
+        type: object
+    SupervisorChainResponse:
+        properties:
+            supervisors:
+                items:
+                    $ref: '#/definitions/SupervisorLinkDTO'
+                type: array
+            teamId:
+                example: team-phoenix
+                type: string
+        type: object
+    SupervisorLinkDTO:
+        properties:
+            levelId:
+                example: level-3
+                type: string
+            levelName:
+                example: Manager
+                type: string
+            userId:
+                example: manager1
+                type: string
+            userName:
+                example: Manager - John Smith
+                type: string
+        type: object
+    SupervisorLinkInput:
+        properties:
+            levelId:
+                example: level-3
+                type: string
+            userId:
+                example: manager1
+                type: string
+        required:
+            - levelId
+            - userId
+        type: object
+    SurveyHistoryEntry:
+        properties:
+            assessmentPeriod:
+                example: 2025 - 1st Half
+                type: string
+            avgScore:
+                example: 2.890909090909091
+                type: number
+            completed:
+                example: true
+                type: boolean
+            date:
+                example: "2026-09-08T10:21:33Z"
+                type: string
+            responseCount:
+                example: 11
+                type: integer
+            responses:
+                items:
+                    $ref: '#/definitions/SurveyHistoryResponseItem'
+                type: array
+            sessionId:
+                example: demo-session-phoenix-2025h1-1
+                type: string
+            teamId:
+                example: team-phoenix
+                type: string
+            teamName:
+                example: Phoenix Squad
+                type: string
+        type: object
+    SurveyHistoryResponse:
+        properties:
+            surveyHistory:
+                items:
+                    $ref: '#/definitions/SurveyHistoryEntry'
+                type: array
+            totalSessions:
+                example: 3
+                type: integer
+            userId:
+                example: demo
+                type: string
+        type: object
+    SurveyHistoryResponseItem:
+        properties:
+            comment:
+                example: Roadmap is much clearer since the last planning session.
+                type: string
+            dimensionId:
+                example: mission
+                type: string
+            dimensionName:
+                example: Mission
+                type: string
+            score:
+                example: 3
+                type: integer
+            trend:
+                example: improving
+                type: string
+        type: object
+    TeamActionSummaryResponse:
+        properties:
+            openCount:
+                example: 1
+                type: integer
+            teamId:
+                example: team-phoenix
+                type: string
+            teamName:
+                example: Phoenix Squad
+                type: string
+        type: object
+    TeamDashboardHealthSummary:
+        properties:
+            assessmentPeriod:
+                example: 2025 - 1st Half
+                type: string
+            dimensions:
+                items:
+                    $ref: '#/definitions/DimensionSummary'
+                type: array
+            overallHealth:
+                example: 2.890909090909091
+                type: number
+            submissionCount:
+                example: 5
+                type: integer
+            teamId:
+                example: team-phoenix
+                type: string
+            teamName:
+                example: Phoenix Squad
+                type: string
+        type: object
+    TeamHealthSummary:
+        properties:
+            dimensions:
+                items:
+                    $ref: '#/definitions/DimensionSummary'
+                type: array
+            overallHealth:
+                example: 2.890909090909091
+                type: number
+            postWorkshopStatus:
+                example: pending
+                type: string
+            submissionCount:
+                example: 5
+                type: integer
+            teamId:
+                example: team-phoenix
+                type: string
+            teamName:
+                example: Phoenix Squad
+                type: string
+        type: object
+    TeamInfoResponse:
+        properties:
+            cadence:
+                example: quarterly
+                type: string
+            id:
+                example: team-phoenix
+                type: string
+            members:
+                items:
+                    $ref: '#/definitions/TeamMember'
+                type: array
+            name:
+                example: Phoenix Squad
+                type: string
+            teamLeadId:
+                example: teamlead1
+                type: string
+            teamLeadName:
+                example: Team Lead - Phoenix Squad
+                type: string
+        type: object
+    TeamListResponse:
+        properties:
+            teams:
+                items:
+                    $ref: '#/definitions/TeamSummary'
+                type: array
+            total:
+                example: 6
+                type: integer
+        type: object
+    TeamMember:
+        properties:
+            fullName:
+                example: Alice Cooper
+                type: string
+            id:
+                example: alice
+                type: string
+            username:
+                example: alice
+                type: string
+        type: object
+    TeamMemberAdminDTO:
+        properties:
+            email:
+                example: alice@teams360.demo
+                type: string
+            userId:
+                example: alice
+                type: string
+            userName:
+                example: Alice Cooper
+                type: string
+        type: object
+    TeamMembersResponse:
+        properties:
+            members:
+                items:
+                    $ref: '#/definitions/TeamMemberAdminDTO'
+                type: array
+            total:
+                example: 4
+                type: integer
+        type: object
+    TeamSubmissionStatusResponse:
+        properties:
+            allSubmitted:
+                example: true
+                type: boolean
+            assessmentPeriod:
+                example: 2025 - 1st Half
+                type: string
+            postWorkshopExists:
+                example: false
+                type: boolean
+            submittedMembers:
+                example: 5
+                type: integer
+            teamId:
+                example: team-phoenix
+                type: string
+            totalMembers:
+                example: 4
+                type: integer
+        type: object
+    TeamSummary:
+        properties:
+            cadence:
+                example: quarterly
+                type: string
+            id:
+                example: team-phoenix
+                type: string
+            memberCount:
+                example: 4
+                type: integer
+            name:
+                example: Phoenix Squad
+                type: string
+            teamLeadId:
+                example: teamlead1
+                type: string
+            teamLeadName:
+                example: Team Lead - Phoenix Squad
+                type: string
+        type: object
+    TeamsActionSummaryResponse:
+        properties:
+            teams:
+                items:
+                    $ref: '#/definitions/TeamActionSummaryResponse'
+                type: array
+        type: object
+    TeamsResponse:
+        properties:
+            teams:
+                items:
+                    $ref: '#/definitions/AdminTeamDTO'
+                type: array
+            total:
+                example: 6
+                type: integer
+        type: object
+    TrendData:
+        properties:
+            dimensions:
+                items:
+                    $ref: '#/definitions/DimensionTrend'
+                type: array
+            periods:
+                example:
+                    - 2024 - 1st Half
+                    - 2024 - 2nd Half
+                    - 2025 - 1st Half
+                items:
+                    type: string
+                type: array
+            teamId:
+                example: team-phoenix
+                type: string
+        type: object
+    UpdateActionItemRequest:
+        properties:
+            assessmentPeriod:
+                example: 2025 - 1st Half
+                type: string
+            assignedTo:
+                example: alice
+                type: string
+            description:
+                example: Codebase health scored 2.6. Add tests to the payments and auth packages first.
+                type: string
+            dimensionId:
+                example: health
+                type: string
+            dueDate:
+                example: "2026-12-15"
+                type: string
+            status:
+                example: in_progress
+                type: string
+            title:
+                example: Increase unit test coverage above 80%
+                maxLength: 500
+                type: string
+        type: object
+    UpdateDimensionRequest:
+        properties:
+            badDescription:
+                example: Raising concerns here gets you punished
+                type: string
+            description:
+                example: We can speak up about problems without fear of blame
+                type: string
+            goodDescription:
+                example: We can speak up about problems without fear of blame
+                type: string
+            isActive:
+                example: true
+                type: boolean
+            name:
+                example: Psychological Safety
+                type: string
+            weight:
+                example: 1.5
+                maximum: 10
+                minimum: 0
+                type: number
+        type: object
+    UpdateHierarchyLevelRequest:
+        properties:
+            name:
+                example: Principal Engineer
+                type: string
+            permissions:
+                $ref: '#/definitions/HierarchyPermissionsDTO'
+        type: object
+    UpdateHierarchyPositionRequest:
+        properties:
+            newPosition:
+                example: 2
+                minimum: 1
+                type: integer
+        required:
+            - newPosition
+        type: object
+    UpdateSupervisorChainRequest:
+        properties:
+            supervisors:
+                items:
+                    $ref: '#/definitions/SupervisorLinkInput'
+                type: array
+        required:
+            - supervisors
+        type: object
+    UpdateTeamRequest:
+        properties:
+            cadence:
+                enum:
+                    - monthly
+                    - quarterly
+                    - half-yearly
+                    - yearly
+                example: quarterly
+                type: string
+            distributionListEmail:
+                example: orion-squad@teams360.demo
+                type: string
+            name:
+                example: Orion Squad
+                type: string
+            teamLeadId:
+                example: teamlead1
+                type: string
+        type: object
+    UpdateUserRequest:
+        properties:
+            authType:
+                enum:
+                    - local
+                    - sso
+                example: local
+                type: string
+            email:
+                example: frank@teams360.demo
+                type: string
+            fullName:
+                example: Frank Miller
+                type: string
+            hierarchyLevel:
+                example: level-4
+                type: string
+            password:
+                example: MyNewPassw0rd!
+                type: string
+            reportsTo:
+                example: manager1
+                type: string
+            username:
+                example: frank
+                type: string
+        type: object
+    UserDTO:
+        properties:
+            canTakeSurvey:
+                example: true
+                type: boolean
+            email:
+                example: demo@teams360.demo
+                type: string
+            fullName:
+                example: Demo User
+                type: string
+            hierarchyLevel:
+                example: level-5
+                type: string
+            id:
+                example: demo
+                type: string
+            teamIds:
+                example:
+                    - team-phoenix
+                    - team-titan
+                items:
+                    type: string
+                type: array
+            username:
+                example: demo
+                type: string
+        type: object
+    UsersResponse:
+        properties:
+            total:
+                example: 5
+                type: integer
+            users:
+                items:
+                    $ref: '#/definitions/AdminUserDTO'
+                type: array
+        type: object
+info:
+    contact: {}
+    description: Team360 Health Check Application REST API. Assesses team health across 11 dimensions with hierarchical org support.
+    title: Team360 API
+    version: "1.0"
+paths:
+    /admin/hierarchy-levels:
+        get:
+            description: Returns every organizational hierarchy level (e.g. VP, Director, Manager, Team Lead, Team Member), ordered from highest to lowest scope by position. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission. Each entry includes the level's identifier, display name, position, permission flags (view all teams, edit teams, manage users, take survey, view analytics), and creation/update timestamps.
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/HierarchyLevelsResponse'
+                "500":
+                    description: Failed to query hierarchy levels
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: List hierarchy levels
+            tags:
+                - Admin Hierarchy
+        post:
+            consumes:
+                - application/json
+            description: Creates a new organizational hierarchy level and appends it at the end of the position order, below every existing level. The level ID is auto-generated from the name (lowercased, spaces converted to hyphens) when the caller does not supply one. Permission flags for viewing teams, editing teams, managing users, taking the survey, and viewing analytics are set from the request body. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Hierarchy level
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/CreateHierarchyLevelRequest'
+            produces:
+                - application/json
+            responses:
+                "201":
+                    description: Created
+                    schema:
+                        $ref: '#/definitions/HierarchyLevelDTO'
+                "400":
+                    description: Invalid request body
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to determine position or create hierarchy level
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Create a hierarchy level
+            tags:
+                - Admin Hierarchy
+    /admin/hierarchy-levels/{id}:
+        delete:
+            description: Deletes the hierarchy level identified by the path ID. The delete is rejected with a 409 if any users are still assigned to that level; those users must be reassigned to a different level first. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Hierarchy level ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/MessageResponse'
+                "409":
+                    description: Users are assigned to this level
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Database error or failed to delete hierarchy level
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Delete a hierarchy level
+            tags:
+                - Admin Hierarchy
+        put:
+            consumes:
+                - application/json
+            description: Updates the name and/or permission flags of the hierarchy level identified by the path ID. Only the fields present in the request body are changed; the level's position is left untouched. Returns a 404 if no level exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Hierarchy level ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+                - description: Fields to update
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/UpdateHierarchyLevelRequest'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/HierarchyLevelDTO'
+                "400":
+                    description: Invalid request body
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "404":
+                    description: Hierarchy level not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to update hierarchy level
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Update a hierarchy level
+            tags:
+                - Admin Hierarchy
+    /admin/hierarchy-levels/{id}/position:
+        put:
+            consumes:
+                - application/json
+            description: Moves the hierarchy level identified by the path ID to the given position, shifting every level between its old and new position up or down by one so the ordering stays contiguous. The reorder runs inside a single transaction that rolls back if any step fails. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Hierarchy level ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+                - description: New position
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/UpdateHierarchyPositionRequest'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/MessageResponse'
+                "400":
+                    description: Invalid request body
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "404":
+                    description: Hierarchy level not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to start transaction, reorder levels, update position, or commit
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Reorder a hierarchy level
+            tags:
+                - Admin Hierarchy
+    /admin/settings/branding:
+        get:
+            description: 'Returns the organization''s current branding: the company name and the logo URL (a base64 data URL when a custom logo has been uploaded). Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/BrandingSettings'
+                "500":
+                    description: Failed to fetch branding settings
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get branding settings
+            tags:
+                - Admin Settings
+        put:
+            consumes:
+                - application/json
+            description: Replaces the organization's company name and logo URL with the given values. The logo is expected as a base64 data URL and is rejected with a 400 if it exceeds roughly 500KB. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Branding settings
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/BrandingSettings'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/BrandingSettings'
+                "400":
+                    description: Invalid request body or logo too large
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to save branding settings
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Update branding settings
+            tags:
+                - Admin Settings
+    /admin/settings/dimensions:
+        get:
+            description: Returns every configured health dimension, including inactive ones, unlike the public dimensions endpoint which returns only active ones. Each entry includes its ID, name, description, good/bad anchor descriptions, active flag, weight, and timestamps. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/DimensionsResponse'
+                "500":
+                    description: Failed to query dimensions
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: List health dimensions (admin)
+            tags:
+                - Admin Settings
+        post:
+            consumes:
+                - application/json
+            description: Creates a new health dimension with an ID, name, and good/bad anchor descriptions. Weight must fall between 0 and 10 and defaults to 1.0 when omitted; isActive defaults to true when omitted. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Dimension to create
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/CreateDimensionRequest'
+            produces:
+                - application/json
+            responses:
+                "201":
+                    description: Created
+                    schema:
+                        $ref: '#/definitions/HealthDimensionDTO'
+                "400":
+                    description: Invalid request body or weight out of range
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to create dimension
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Create a health dimension
+            tags:
+                - Admin Settings
+    /admin/settings/dimensions/{id}:
+        delete:
+            description: Permanently deletes the health dimension identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Dimension ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: message
+                    schema:
+                        additionalProperties:
+                            type: string
+                        type: object
+                "500":
+                    description: Failed to delete dimension
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Delete a health dimension
+            tags:
+                - Admin Settings
+        put:
+            consumes:
+                - application/json
+            description: Updates the fields of the health dimension identified by the path ID; only the fields present in the request body are changed. Weight, if provided, must fall between 0 and 10. Returns a 404 if no dimension exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Dimension ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+                - description: Fields to update
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/UpdateDimensionRequest'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/HealthDimensionDTO'
+                "400":
+                    description: Invalid request body or weight out of range
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "404":
+                    description: Dimension not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to update dimension
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Update a health dimension
+            tags:
+                - Admin Settings
+    /admin/settings/notifications:
+        get:
+            description: 'Returns the organization''s notification configuration: whether email and Slack notifications are enabled and whether the weekly digest is on, read from stored settings, alongside whether an SMTP host is configured on the server. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/NotificationSettings'
+                "500":
+                    description: Failed to fetch settings
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get notification settings
+            tags:
+                - Admin Settings
+        put:
+            consumes:
+                - application/json
+            description: 'Updates the organization''s stored notification configuration: whether email and Slack notifications are enabled and whether the weekly digest is on. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.'
+            parameters:
+                - description: Notification settings
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/NotificationSettings'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/NotificationSettings'
+                "400":
+                    description: Invalid request body
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to save settings
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Update notification settings
+            tags:
+                - Admin Settings
+    /admin/settings/retention:
+        get:
+            description: 'Returns the organization''s data retention policy: how many months completed sessions are kept, and the anonymization window in days, which is derived as thirty times the retention months. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/RetentionPolicy'
+                "500":
+                    description: Failed to fetch retention policy
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get data retention policy
+            tags:
+                - Admin Settings
+        put:
+            consumes:
+                - application/json
+            description: Updates how many months completed sessions are retained; the value must be between 1 and 120. The anonymization window returned in the response is recalculated as thirty times that value. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Retention policy
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/RetentionPolicy'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/RetentionPolicy'
+                "400":
+                    description: Invalid request body or keepSessionsMonths out of range
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to save retention policy
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Update data retention policy
+            tags:
+                - Admin Settings
+    /admin/teams:
+        get:
+            description: 'Returns every team in the organization with the full set of admin-facing details: ID, name, team lead ID and name, cadence, distribution list email, member count, and timestamps, along with the total team count. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/TeamsResponse'
+                "500":
+                    description: Failed to query teams
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: List all teams (admin)
+            tags:
+                - Admin Teams
+        post:
+            consumes:
+                - application/json
+            description: Creates a new team with a name, cadence, and optional team lead and distribution list email. The team ID is auto-generated from the name when the caller does not supply one. When a team lead is set, the team's supervisor chain is automatically derived by walking that lead's reports-to hierarchy. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Team to create
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/CreateTeamRequest'
+            produces:
+                - application/json
+            responses:
+                "201":
+                    description: Created
+                    schema:
+                        $ref: '#/definitions/AdminTeamDTO'
+                "400":
+                    description: Invalid request body
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to create team
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Create a team
+            tags:
+                - Admin Teams
+    /admin/teams/{id}:
+        delete:
+            description: Permanently deletes the team identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/MessageResponse'
+                "500":
+                    description: Failed to delete team
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Delete a team
+            tags:
+                - Admin Teams
+        put:
+            consumes:
+                - application/json
+            description: Updates the name, team lead, cadence, and/or distribution list email of the team identified by the path ID; only the fields present in the request body are changed. If the team lead changes, the supervisor chain is re-derived from the new lead's reports-to hierarchy, or cleared entirely if the lead is removed. Returns a 404 if no team exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+                - description: Fields to update
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/UpdateTeamRequest'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/AdminTeamDTO'
+                "400":
+                    description: Invalid request body
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "404":
+                    description: Team not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to update team
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Update a team
+            tags:
+                - Admin Teams
+    /admin/teams/{id}/members:
+        get:
+            description: Returns every member of the team identified by the path ID, each with their user ID, name, and email, plus the total member count. Returns a 404 if no team exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/TeamMembersResponse'
+                "404":
+                    description: Team not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to fetch team members
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: List a team's members (admin)
+            tags:
+                - Admin Teams
+        post:
+            consumes:
+                - application/json
+            description: Adds the given user as a member of the team identified by the path ID. Returns a 404 if either the team or the user does not exist. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+                - description: User to add
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/AddTeamMemberRequest'
+            produces:
+                - application/json
+            responses:
+                "201":
+                    description: Created
+                    schema:
+                        $ref: '#/definitions/MessageResponse'
+                "400":
+                    description: Invalid request body
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "404":
+                    description: Team not found or user not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to add team member
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Add a member to a team
+            tags:
+                - Admin Teams
+    /admin/teams/{id}/members/{userId}:
+        delete:
+            description: Removes the given user's membership from the team identified by the path ID. Returns a 404 if the user is not currently a member of that team. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+                - description: User ID
+                  in: path
+                  name: userId
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/MessageResponse'
+                "404":
+                    description: Team member not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to remove team member
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Remove a member from a team
+            tags:
+                - Admin Teams
+    /admin/teams/{id}/supervisors:
+        get:
+            description: Returns the stored supervisor chain for the team identified by the path ID (originally derived from the team lead's reports-to hierarchy), with each link enriched with the supervisor's name and hierarchy level name. Returns a 404 if no team exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/SupervisorChainResponse'
+                "404":
+                    description: Team not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to fetch supervisor chain
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get a team's supervisor chain
+            tags:
+                - Admin Teams
+        put:
+            consumes:
+                - application/json
+            description: Replaces the entire supervisor chain of the team identified by the path ID with the given list of user/level links, discarding whatever chain was previously derived or set. Returns the updated chain enriched with supervisor and level names. Returns a 404 if no team exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+                - description: New supervisor chain
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/UpdateSupervisorChainRequest'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/SupervisorChainResponse'
+                "400":
+                    description: Invalid request body
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "404":
+                    description: Team not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to update supervisor chain
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Replace a team's supervisor chain
+            tags:
+                - Admin Teams
+    /admin/users:
+        get:
+            description: Returns every user in the organization, including their profile, hierarchy level, reports-to, team IDs, auth type, and timestamps. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/UsersResponse'
+                "500":
+                    description: Failed to query users
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: List users
+            tags:
+                - Admin Users
+        post:
+            consumes:
+                - application/json
+            description: Creates a new user with a username, email, full name, hierarchy level, and optional reports-to supervisor. AuthType defaults to "local" when omitted; local users must supply a password of at least 4 characters, which is bcrypt-hashed before storage, while SSO users get no password hash. The user ID is auto-generated from the username when the caller does not supply one. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: User to create
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/CreateUserRequest'
+            produces:
+                - application/json
+            responses:
+                "201":
+                    description: Created
+                    schema:
+                        $ref: '#/definitions/AdminUserDTO'
+                "400":
+                    description: Invalid request body or missing/short password for local user
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to hash password or create user
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Create a user
+            tags:
+                - Admin Users
+    /admin/users/{id}:
+        delete:
+            description: Permanently deletes the user identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: User ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/MessageResponse'
+                "500":
+                    description: Failed to delete user
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Delete a user
+            tags:
+                - Admin Users
+        put:
+            consumes:
+                - application/json
+            description: Partially updates the user identified by the path ID; only the fields present in the request body are changed. AuthType, if provided, must be "local" or "sso"; switching an SSO user to local requires a new password in the same request, and a password cannot be set while the account remains SSO. When reportsTo or hierarchy level actually changes, the supervisor chains of every team this user leads or supervises are re-derived. Returns a 404 if no user exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            parameters:
+                - description: User ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+                - description: Fields to update
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/UpdateUserRequest'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/AdminUserDTO'
+                "400":
+                    description: Invalid request body, invalid authType, cannot set password for SSO user, or password required when switching to local auth
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "404":
+                    description: User not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to hash password, update user, or update password
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Update a user
+            tags:
+                - Admin Users
+    /assessment-periods:
+        get:
+            description: Returns the distinct assessment period values that appear on at least one submitted health check session, for populating period-selector dropdowns in the frontend.
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: periods
+                    schema:
+                        additionalProperties:
+                            items:
+                                type: string
+                            type: array
+                        type: object
+                "500":
+                    description: Failed to fetch assessment periods
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: List distinct assessment periods
+            tags:
+                - Health Checks
+    /auth/forgot-password:
+        post:
+            consumes:
+                - application/json
+            description: Validates the submitted email format and, if a matching account exists, creates a password reset token and emails a reset link to it. The response message is identical whether or not the email is registered, so the endpoint cannot be used to discover which addresses have accounts. This is a public endpoint that requires no authentication.
+            parameters:
+                - description: Email address
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/ForgotPasswordRequest'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: message
+                    schema:
+                        additionalProperties:
+                            type: string
+                        type: object
+                "400":
+                    description: Missing or invalid email
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: error
+                    schema:
+                        additionalProperties:
+                            type: string
+                        type: object
+            summary: Request a password reset email
+            tags:
+                - Auth
+    /auth/login:
+        post:
+            consumes:
+                - application/json
+            description: Authenticates a local user by username and password and, on success, issues a JWT access/refresh token pair. The response includes the user's profile (ID, username, email, full name, hierarchy level, team IDs, and whether they can take the survey) alongside the access token, refresh token, and access-token expiry in seconds. This is a public endpoint that does not require a prior session; SSO users are rejected and must sign in through their identity provider instead.
+            parameters:
+                - description: Login credentials
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/LoginRequest'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/LoginResponse'
+                "400":
+                    description: Missing username or password
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "401":
+                    description: Invalid credentials, SSO-only user, or token generation failed
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            summary: Log in with username and password
+            tags:
+                - Auth
+    /auth/logout:
+        post:
+            description: Ends the caller's session. Because authentication is stateless JWT, no token is invalidated server-side; the client is expected to discard its access and refresh tokens on receiving a successful response. The endpoint still records the logout event for auditing and telemetry, and it accepts the request whether or not a valid bearer token is present.
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: message
+                    schema:
+                        additionalProperties:
+                            type: string
+                        type: object
+            summary: Log out
+            tags:
+                - Auth
+    /auth/refresh:
+        post:
+            consumes:
+                - application/json
+            description: Validates the supplied refresh token, reloads the current user record, and issues a new access token without rotating the refresh token. Returns the new access token and its expiry in seconds. Fails with a 401 when the refresh token is invalid or expired, or when the associated user no longer exists. This is a public endpoint that relies on the refresh token itself for authorization rather than a bearer session.
+            parameters:
+                - description: Refresh token
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/RefreshTokenRequest'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/RefreshTokenResponse'
+                "400":
+                    description: Missing refresh token
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "401":
+                    description: Invalid or expired refresh token, or user no longer exists
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            summary: Refresh an access token
+            tags:
+                - Auth
+    /auth/reset-password:
+        post:
+            consumes:
+                - application/json
+            description: Sets a new password for the account tied to the given reset token, after checking the token is present, unexpired, and unused, and that the new password is at least 8 characters. Returns a 401 if the token is invalid or expired. This is a public endpoint that relies on the reset token itself for authorization rather than a bearer session.
+            parameters:
+                - description: Reset token and new password
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/ResetPasswordRequest'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: message
+                    schema:
+                        additionalProperties:
+                            type: string
+                        type: object
+                "400":
+                    description: Missing token/password or password too short
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "401":
+                    description: Invalid or expired reset token
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to reset password
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            summary: Reset password using a reset token
+            tags:
+                - Auth
+    /auth/sso/callback:
+        post:
+            consumes:
+                - application/json
+            description: 'Completes the OAuth PKCE flow: exchanges the authorization code and code verifier for the provider''s tokens, reads the email claim from the returned ID token, and looks up a matching local user by that email. If the account exists and is configured for SSO, issues our own JWT access/refresh token pair in the same shape as a password login. Fails with a 503 if SSO is not configured on the server, and with a 401 if the token exchange fails, no account matches the email, or the matched account is not an SSO account. This is a public endpoint that does not require a prior session.'
+            parameters:
+                - description: Authorization code and PKCE verifier
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/SSOCallbackRequest'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/LoginResponse'
+                "400":
+                    description: Missing code or code_verifier
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "401":
+                    description: Token exchange failed, no account found, or account does not support SSO
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to generate authentication tokens
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "503":
+                    description: SSO is not configured on this server
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            summary: SSO OAuth callback
+            tags:
+                - Auth
+    /config:
+        get:
+            description: Returns the current app environment, company name, and logo URL from stored branding settings, plus SSO configuration (client ID, authorize URL, redirect URI, and scopes) when OAUTH_CLIENT_ID is set on the server, or null for sso when it is not. Lets the frontend render the login page and branding without baking these values in at build time. No authentication is required.
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: appEnv, companyName, logoURL, and sso (null or {clientId, authorizeUrl, redirectUri, scopes})
+                    schema:
+                        additionalProperties: true
+                        type: object
+            summary: Get public app configuration
+            tags:
+                - Config
+    /health:
+        get:
+            description: Returns 200 with a simple status payload. Used by tests and load balancers. Public endpoint.
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: status
+                    schema:
+                        additionalProperties:
+                            type: string
+                        type: object
+            summary: Liveness check
+            tags:
+                - Health
+    /health-checks:
+        post:
+            consumes:
+                - application/json
+            description: 'Records a team member''s health check responses (one score, trend, and optional comment per dimension) for a team and assessment period. The submission date must not be in the future, and the assessment period, if supplied, must match one of the supported formats (e.g. "YYYY - 1st Half", "YYYY Q1", "YYYY H1", "YYYY", or "YYYY Mon") and must not fall in the future. On success, an email notification is sent asynchronously: an individual survey email for a regular submission, or post-workshop emails when surveyType is "post-workshop".'
+            parameters:
+                - description: Health check submission
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/SubmitHealthCheckRequest'
+            produces:
+                - application/json
+            responses:
+                "201":
+                    description: Created
+                    schema:
+                        $ref: '#/definitions/HealthCheckSessionResponse'
+                "400":
+                    description: Invalid request body, invalid date, invalid/future assessment period, or command failure
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Submit a health check session
+            tags:
+                - Health Checks
+    /health-checks/{id}:
+        get:
+            description: Returns the health check session identified by the path ID, including its team, submitting user, date, assessment period, survey type, completion flag, and the full list of per-dimension responses (score, trend, comment). Returns a 404 if no session exists with that ID.
+            parameters:
+                - description: Health check session ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/HealthCheckSessionResponse'
+                "404":
+                    description: Session not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get a health check session
+            tags:
+                - Health Checks
+    /health-checks/team/{id}:
+        get:
+            description: Returns every health check session submitted for the given team, each with its full per-dimension responses, optionally narrowed to a single assessment period via a query parameter. The response also reports the total number of sessions returned.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+                - description: Filter by assessment period (e.g. '2024 - 1st Half')
+                  in: query
+                  name: assessmentPeriod
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/HealthCheckSessionsResponse'
+                "500":
+                    description: Failed to fetch sessions
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: List a team's health check sessions
+            tags:
+                - Health Checks
+    /health-dimensions:
+        get:
+            description: Returns the health dimensions currently marked active, which is the set used to build the survey form (e.g. Mission, Speed, Fun). Inactive dimensions are omitted. Each entry includes the dimension's ID, name, description, good/bad anchor descriptions, active flag, and weight.
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/HealthDimensionsResponse'
+                "500":
+                    description: Failed to fetch dimensions
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: List active health dimensions
+            tags:
+                - Health Checks
+    /managers/{managerId}/dashboard/radar:
+        get:
+            description: Returns the average score and response count for each health dimension, aggregated across every team supervised by the given manager, optionally narrowed to one assessment period via a query parameter. Shaped for rendering a radar chart on the manager dashboard. Access requires a manager-or-above role; the caller may view their own data, and callers with a director-or-above role (level-2 or level-1) may also view any other manager's data.
+            parameters:
+                - description: Manager ID
+                  in: path
+                  name: managerId
+                  required: true
+                  type: string
+                - description: Filter by assessment period
+                  in: query
+                  name: assessmentPeriod
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/ManagerRadarResponse'
+                "400":
+                    description: Manager ID is required
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Database query failed
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get radar chart data for manager
+            tags:
+                - Managers
+    /managers/{managerId}/dashboard/trends:
+        get:
+            description: Returns the list of assessment periods and, for each health dimension, the average score in each of those periods, aggregated across every team the given manager supervises. Used to render trend lines on the manager dashboard. Access requires a manager-or-above role; the caller may view their own data, and callers with a director-or-above role (level-2 or level-1) may also view any other manager's data.
+            parameters:
+                - description: Manager ID
+                  in: path
+                  name: managerId
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/ManagerTrendsResponse'
+                "400":
+                    description: Manager ID is required
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to fetch trend data
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get trend data for supervised teams
+            tags:
+                - Managers
+    /managers/{managerId}/subordinates:
+        get:
+            description: Returns every direct and indirect report of the given manager as a flat list, each entry carrying the subordinate's ID, username, name, hierarchy level, immediate supervisor, and team memberships, for rendering the org hierarchy view. Access requires a manager-or-above role; the caller may view their own subordinates, and callers with a director-or-above role (level-2 or level-1) may also view another manager's subordinates.
+            parameters:
+                - description: Manager ID
+                  in: path
+                  name: managerId
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/SubordinatesResponse'
+                "400":
+                    description: Manager ID is required
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to fetch subordinates
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get a manager's subordinates
+            tags:
+                - Managers
+    /managers/{managerId}/teams/action-items:
+        get:
+            description: Returns, for every team the given manager supervises, the team's ID, name, and count of action items whose status is not "done", ordered by team name. Access requires a manager-or-above role, and the authenticated caller may only request their own summary; requesting another manager's summary is rejected with a 403.
+            parameters:
+                - description: Manager ID
+                  in: path
+                  name: managerId
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/TeamsActionSummaryResponse'
+                "403":
+                    description: Forbidden — can only view your own summary
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to fetch/read action summaries
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get action item counts by team
+            tags:
+                - Action Items
+    /managers/{managerId}/teams/health:
+        get:
+            description: Returns a health summary for every team supervised by the given manager, optionally narrowed to one assessment period via a query parameter. Each team summary includes its submission count, overall health score, per-dimension averages with response counts, and post-workshop survey status. Access requires a manager-or-above role; the caller may view their own data, and callers with a director-or-above role (level-2 or level-1) may also view any other manager's data.
+            parameters:
+                - description: Manager ID
+                  in: path
+                  name: managerId
+                  required: true
+                  type: string
+                - description: Filter by assessment period
+                  in: query
+                  name: assessmentPeriod
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/ManagerTeamsHealthResponse'
+                "400":
+                    description: Manager ID is required
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Database query failed
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get team health for manager
+            tags:
+                - Managers
+    /teams:
+        get:
+            description: 'Returns every team in the organization as a summary: ID, name, cadence, member count, and team lead ID and name, plus the total team count. Available to any authenticated user regardless of team membership.'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/TeamListResponse'
+                "500":
+                    description: Failed to fetch teams
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: List all teams
+            tags:
+                - Teams
+    /teams/{teamId}/action-items:
+        get:
+            description: Returns the action items belonging to the given team, newest first, optionally narrowed by status (open, in_progress, done) and/or assessment period via query parameters. Each item includes its dimension, creator, assignee, title, description, status, due date, assessment period, and timestamps, with names resolved for the linked dimension, creator, and assignee. Access requires membership on the team.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: teamId
+                  required: true
+                  type: string
+                - description: Filter by status (open, in_progress, done)
+                  in: query
+                  name: status
+                  type: string
+                - description: Filter by assessment period
+                  in: query
+                  name: period
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/ActionItemsResponse'
+                "500":
+                    description: Failed to fetch/scan/read action items
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: List a team's action items
+            tags:
+                - Action Items
+        post:
+            consumes:
+                - application/json
+            description: Creates a new action item for the given team with a title, description, and optional dimension, assignee, due date, and assessment period. New items are always created with status "open". When assignedTo is set, the target user must already be a member of the team or the request is rejected with a 400. Access requires membership on the team.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: teamId
+                  required: true
+                  type: string
+                - description: Action item
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/CreateActionItemRequest'
+            produces:
+                - application/json
+            responses:
+                "201":
+                    description: id, status, createdAt
+                    schema:
+                        additionalProperties: true
+                        type: object
+                "400":
+                    description: Invalid request, invalid dueDate, or assignedTo not a team member
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "401":
+                    description: Unauthorized
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to validate assignee or create action item
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Create a team action item
+            tags:
+                - Action Items
+    /teams/{teamId}/action-items/{id}:
+        delete:
+            description: Permanently deletes the action item identified by the path ID from the given team. Returns a 404 if no matching item exists for that team. Access requires membership on the team.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: teamId
+                  required: true
+                  type: string
+                - description: Action item ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: deleted
+                    schema:
+                        additionalProperties:
+                            type: boolean
+                        type: object
+                "404":
+                    description: Action item not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to delete action item
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Delete a team action item
+            tags:
+                - Action Items
+        patch:
+            consumes:
+                - application/json
+            description: Partially updates the action item identified by the path ID within the given team; only the fields present in the request body are changed. Status, when provided, must be one of open, in_progress, or done. When assignedTo is set, the target user must already be a member of the team or the request is rejected with a 400. Returns a 404 if no matching item exists for that team. Access requires membership on the team.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: teamId
+                  required: true
+                  type: string
+                - description: Action item ID
+                  in: path
+                  name: id
+                  required: true
+                  type: string
+                - description: Fields to update
+                  in: body
+                  name: body
+                  required: true
+                  schema:
+                    $ref: '#/definitions/UpdateActionItemRequest'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: updated
+                    schema:
+                        additionalProperties:
+                            type: boolean
+                        type: object
+                "400":
+                    description: Invalid request, invalid status/dueDate, or assignedTo not a team member
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "404":
+                    description: Action item not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to validate assignee or update action item
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Update a team action item
+            tags:
+                - Action Items
+    /teams/{teamId}/dashboard/health-summary:
+        get:
+            description: 'Returns the data behind the team''s health radar chart: completed-session count, overall average score across all responses, and the average score plus response count for each dimension, computed only from completed sessions and optionally narrowed to one assessment period via a query parameter. Returns a 404 if the team does not exist. Access requires membership on the team.'
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: teamId
+                  required: true
+                  type: string
+                - description: Filter by assessment period
+                  in: query
+                  name: assessmentPeriod
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/TeamDashboardHealthSummary'
+                "400":
+                    description: Team ID is required
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "404":
+                    description: Team not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Database query failed or failed to parse dimension data
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get team health summary
+            tags:
+                - Team Dashboard
+    /teams/{teamId}/dashboard/individual-responses:
+        get:
+            description: Returns each completed survey session for the team with the submitting member's identity attached (not anonymized), newest first, including per-dimension score, trend, and comment. Results can be narrowed to one assessment period via a query parameter. Access requires membership on the team.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: teamId
+                  required: true
+                  type: string
+                - description: Filter by assessment period
+                  in: query
+                  name: assessmentPeriod
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/IndividualResponses'
+                "400":
+                    description: Team ID is required
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Database query failed or failed to parse response data
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get individual team member responses
+            tags:
+                - Team Dashboard
+    /teams/{teamId}/dashboard/response-distribution:
+        get:
+            description: Returns, for each dimension the team has scored, how many completed responses landed on red (1), yellow (2), and green (3), for rendering the team's response-distribution bar chart. Results can be narrowed to one assessment period via a query parameter. Access requires membership on the team.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: teamId
+                  required: true
+                  type: string
+                - description: Filter by assessment period
+                  in: query
+                  name: assessmentPeriod
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/ResponseDistribution'
+                "400":
+                    description: Team ID is required
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Database query failed or failed to parse distribution data
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get team response distribution
+            tags:
+                - Team Dashboard
+    /teams/{teamId}/dashboard/trends:
+        get:
+            description: Returns the list of assessment periods the team has data for and, for each health dimension, the average score in each of those periods, for rendering the team's trend chart. Access requires membership on the team.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: teamId
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/TrendData'
+                "400":
+                    description: Team ID is required
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to fetch trend data
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get team trend data
+            tags:
+                - Team Dashboard
+    /teams/{teamId}/info:
+        get:
+            description: Returns the given team's name, cadence, team lead ID and name, and full member list (ID, username, full name). Returns a 404 if the team does not exist. Access requires membership on the team.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: teamId
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/TeamInfoResponse'
+                "400":
+                    description: Team ID is required
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "404":
+                    description: Team not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to fetch team members
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get team info
+            tags:
+                - Teams
+    /teams/{teamId}/sessions:
+        get:
+            description: Returns every health check session for the given team with its full per-dimension responses, optionally narrowed to one assessment period via a query parameter, along with the total number of sessions returned. Access requires membership on the team.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: teamId
+                  required: true
+                  type: string
+                - description: Filter by assessment period
+                  in: query
+                  name: assessmentPeriod
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/HealthCheckSessionsResponse'
+                "400":
+                    description: Team ID is required
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to fetch team sessions
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: List a team's health check sessions
+            tags:
+                - Teams
+    /teams/{teamId}/submission-status:
+        get:
+            description: 'Returns the submission progress for the given team and assessment period (both required query/path values): total team members, how many have submitted, whether every member has submitted, and whether a post-workshop survey exists for that period. Fails with a 400 if either the team ID or assessment period is missing.'
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: teamId
+                  required: true
+                  type: string
+                - description: Assessment period (e.g. '2024 - 1st Half')
+                  in: query
+                  name: assessmentPeriod
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/TeamSubmissionStatusResponse'
+                "400":
+                    description: Missing teamId or assessmentPeriod
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to get submission status
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get team's submission status
+            tags:
+                - Health Checks
+    /users/{userId}/survey-history:
+        get:
+            description: Returns the given user's past health check sessions, newest first, each with its team, date, assessment period, completion status, average score, response count, and the full per-dimension responses (dimension name, score, trend, comment). Results can be narrowed to one assessment period and are capped at 10 sessions by default, or by the limit query parameter. Also reports the user's total session count, unaffected by the limit. Access requires the caller to be the same user or their manager.
+            parameters:
+                - description: User ID
+                  in: path
+                  name: userId
+                  required: true
+                  type: string
+                - description: Filter by assessment period
+                  in: query
+                  name: assessmentPeriod
+                  type: string
+                - description: Max number of sessions to return (default 10)
+                  in: query
+                  name: limit
+                  type: integer
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/SurveyHistoryResponse'
+                "400":
+                    description: User ID is required
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Database query failed or failed to parse survey history data
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get a user's survey history
+            tags:
+                - Users
+    /users/me:
+        get:
+            description: 'Returns the profile of the caller identified by the bearer token: ID, username, email, hierarchy level, and team IDs taken directly from the JWT claims, with the full name filled in by a database lookup. Returns a 401 if the request carries no valid authenticated session.'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/UserDTO'
+                "401":
+                    description: User not authenticated
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get the current authenticated user
+            tags:
+                - Users
+securityDefinitions:
+    BearerAuth:
+        description: Type "Bearer" followed by a space and the JWT token.
+        in: header
+        name: Authorization
+        type: apiKey
+swagger: "2.0"

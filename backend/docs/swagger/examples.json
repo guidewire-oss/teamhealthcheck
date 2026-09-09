@@ -1,0 +1,384 @@
+{
+  "_comment": "Field-level example values injected into the generated Swagger spec after `swag init` runs. Keyed by the schema definition name (matching the //@name annotation in the DTO) and the JSON field name. This keeps example data out of backend/interfaces/dto/*.go — see Makefile target swagger-gen and cmd/swagger-examples.",
+
+  "LoginRequest": { "username": "demo", "password": "demo" },
+  "LoginResponse": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJkZW1vIn0.signature",
+    "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlblR5cGUiOiJyZWZyZXNoIn0.signature",
+    "expiresIn": "900"
+  },
+  "RefreshTokenRequest": { "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlblR5cGUiOiJyZWZyZXNoIn0.signature" },
+  "RefreshTokenResponse": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJkZW1vIn0.signature",
+    "expiresIn": "900"
+  },
+  "UserDTO": {
+    "id": "demo",
+    "username": "demo",
+    "email": "demo@teams360.demo",
+    "fullName": "Demo User",
+    "hierarchyLevel": "level-5",
+    "teamIds": "team-phoenix,team-titan",
+    "canTakeSurvey": "true"
+  },
+  "ForgotPasswordRequest": { "email": "demo@teams360.demo" },
+  "ResetPasswordRequest": {
+    "token": "9f8c1d2e-4b7a-4c3f-9e21-7a5b6c8d0e1f",
+    "newPassword": "MyNewPassw0rd!"
+  },
+
+  "CreateActionItemRequest": {
+    "dimensionId": "health",
+    "assignedTo": "alice",
+    "title": "Increase unit test coverage above 80%",
+    "description": "Codebase health scored 2.6. Add tests to the payments and auth packages first.",
+    "dueDate": "2026-12-15",
+    "assessmentPeriod": "2025 - 1st Half"
+  },
+  "UpdateActionItemRequest": {
+    "dimensionId": "health",
+    "assignedTo": "alice",
+    "title": "Increase unit test coverage above 80%",
+    "description": "Codebase health scored 2.6. Add tests to the payments and auth packages first.",
+    "status": "in_progress",
+    "dueDate": "2026-12-15",
+    "assessmentPeriod": "2025 - 1st Half"
+  },
+  "ActionItemResponse": {
+    "id": "c256e36d-a791-4474-a258-88aa25e6dc6f",
+    "teamId": "team-phoenix",
+    "dimensionId": "health",
+    "dimensionName": "Health of Codebase",
+    "createdBy": "teamlead1",
+    "createdByName": "Team Lead - Phoenix Squad",
+    "assignedTo": "alice",
+    "assigneeName": "Alice Cooper",
+    "title": "Increase unit test coverage above 80%",
+    "description": "Codebase health scored 2.6. Add tests to the payments and auth packages first.",
+    "status": "open",
+    "dueDate": "2026-12-15T00:00:00Z",
+    "assessmentPeriod": "2025 - 1st Half",
+    "createdAt": "2026-09-08T10:21:33Z",
+    "updatedAt": "2026-09-08T10:21:33Z"
+  },
+  "TeamActionSummaryResponse": {
+    "teamId": "team-phoenix",
+    "teamName": "Phoenix Squad",
+    "openCount": "1"
+  },
+
+  "HierarchyLevelDTO": {
+    "id": "level-3",
+    "name": "Manager",
+    "position": "3",
+    "createdAt": "2026-09-08T08:54:03.311781Z",
+    "updatedAt": "2026-09-08T08:54:03.311781Z"
+  },
+  "HierarchyPermissionsDTO": {
+    "canViewAllTeams": "true",
+    "canEditTeams": "false",
+    "canManageUsers": "false",
+    "canTakeSurvey": "false",
+    "canViewAnalytics": "true"
+  },
+  "CreateHierarchyLevelRequest": { "id": "principal-engineer", "name": "Principal Engineer" },
+  "UpdateHierarchyLevelRequest": { "name": "Principal Engineer" },
+  "UpdateHierarchyPositionRequest": { "newPosition": "2" },
+
+  "AdminUserDTO": {
+    "id": "alice",
+    "username": "alice",
+    "email": "alice@teams360.demo",
+    "fullName": "Alice Cooper",
+    "hierarchyLevel": "level-5",
+    "reportsTo": "teamlead1",
+    "teamIds": "team-phoenix",
+    "authType": "local",
+    "createdAt": "2026-09-08T10:20:19.860027Z",
+    "updatedAt": "2026-09-08T10:20:19.860027Z"
+  },
+  "CreateUserRequest": {
+    "id": "frank",
+    "username": "frank",
+    "email": "frank@teams360.demo",
+    "fullName": "Frank Miller",
+    "password": "demo",
+    "authType": "local",
+    "hierarchyLevel": "level-5",
+    "reportsTo": "teamlead1"
+  },
+  "UpdateUserRequest": {
+    "username": "frank",
+    "email": "frank@teams360.demo",
+    "fullName": "Frank Miller",
+    "password": "MyNewPassw0rd!",
+    "authType": "local",
+    "hierarchyLevel": "level-4",
+    "reportsTo": "manager1"
+  },
+  "UsersResponse": { "total": "5" },
+
+  "AdminTeamDTO": {
+    "id": "team-phoenix",
+    "name": "Phoenix Squad",
+    "teamLeadId": "teamlead1",
+    "teamLeadName": "Team Lead - Phoenix Squad",
+    "cadence": "quarterly",
+    "distributionListEmail": "phoenix-squad@teams360.demo",
+    "memberCount": "4",
+    "createdAt": "2026-09-08T10:20:19.860027Z",
+    "updatedAt": "2026-09-08T10:20:19.860027Z"
+  },
+  "CreateTeamRequest": {
+    "id": "team-orion",
+    "name": "Orion Squad",
+    "teamLeadId": "teamlead1",
+    "cadence": "quarterly",
+    "distributionListEmail": "orion-squad@teams360.demo"
+  },
+  "UpdateTeamRequest": {
+    "name": "Orion Squad",
+    "teamLeadId": "teamlead1",
+    "cadence": "quarterly",
+    "distributionListEmail": "orion-squad@teams360.demo"
+  },
+  "TeamsResponse": { "total": "6" },
+  "TeamMemberAdminDTO": {
+    "userId": "alice",
+    "userName": "Alice Cooper",
+    "email": "alice@teams360.demo"
+  },
+  "TeamMembersResponse": { "total": "4" },
+  "AddTeamMemberRequest": { "userId": "alice" },
+  "SupervisorLinkDTO": {
+    "userId": "manager1",
+    "userName": "Manager - John Smith",
+    "levelId": "level-3",
+    "levelName": "Manager"
+  },
+  "SupervisorChainResponse": { "teamId": "team-phoenix" },
+  "SupervisorLinkInput": { "userId": "manager1", "levelId": "level-3" },
+
+  "HealthDimensionDTO": {
+    "id": "mission",
+    "name": "Mission",
+    "description": "We know exactly why we are here, and we are really excited about it",
+    "goodDescription": "We know exactly why we are here, and we are really excited about it",
+    "badDescription": "We have no idea why we are here. There is no high level picture or focus.",
+    "isActive": "true",
+    "weight": "1",
+    "createdAt": "2026-09-08T08:54:03.311781Z",
+    "updatedAt": "2026-09-08T08:54:03.311781Z"
+  },
+  "CreateDimensionRequest": {
+    "id": "psychological-safety",
+    "name": "Psychological Safety",
+    "description": "We can speak up about problems without fear of blame",
+    "goodDescription": "We can speak up about problems without fear of blame",
+    "badDescription": "Raising concerns here gets you punished",
+    "isActive": "true",
+    "weight": "1"
+  },
+  "UpdateDimensionRequest": {
+    "name": "Psychological Safety",
+    "description": "We can speak up about problems without fear of blame",
+    "goodDescription": "We can speak up about problems without fear of blame",
+    "badDescription": "Raising concerns here gets you punished",
+    "isActive": "true",
+    "weight": "1.5"
+  },
+  "BrandingSettings": {
+    "companyName": "My Company",
+    "logoURL": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+  },
+  "NotificationSettings": {
+    "emailEnabled": "false",
+    "slackEnabled": "false",
+    "notifyOnSubmission": "false",
+    "notifyManagers": "false",
+    "reminderDaysBefore": "7",
+    "reminderRecipients": "manager1@teams360.demo",
+    "smtpConfigured": "false"
+  },
+  "RetentionPolicy": {
+    "keepSessionsMonths": "12",
+    "archiveEnabled": "false",
+    "anonymizeAfterDays": "360"
+  },
+
+  "SubmitHealthCheckRequest": {
+    "id": "demo-session-phoenix-2025h1-1",
+    "teamId": "team-phoenix",
+    "userId": "demo",
+    "date": "2026-09-08T10:21:33Z",
+    "assessmentPeriod": "2025 - 1st Half",
+    "surveyType": "regular",
+    "completed": "true"
+  },
+  "HealthCheckResponseRequest": {
+    "dimensionId": "mission",
+    "score": "3",
+    "trend": "improving",
+    "comment": "Roadmap is much clearer since the last planning session."
+  },
+  "HealthCheckSessionResponse": {
+    "id": "demo-session-phoenix-2025h1-1",
+    "teamId": "team-phoenix",
+    "userId": "demo",
+    "date": "2026-09-08T10:21:33Z",
+    "assessmentPeriod": "2025 - 1st Half",
+    "surveyType": "regular",
+    "completed": "true",
+    "createdAt": "2026-09-08T10:21:33Z"
+  },
+  "TeamSubmissionStatusResponse": {
+    "teamId": "team-phoenix",
+    "assessmentPeriod": "2025 - 1st Half",
+    "totalMembers": "4",
+    "submittedMembers": "5",
+    "allSubmitted": "true",
+    "postWorkshopExists": "false"
+  },
+  "HealthCheckResponseResponse": {
+    "dimensionId": "mission",
+    "score": "3",
+    "trend": "improving",
+    "comment": "Roadmap is much clearer since the last planning session."
+  },
+  "HealthDimensionResponse": {
+    "id": "mission",
+    "name": "Mission",
+    "description": "We know exactly why we are here, and we are really excited about it",
+    "goodDescription": "We know exactly why we are here, and we are really excited about it",
+    "badDescription": "We have no idea why we are here. There is no high level picture or focus.",
+    "isActive": "true",
+    "weight": "1"
+  },
+  "HealthCheckSessionsResponse": { "total": "18" },
+  "ErrorResponse": {
+    "error": "Team not found",
+    "message": "No team exists with id team-unknown",
+    "code": "TEAM_NOT_FOUND"
+  },
+
+  "TeamHealthSummary": {
+    "teamId": "team-phoenix",
+    "teamName": "Phoenix Squad",
+    "overallHealth": "2.890909090909091",
+    "submissionCount": "5",
+    "postWorkshopStatus": "pending"
+  },
+  "DimensionSummary": {
+    "dimensionId": "mission",
+    "avgScore": "3",
+    "responseCount": "5"
+  },
+  "ManagerTeamsHealthResponse": {
+    "managerId": "manager1",
+    "totalTeams": "2",
+    "assessmentPeriod": "2025 - 1st Half"
+  },
+  "ManagerRadarResponse": {
+    "managerId": "manager1",
+    "assessmentPeriod": "2025 - 1st Half"
+  },
+  "ManagerTrendsResponse": {
+    "managerId": "manager1",
+    "periods": "2024 - 1st Half,2024 - 2nd Half,2025 - 1st Half"
+  },
+  "ManagerDimensionTrend": {
+    "dimensionId": "mission",
+    "scores": "2.5,3,3"
+  },
+  "SubordinateDTO": {
+    "id": "alice",
+    "username": "alice",
+    "name": "Alice Cooper",
+    "hierarchyLevelId": "level-5",
+    "reportsTo": "teamlead1",
+    "teamIds": "team-phoenix"
+  },
+  "SubordinatesResponse": { "managerId": "manager1" },
+
+  "MessageResponse": { "message": "Hierarchy level deleted successfully" },
+
+  "TeamDashboardHealthSummary": {
+    "teamId": "team-phoenix",
+    "teamName": "Phoenix Squad",
+    "assessmentPeriod": "2025 - 1st Half",
+    "overallHealth": "2.890909090909091",
+    "submissionCount": "5"
+  },
+  "ResponseDistribution": { "teamId": "team-phoenix" },
+  "DimensionDistribution": {
+    "dimensionId": "health",
+    "red": "0",
+    "yellow": "2",
+    "green": "3"
+  },
+  "IndividualResponses": { "teamId": "team-phoenix" },
+  "IndividualUserResponse": {
+    "sessionId": "demo-session-phoenix-2025h1-1",
+    "userId": "alice",
+    "userName": "Alice Cooper",
+    "date": "2026-09-08T10:21:33Z",
+    "surveyType": "regular"
+  },
+  "IndividualDimensionResp": {
+    "dimensionId": "mission",
+    "score": "3",
+    "trend": "improving",
+    "comment": "Roadmap is much clearer since the last planning session."
+  },
+  "TrendData": {
+    "teamId": "team-phoenix",
+    "periods": "2024 - 1st Half,2024 - 2nd Half,2025 - 1st Half"
+  },
+  "DimensionTrend": {
+    "dimensionId": "speed",
+    "scores": "2.5,3,3"
+  },
+  "TeamInfoResponse": {
+    "id": "team-phoenix",
+    "name": "Phoenix Squad",
+    "cadence": "quarterly",
+    "teamLeadId": "teamlead1",
+    "teamLeadName": "Team Lead - Phoenix Squad"
+  },
+  "TeamMember": {
+    "id": "alice",
+    "username": "alice",
+    "fullName": "Alice Cooper"
+  },
+  "TeamListResponse": { "total": "6" },
+  "TeamSummary": {
+    "id": "team-phoenix",
+    "name": "Phoenix Squad",
+    "cadence": "quarterly",
+    "memberCount": "4",
+    "teamLeadId": "teamlead1",
+    "teamLeadName": "Team Lead - Phoenix Squad"
+  },
+
+  "SurveyHistoryResponse": {
+    "userId": "demo",
+    "totalSessions": "3"
+  },
+  "SurveyHistoryEntry": {
+    "sessionId": "demo-session-phoenix-2025h1-1",
+    "teamId": "team-phoenix",
+    "teamName": "Phoenix Squad",
+    "date": "2026-09-08T10:21:33Z",
+    "assessmentPeriod": "2025 - 1st Half",
+    "avgScore": "2.890909090909091",
+    "responseCount": "11",
+    "completed": "true"
+  },
+  "SurveyHistoryResponseItem": {
+    "dimensionId": "mission",
+    "dimensionName": "Mission",
+    "score": "3",
+    "trend": "improving",
+    "comment": "Roadmap is much clearer since the last planning session."
+  }
+}

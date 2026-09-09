@@ -21,7 +21,7 @@ type CreateActionItemRequest struct {
 	Description      string  `json:"description"`
 	DueDate          *string `json:"dueDate"` // ISO date string YYYY-MM-DD
 	AssessmentPeriod *string `json:"assessmentPeriod"`
-}
+} //@name CreateActionItemRequest
 
 // UpdateActionItemRequest is the request body for PATCH /api/v1/teams/:teamId/action-items/:id
 type UpdateActionItemRequest struct {
@@ -32,7 +32,7 @@ type UpdateActionItemRequest struct {
 	Status           *string `json:"status"`
 	DueDate          *string `json:"dueDate"`
 	AssessmentPeriod *string `json:"assessmentPeriod"`
-}
+} //@name UpdateActionItemRequest
 
 // ActionItemResponse is returned in GET / POST / PATCH responses
 type ActionItemResponse struct {
@@ -51,21 +51,21 @@ type ActionItemResponse struct {
 	AssessmentPeriod *string `json:"assessmentPeriod"`
 	CreatedAt        string  `json:"createdAt"`
 	UpdatedAt        string  `json:"updatedAt"`
-}
+} //@name ActionItemResponse
 
 // ActionItemsResponse wraps a list of action items
 type ActionItemsResponse struct {
 	ActionItems []ActionItemResponse `json:"actionItems"`
-}
+} //@name ActionItemsResponse
 
 // TeamActionSummaryResponse is used by the manager endpoint
 type TeamActionSummaryResponse struct {
 	TeamID    string `json:"teamId"`
 	TeamName  string `json:"teamName"`
 	OpenCount int    `json:"openCount"`
-}
+} //@name TeamActionSummaryResponse
 
 // TeamsActionSummaryResponse wraps per-team action counts
 type TeamsActionSummaryResponse struct {
 	Teams []TeamActionSummaryResponse `json:"teams"`
-}
+} //@name TeamsActionSummaryResponse

@@ -20,6 +20,15 @@ func NewSettingsAdminHandler(orgRepo organization.Repository) *SettingsAdminHand
 }
 
 // GetDimensions handles GET /api/v1/admin/settings/dimensions
+//
+// @Summary List health dimensions (admin)
+// @Description Returns every configured health dimension, including inactive ones, unlike the public dimensions endpoint which returns only active ones. Each entry includes its ID, name, description, good/bad anchor descriptions, active flag, weight, and timestamps. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Settings
+// @Produce json
+// @Success 200 {object} dto.DimensionsResponse
+// @Failure 500 {object} dto.ErrorResponse "Failed to query dimensions"
+// @Security BearerAuth
+// @Router /admin/settings/dimensions [get]
 func (h *SettingsAdminHandler) GetDimensions(c *gin.Context) {
 	dimensions, err := h.orgRepo.FindDimensions(c.Request.Context())
 	if err != nil {
@@ -50,6 +59,18 @@ func (h *SettingsAdminHandler) GetDimensions(c *gin.Context) {
 }
 
 // CreateDimension handles POST /api/v1/admin/settings/dimensions
+//
+// @Summary Create a health dimension
+// @Description Creates a new health dimension with an ID, name, and good/bad anchor descriptions. Weight must fall between 0 and 10 and defaults to 1.0 when omitted; isActive defaults to true when omitted. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Settings
+// @Accept json
+// @Produce json
+// @Param body body dto.CreateDimensionRequest true "Dimension to create"
+// @Success 201 {object} dto.HealthDimensionDTO
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body or weight out of range"
+// @Failure 500 {object} dto.ErrorResponse "Failed to create dimension"
+// @Security BearerAuth
+// @Router /admin/settings/dimensions [post]
 func (h *SettingsAdminHandler) CreateDimension(c *gin.Context) {
 	var req dto.CreateDimensionRequest
 
@@ -113,6 +134,20 @@ func (h *SettingsAdminHandler) CreateDimension(c *gin.Context) {
 }
 
 // UpdateDimension handles PUT /api/v1/admin/settings/dimensions/:id
+//
+// @Summary Update a health dimension
+// @Description Updates the fields of the health dimension identified by the path ID; only the fields present in the request body are changed. Weight, if provided, must fall between 0 and 10. Returns a 404 if no dimension exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Settings
+// @Accept json
+// @Produce json
+// @Param id path string true "Dimension ID"
+// @Param body body dto.UpdateDimensionRequest true "Fields to update"
+// @Success 200 {object} dto.HealthDimensionDTO
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body or weight out of range"
+// @Failure 404 {object} dto.ErrorResponse "Dimension not found"
+// @Failure 500 {object} dto.ErrorResponse "Failed to update dimension"
+// @Security BearerAuth
+// @Router /admin/settings/dimensions/{id} [put]
 func (h *SettingsAdminHandler) UpdateDimension(c *gin.Context) {
 	id := c.Param("id")
 	var req dto.UpdateDimensionRequest
@@ -181,6 +216,16 @@ func (h *SettingsAdminHandler) UpdateDimension(c *gin.Context) {
 }
 
 // DeleteDimension handles DELETE /api/v1/admin/settings/dimensions/:id
+//
+// @Summary Delete a health dimension
+// @Description Permanently deletes the health dimension identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Settings
+// @Produce json
+// @Param id path string true "Dimension ID"
+// @Success 200 {object} map[string]string "message"
+// @Failure 500 {object} dto.ErrorResponse "Failed to delete dimension"
+// @Security BearerAuth
+// @Router /admin/settings/dimensions/{id} [delete]
 func (h *SettingsAdminHandler) DeleteDimension(c *gin.Context) {
 	id := c.Param("id")
 
@@ -197,6 +242,15 @@ func (h *SettingsAdminHandler) DeleteDimension(c *gin.Context) {
 }
 
 // GetBrandingSettings handles GET /api/v1/admin/settings/branding
+//
+// @Summary Get branding settings
+// @Description Returns the organization's current branding: the company name and the logo URL (a base64 data URL when a custom logo has been uploaded). Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Settings
+// @Produce json
+// @Success 200 {object} dto.BrandingSettings
+// @Failure 500 {object} dto.ErrorResponse "Failed to fetch branding settings"
+// @Security BearerAuth
+// @Router /admin/settings/branding [get]
 func (h *SettingsAdminHandler) GetBrandingSettings(c *gin.Context) {
 	appSettings, err := h.orgRepo.GetAppSettings(c.Request.Context())
 	if err != nil {
@@ -213,6 +267,18 @@ func (h *SettingsAdminHandler) GetBrandingSettings(c *gin.Context) {
 }
 
 // UpdateBrandingSettings handles PUT /api/v1/admin/settings/branding
+//
+// @Summary Update branding settings
+// @Description Replaces the organization's company name and logo URL with the given values. The logo is expected as a base64 data URL and is rejected with a 400 if it exceeds roughly 500KB. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Settings
+// @Accept json
+// @Produce json
+// @Param body body dto.BrandingSettings true "Branding settings"
+// @Success 200 {object} dto.BrandingSettings
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body or logo too large"
+// @Failure 500 {object} dto.ErrorResponse "Failed to save branding settings"
+// @Security BearerAuth
+// @Router /admin/settings/branding [put]
 func (h *SettingsAdminHandler) UpdateBrandingSettings(c *gin.Context) {
 	var settings dto.BrandingSettings
 	if err := c.ShouldBindJSON(&settings); err != nil {
@@ -235,6 +301,15 @@ func (h *SettingsAdminHandler) UpdateBrandingSettings(c *gin.Context) {
 }
 
 // GetNotificationSettings handles GET /api/v1/admin/settings/notifications
+//
+// @Summary Get notification settings
+// @Description Returns the organization's notification configuration: whether email and Slack notifications are enabled and whether the weekly digest is on, read from stored settings, alongside whether an SMTP host is configured on the server. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Settings
+// @Produce json
+// @Success 200 {object} dto.NotificationSettings
+// @Failure 500 {object} dto.ErrorResponse "Failed to fetch settings"
+// @Security BearerAuth
+// @Router /admin/settings/notifications [get]
 func (h *SettingsAdminHandler) GetNotificationSettings(c *gin.Context) {
 	appSettings, err := h.orgRepo.GetAppSettings(c.Request.Context())
 	if err != nil {
@@ -256,6 +331,18 @@ func (h *SettingsAdminHandler) GetNotificationSettings(c *gin.Context) {
 }
 
 // UpdateNotificationSettings handles PUT /api/v1/admin/settings/notifications
+//
+// @Summary Update notification settings
+// @Description Updates the organization's stored notification configuration: whether email and Slack notifications are enabled and whether the weekly digest is on. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Settings
+// @Accept json
+// @Produce json
+// @Param body body dto.NotificationSettings true "Notification settings"
+// @Success 200 {object} dto.NotificationSettings
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body"
+// @Failure 500 {object} dto.ErrorResponse "Failed to save settings"
+// @Security BearerAuth
+// @Router /admin/settings/notifications [put]
 func (h *SettingsAdminHandler) UpdateNotificationSettings(c *gin.Context) {
 	var settings dto.NotificationSettings
 	if err := c.ShouldBindJSON(&settings); err != nil {
@@ -272,6 +359,15 @@ func (h *SettingsAdminHandler) UpdateNotificationSettings(c *gin.Context) {
 }
 
 // GetRetentionPolicy handles GET /api/v1/admin/settings/retention
+//
+// @Summary Get data retention policy
+// @Description Returns the organization's data retention policy: how many months completed sessions are kept, and the anonymization window in days, which is derived as thirty times the retention months. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Settings
+// @Produce json
+// @Success 200 {object} dto.RetentionPolicy
+// @Failure 500 {object} dto.ErrorResponse "Failed to fetch retention policy"
+// @Security BearerAuth
+// @Router /admin/settings/retention [get]
 func (h *SettingsAdminHandler) GetRetentionPolicy(c *gin.Context) {
 	appSettings, err := h.orgRepo.GetAppSettings(c.Request.Context())
 	if err != nil {
@@ -289,6 +385,18 @@ func (h *SettingsAdminHandler) GetRetentionPolicy(c *gin.Context) {
 }
 
 // UpdateRetentionPolicy handles PUT /api/v1/admin/settings/retention
+//
+// @Summary Update data retention policy
+// @Description Updates how many months completed sessions are retained; the value must be between 1 and 120. The anonymization window returned in the response is recalculated as thirty times that value. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Settings
+// @Accept json
+// @Produce json
+// @Param body body dto.RetentionPolicy true "Retention policy"
+// @Success 200 {object} dto.RetentionPolicy
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body or keepSessionsMonths out of range"
+// @Failure 500 {object} dto.ErrorResponse "Failed to save retention policy"
+// @Security BearerAuth
+// @Router /admin/settings/retention [put]
 func (h *SettingsAdminHandler) UpdateRetentionPolicy(c *gin.Context) {
 	var policy dto.RetentionPolicy
 	if err := c.ShouldBindJSON(&policy); err != nil {

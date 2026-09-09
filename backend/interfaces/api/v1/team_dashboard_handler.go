@@ -27,6 +27,19 @@ func NewTeamDashboardHandler(db *sql.DB) *TeamDashboardHandler {
 
 // GetHealthSummary handles GET /api/v1/teams/:teamId/dashboard/health-summary
 // Returns radar chart data (avg score per dimension)
+//
+// @Summary Get team health summary
+// @Description Returns the data behind the team's health radar chart: completed-session count, overall average score across all responses, and the average score plus response count for each dimension, computed only from completed sessions and optionally narrowed to one assessment period via a query parameter. Returns a 404 if the team does not exist. Access requires membership on the team.
+// @Tags Team Dashboard
+// @Produce json
+// @Param teamId path string true "Team ID"
+// @Param assessmentPeriod query string false "Filter by assessment period"
+// @Success 200 {object} dto.TeamDashboardHealthSummary
+// @Failure 400 {object} dto.ErrorResponse "Team ID is required"
+// @Failure 404 {object} dto.ErrorResponse "Team not found"
+// @Failure 500 {object} dto.ErrorResponse "Database query failed or failed to parse dimension data"
+// @Security BearerAuth
+// @Router /teams/{teamId}/dashboard/health-summary [get]
 func (h *TeamDashboardHandler) GetHealthSummary(c *gin.Context) {
 	ctx := c.Request.Context()
 	teamID := c.Param("teamId")
@@ -154,6 +167,18 @@ func (h *TeamDashboardHandler) GetHealthSummary(c *gin.Context) {
 
 // GetResponseDistribution handles GET /api/v1/teams/:teamId/dashboard/response-distribution
 // Returns score distribution per dimension (red/yellow/green counts for bar chart)
+//
+// @Summary Get team response distribution
+// @Description Returns, for each dimension the team has scored, how many completed responses landed on red (1), yellow (2), and green (3), for rendering the team's response-distribution bar chart. Results can be narrowed to one assessment period via a query parameter. Access requires membership on the team.
+// @Tags Team Dashboard
+// @Produce json
+// @Param teamId path string true "Team ID"
+// @Param assessmentPeriod query string false "Filter by assessment period"
+// @Success 200 {object} dto.ResponseDistribution
+// @Failure 400 {object} dto.ErrorResponse "Team ID is required"
+// @Failure 500 {object} dto.ErrorResponse "Database query failed or failed to parse distribution data"
+// @Security BearerAuth
+// @Router /teams/{teamId}/dashboard/response-distribution [get]
 func (h *TeamDashboardHandler) GetResponseDistribution(c *gin.Context) {
 	ctx := c.Request.Context()
 	teamID := c.Param("teamId")
@@ -221,6 +246,18 @@ func (h *TeamDashboardHandler) GetResponseDistribution(c *gin.Context) {
 
 // GetIndividualResponses handles GET /api/v1/teams/:teamId/dashboard/individual-responses
 // Returns individual team member responses with comments
+//
+// @Summary Get individual team member responses
+// @Description Returns each completed survey session for the team with the submitting member's identity attached (not anonymized), newest first, including per-dimension score, trend, and comment. Results can be narrowed to one assessment period via a query parameter. Access requires membership on the team.
+// @Tags Team Dashboard
+// @Produce json
+// @Param teamId path string true "Team ID"
+// @Param assessmentPeriod query string false "Filter by assessment period"
+// @Success 200 {object} dto.IndividualResponses
+// @Failure 400 {object} dto.ErrorResponse "Team ID is required"
+// @Failure 500 {object} dto.ErrorResponse "Database query failed or failed to parse response data"
+// @Security BearerAuth
+// @Router /teams/{teamId}/dashboard/individual-responses [get]
 func (h *TeamDashboardHandler) GetIndividualResponses(c *gin.Context) {
 	ctx := c.Request.Context()
 	teamID := c.Param("teamId")
@@ -332,6 +369,17 @@ func (h *TeamDashboardHandler) GetIndividualResponses(c *gin.Context) {
 
 // GetTrends handles GET /api/v1/teams/:teamId/dashboard/trends
 // Returns trend data across assessment periods
+//
+// @Summary Get team trend data
+// @Description Returns the list of assessment periods the team has data for and, for each health dimension, the average score in each of those periods, for rendering the team's trend chart. Access requires membership on the team.
+// @Tags Team Dashboard
+// @Produce json
+// @Param teamId path string true "Team ID"
+// @Success 200 {object} dto.TrendData
+// @Failure 400 {object} dto.ErrorResponse "Team ID is required"
+// @Failure 500 {object} dto.ErrorResponse "Failed to fetch trend data"
+// @Security BearerAuth
+// @Router /teams/{teamId}/dashboard/trends [get]
 func (h *TeamDashboardHandler) GetTrends(c *gin.Context) {
 	ctx := c.Request.Context()
 	teamID := c.Param("teamId")

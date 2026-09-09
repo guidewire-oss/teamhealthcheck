@@ -24,6 +24,17 @@ func NewPasswordResetHandler(resetService *services.PasswordResetService, userRe
 }
 
 // ForgotPassword handles forgot password requests
+//
+// @Summary Request a password reset email
+// @Description Validates the submitted email format and, if a matching account exists, creates a password reset token and emails a reset link to it. The response message is identical whether or not the email is registered, so the endpoint cannot be used to discover which addresses have accounts. This is a public endpoint that requires no authentication.
+// @Tags Auth
+// @Accept json
+// @Produce json
+// @Param body body dto.ForgotPasswordRequest true "Email address"
+// @Success 200 {object} map[string]string "message"
+// @Failure 400 {object} dto.ErrorResponse "Missing or invalid email"
+// @Failure 500 {object} map[string]string "error"
+// @Router /auth/forgot-password [post]
 func (h *PasswordResetHandler) ForgotPassword(c *gin.Context) {
 	var req dto.ForgotPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -52,6 +63,18 @@ func (h *PasswordResetHandler) ForgotPassword(c *gin.Context) {
 }
 
 // ResetPassword handles password reset with token
+//
+// @Summary Reset password using a reset token
+// @Description Sets a new password for the account tied to the given reset token, after checking the token is present, unexpired, and unused, and that the new password is at least 8 characters. Returns a 401 if the token is invalid or expired. This is a public endpoint that relies on the reset token itself for authorization rather than a bearer session.
+// @Tags Auth
+// @Accept json
+// @Produce json
+// @Param body body dto.ResetPasswordRequest true "Reset token and new password"
+// @Success 200 {object} map[string]string "message"
+// @Failure 400 {object} dto.ErrorResponse "Missing token/password or password too short"
+// @Failure 401 {object} dto.ErrorResponse "Invalid or expired reset token"
+// @Failure 500 {object} dto.ErrorResponse "Failed to reset password"
+// @Router /auth/reset-password [post]
 func (h *PasswordResetHandler) ResetPassword(c *gin.Context) {
 	var req dto.ResetPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

@@ -14,7 +14,7 @@ type HierarchyLevelDTO struct {
 	Permissions HierarchyPermissionsDTO `json:"permissions"`
 	CreatedAt   time.Time               `json:"createdAt"`
 	UpdatedAt   time.Time               `json:"updatedAt"`
-}
+} //@name HierarchyLevelDTO
 
 // HierarchyPermissionsDTO represents permissions for a hierarchy level
 type HierarchyPermissionsDTO struct {
@@ -23,30 +23,30 @@ type HierarchyPermissionsDTO struct {
 	CanManageUsers   bool `json:"canManageUsers"`
 	CanTakeSurvey    bool `json:"canTakeSurvey"`
 	CanViewAnalytics bool `json:"canViewAnalytics"`
-}
+} //@name HierarchyPermissionsDTO
 
 // CreateHierarchyLevelRequest represents request to create a hierarchy level
 type CreateHierarchyLevelRequest struct {
 	ID          string                  `json:"id"`                      // Optional - will be auto-generated from name if not provided
 	Name        string                  `json:"name" binding:"required"` // Required - used to generate ID if not provided
 	Permissions HierarchyPermissionsDTO `json:"permissions"`
-}
+} //@name CreateHierarchyLevelRequest
 
 // UpdateHierarchyLevelRequest represents request to update a hierarchy level
 type UpdateHierarchyLevelRequest struct {
 	Name        string                   `json:"name"`
 	Permissions *HierarchyPermissionsDTO `json:"permissions"`
-}
+} //@name UpdateHierarchyLevelRequest
 
 // UpdateHierarchyPositionRequest represents request to reorder hierarchy levels
 type UpdateHierarchyPositionRequest struct {
 	NewPosition int `json:"newPosition" binding:"required,min=1"`
-}
+} //@name UpdateHierarchyPositionRequest
 
 // HierarchyLevelsResponse represents response with list of hierarchy levels
 type HierarchyLevelsResponse struct {
 	Levels []HierarchyLevelDTO `json:"levels"`
-}
+} //@name HierarchyLevelsResponse
 
 // ============================================================================
 // Users DTOs
@@ -64,7 +64,7 @@ type AdminUserDTO struct {
 	AuthType       string    `json:"authType"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
-}
+} //@name AdminUserDTO
 
 // CreateUserRequest represents request to create a user
 type CreateUserRequest struct {
@@ -76,7 +76,7 @@ type CreateUserRequest struct {
 	AuthType       string  `json:"authType" binding:"omitempty,oneof=local sso"` // "local" (default) or "sso"
 	HierarchyLevel string  `json:"hierarchyLevel" binding:"required"`
 	ReportsTo      *string `json:"reportsTo"`
-}
+} //@name CreateUserRequest
 
 // UpdateUserRequest represents request to update a user
 type UpdateUserRequest struct {
@@ -87,13 +87,13 @@ type UpdateUserRequest struct {
 	AuthType       *string `json:"authType" binding:"omitempty,oneof=local sso"`
 	HierarchyLevel *string `json:"hierarchyLevel"`
 	ReportsTo      *string `json:"reportsTo"`
-}
+} //@name UpdateUserRequest
 
 // UsersResponse represents response with list of users
 type UsersResponse struct {
 	Users []AdminUserDTO `json:"users"`
 	Total int            `json:"total"`
-}
+} //@name UsersResponse
 
 // ============================================================================
 // Teams DTOs
@@ -110,7 +110,7 @@ type AdminTeamDTO struct {
 	MemberCount           int       `json:"memberCount"`
 	CreatedAt             time.Time `json:"createdAt"`
 	UpdatedAt             time.Time `json:"updatedAt"`
-}
+} //@name AdminTeamDTO
 
 // CreateTeamRequest represents request to create a team
 type CreateTeamRequest struct {
@@ -119,7 +119,7 @@ type CreateTeamRequest struct {
 	TeamLeadID            *string `json:"teamLeadId"`
 	Cadence               string  `json:"cadence" binding:"required,oneof=monthly quarterly half-yearly yearly"`
 	DistributionListEmail *string `json:"distributionListEmail" binding:"omitempty,email"`
-}
+} //@name CreateTeamRequest
 
 // UpdateTeamRequest represents request to update a team
 type UpdateTeamRequest struct {
@@ -127,31 +127,31 @@ type UpdateTeamRequest struct {
 	TeamLeadID            *string `json:"teamLeadId"`
 	Cadence               *string `json:"cadence" binding:"omitempty,oneof=monthly quarterly half-yearly yearly"`
 	DistributionListEmail *string `json:"distributionListEmail" binding:"omitempty,email"`
-}
+} //@name UpdateTeamRequest
 
 // TeamsResponse represents response with list of teams
 type TeamsResponse struct {
 	Teams []AdminTeamDTO `json:"teams"`
 	Total int            `json:"total"`
-}
+} //@name TeamsResponse
 
 // TeamMemberAdminDTO represents a team member in admin context
 type TeamMemberAdminDTO struct {
 	UserID   string `json:"userId"`
 	UserName string `json:"userName"`
 	Email    string `json:"email"`
-}
+} //@name TeamMemberAdminDTO
 
 // TeamMembersResponse represents response with list of team members
 type TeamMembersResponse struct {
 	Members []TeamMemberAdminDTO `json:"members"`
 	Total   int                  `json:"total"`
-}
+} //@name TeamMembersResponse
 
 // AddTeamMemberRequest represents request to add a member to a team
 type AddTeamMemberRequest struct {
 	UserID string `json:"userId" binding:"required"`
-}
+} //@name AddTeamMemberRequest
 
 // SupervisorLinkDTO represents a supervisor in the chain with display names
 type SupervisorLinkDTO struct {
@@ -159,24 +159,24 @@ type SupervisorLinkDTO struct {
 	UserName  string `json:"userName"`
 	LevelID   string `json:"levelId"`
 	LevelName string `json:"levelName"`
-}
+} //@name SupervisorLinkDTO
 
 // SupervisorChainResponse represents the full supervisor chain for a team
 type SupervisorChainResponse struct {
 	TeamID      string              `json:"teamId"`
 	Supervisors []SupervisorLinkDTO `json:"supervisors"`
-}
+} //@name SupervisorChainResponse
 
 // UpdateSupervisorChainRequest represents request to update a team's supervisor chain
 type UpdateSupervisorChainRequest struct {
 	Supervisors []SupervisorLinkInput `json:"supervisors" binding:"required"`
-}
+} //@name UpdateSupervisorChainRequest
 
 // SupervisorLinkInput represents a supervisor link in update requests
 type SupervisorLinkInput struct {
 	UserID  string `json:"userId" binding:"required"`
 	LevelID string `json:"levelId" binding:"required"`
-}
+} //@name SupervisorLinkInput
 
 // ============================================================================
 // Settings DTOs
@@ -193,7 +193,7 @@ type HealthDimensionDTO struct {
 	Weight          float64   `json:"weight"`
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
-}
+} //@name HealthDimensionDTO
 
 // CreateDimensionRequest represents request to create a dimension
 type CreateDimensionRequest struct {
@@ -203,8 +203,8 @@ type CreateDimensionRequest struct {
 	GoodDescription string  `json:"goodDescription" binding:"required"`
 	BadDescription  string  `json:"badDescription" binding:"required"`
 	IsActive        *bool   `json:"isActive"`
-	Weight          float64 `json:"weight"`
-}
+	Weight          float64 `json:"weight" minimum:"0" maximum:"10"`
+} //@name CreateDimensionRequest
 
 // UpdateDimensionRequest represents request to update a dimension
 type UpdateDimensionRequest struct {
@@ -213,19 +213,19 @@ type UpdateDimensionRequest struct {
 	GoodDescription *string  `json:"goodDescription"`
 	BadDescription  *string  `json:"badDescription"`
 	IsActive        *bool    `json:"isActive"`
-	Weight          *float64 `json:"weight"`
-}
+	Weight          *float64 `json:"weight" minimum:"0" maximum:"10"`
+} //@name UpdateDimensionRequest
 
 // DimensionsResponse represents response with list of dimensions
 type DimensionsResponse struct {
 	Dimensions []HealthDimensionDTO `json:"dimensions"`
-}
+} //@name DimensionsResponse
 
 // BrandingSettings represents company branding configuration
 type BrandingSettings struct {
 	CompanyName string `json:"companyName" binding:"required,max=100"`
 	LogoURL     string `json:"logoURL"`
-}
+} //@name BrandingSettings
 
 // NotificationSettings represents notification configuration
 type NotificationSettings struct {
@@ -236,11 +236,11 @@ type NotificationSettings struct {
 	ReminderDaysBefore int      `json:"reminderDaysBefore"`
 	ReminderRecipients []string `json:"reminderRecipients"`
 	SmtpConfigured     bool     `json:"smtpConfigured"`
-}
+} //@name NotificationSettings
 
 // RetentionPolicy represents data retention configuration
 type RetentionPolicy struct {
 	KeepSessionsMonths int  `json:"keepSessionsMonths"`
 	ArchiveEnabled     bool `json:"archiveEnabled"`
 	AnonymizeAfterDays int  `json:"anonymizeAfterDays"`
-}
+} //@name RetentionPolicy
