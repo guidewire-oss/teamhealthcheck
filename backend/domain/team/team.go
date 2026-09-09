@@ -48,6 +48,37 @@ type Member struct {
 	Role   string `json:"role,omitempty"` // lead, member
 }
 
+// SurveyCompletionRow is a lightweight per-team projection for the admin
+// survey-completion dashboard (hierarchy owner and the opt-in flag). Kept
+// separate from Team, rather than adding fields to it, because it depends
+// on a column (health_check_enabled) that is not present on every database
+// yet — see FindSurveyCompletionTeams.
+//
+// There is deliberately no member-count field here: "how many members"
+// depends on WHICH members are eligible for the individual survey (Level 4
+// Team Lead + Level 5 Team Member only — see FindEligibleMemberIDs), so
+// that count is derived by the caller from FindEligibleMemberIDs' result,
+// never from a raw, unfiltered team_members count.
+//
+// SupervisorID is this team's own closest supervisor as recorded in
+// team_supervisors (the row with the lowest `position`, i.e. "1 = closest
+// supervisor" per that column's own definition) — "" when the team has no
+// supervisor recorded at all. The caller
+// (GetSurveyCompletionOverviewHandler) resolves this person's own
+// ancestors, arbitrarily deep, purely via users.reports_to — team_supervisors
+// is only ever consulted for the single closest supervisor, never for the
+// rest of the chain. TeamLead* is the Level-4 escalation target, always
+// populated when the team has a team lead.
+type SurveyCompletionRow struct {
+	ID                 string
+	Name               string
+	SupervisorID       string
+	TeamLeadID         string
+	TeamLeadName       string
+	TeamLeadEmail      string
+	HealthCheckEnabled bool
+}
+
 // Repository defines the interface for team data access
 type Repository interface {
 	FindByID(ctx context.Context, id string) (*Team, error)
@@ -66,4 +97,21 @@ type Repository interface {
 	FindTeamMembers(ctx context.Context, teamID string) ([]TeamMember, error)
 	CountTeamMembers(ctx context.Context, teamID string) (int, error)
 	FindAllWithDetails(ctx context.Context) ([]Team, error)
+	// FindSurveyCompletionTeams returns the admin survey-completion projection
+	// for every team. Requires the health_check_enabled column on teams —
+	// only this method selects it, so every other team query keeps working
+	// unchanged against databases that haven't added it yet.
+	FindSurveyCompletionTeams(ctx context.Context) ([]SurveyCompletionRow, error)
+	// FindEligibleMemberIDs returns, for every team, the ids of its members
+	// who are eligible to take the individual survey -- authoritatively
+	// defined as hierarchy_levels.position exactly 4 (Team Lead) or exactly
+	// 5 (Team Member), joined dynamically through users.hierarchy_level_id
+	// and hierarchy_levels.position -- never a hard-coded level id/name.
+	// Managers, Senior Managers, Directors, VPs, and any other position are
+	// excluded. This is the single authoritative eligible population every
+	// survey-completion status, filter, and aggregate (Individual Survey
+	// Completed, Not Started, Fully Completed, Opted Out, Opted In, Total
+	// Teams) must be calculated from -- see
+	// GetSurveyCompletionOverviewHandler.Handle.
+	FindEligibleMemberIDs(ctx context.Context) (map[string][]string, error)
 }

@@ -174,6 +174,124 @@ func (r *TeamRepository) FindBySupervisorID(ctx context.Context, supervisorID st
 	return r.scanTeams(ctx, rows)
 }
 
+// FindSurveyCompletionTeams returns a lightweight per-team projection for the
+// admin survey-completion dashboard: this team's own closest supervisor, the
+// Level-4 team lead, and the health_check_enabled column.
+//
+// The closest supervisor is whichever team_supervisors row for this team has
+// the lowest `position` (that column's own definition: "1 = closest
+// supervisor") — no hierarchy_levels.position filtering here at all, so this
+// works regardless of how many leadership tiers a given organization's
+// hierarchy_levels table defines. The caller
+// (GetSurveyCompletionOverviewHandler) resolves everything above that one
+// supervisor purely via users.reports_to.
+//
+// health_check_enabled is added by migration 000021_add_health_check_enabled
+// — any database that has run migrations has it. No other method on this
+// repository selects it, so FindAll/FindByID/etc. are unaffected.
+//
+// Deliberately does NOT return a member count: eligibility for the
+// individual survey (Level 4 + Level 5 only) can't be answered from this
+// query — see FindEligibleMemberIDs, the caller's actual source for that.
+func (r *TeamRepository) FindSurveyCompletionTeams(ctx context.Context) ([]team.SurveyCompletionRow, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			t.id,
+			t.name,
+			t.health_check_enabled,
+			COALESCE(sup.user_id, '') AS supervisor_id,
+			COALESCE(t.team_lead_id, '') AS team_lead_id,
+			COALESCE(tl.full_name, '') AS team_lead_name,
+			COALESCE(tl.email, '') AS team_lead_email
+		FROM teams t
+		LEFT JOIN LATERAL (
+			SELECT ts.user_id
+			FROM team_supervisors ts
+			WHERE ts.team_id = t.id
+			ORDER BY ts.position ASC
+			LIMIT 1
+		) sup ON true
+		LEFT JOIN users tl ON tl.id = t.team_lead_id
+		ORDER BY t.name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query survey completion teams: %w", err)
+	}
+	defer rows.Close()
+
+	var result []team.SurveyCompletionRow
+	for rows.Next() {
+		var row team.SurveyCompletionRow
+		if err := rows.Scan(
+			&row.ID,
+			&row.Name,
+			&row.HealthCheckEnabled,
+			&row.SupervisorID,
+			&row.TeamLeadID,
+			&row.TeamLeadName,
+			&row.TeamLeadEmail,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan survey completion team: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return result, nil
+}
+
+// FindEligibleMemberIDs returns, for every team, the distinct ids of its
+// members eligible to take the individual survey.
+//
+// AUTHORITATIVE SOURCE: team_members is the single source of truth for pod
+// membership at every eligible level — Team Leads (Level 4) and Team
+// Members (Level 5) are both inserted into team_members directly (a team's
+// team_lead_id column names its lead for escalation/display purposes only;
+// membership itself, for every level, lives in team_members). Eligibility
+// is never inferred from a name, title, or any hard-coded level id/name: it
+// is determined dynamically by joining each member's users.hierarchy_level_id
+// to hierarchy_levels.position and requiring that position be exactly 4 or
+// exactly 5. Managers (3), Senior Managers/Directors (2), and VPs (1) are
+// excluded by this join, regardless of how their titles read.
+//
+// DISTINCT on (team_id, user_id) makes a user count at most once per team
+// even if the caller's schema ever allowed a duplicate membership row (the
+// team_members primary key already prevents that, but this query does not
+// rely on that constraint alone). An inactive/missing user is excluded by
+// the INNER JOIN to users: a team_members row whose user no longer exists
+// never survives the join (the users FK's ON DELETE CASCADE means such a
+// row cannot outlive its user in practice, but this query does not rely on
+// that alone either).
+func (r *TeamRepository) FindEligibleMemberIDs(ctx context.Context) (map[string][]string, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT DISTINCT tm.team_id, tm.user_id
+		FROM team_members tm
+		JOIN users u ON u.id = tm.user_id
+		JOIN hierarchy_levels hl ON hl.id = u.hierarchy_level_id
+		WHERE hl.position IN (4, 5)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query eligible team members: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string][]string)
+	for rows.Next() {
+		var teamID, userID string
+		if err := rows.Scan(&teamID, &userID); err != nil {
+			return nil, fmt.Errorf("failed to scan eligible team member: %w", err)
+		}
+		result[teamID] = append(result[teamID], userID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return result, nil
+}
+
 // FindMembers retrieves team members as domain Members
 func (r *TeamRepository) FindMembers(ctx context.Context, teamID string) ([]*team.Member, error) {
 	rows, err := r.db.QueryContext(ctx, `

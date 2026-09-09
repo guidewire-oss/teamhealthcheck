@@ -500,12 +500,19 @@ func (r *HealthCheckRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// FindDistinctAssessmentPeriods returns all unique assessment periods from submitted sessions
+// FindDistinctAssessmentPeriods returns all unique assessment periods from
+// submitted sessions, most recent first. Ordering is done in Go
+// (healthcheck.SortAssessmentPeriodsDescending) rather than in SQL: this
+// app's period strings come in five different formats (monthly, quarterly,
+// half-yearly, yearly, and a legacy half-year format — see
+// frontend/lib/assessment-period.ts), and a plain `ORDER BY
+// assessment_period DESC` is a lexicographic STRING sort that has no
+// concept of month/quarter order across those formats (e.g. "H1" < "Mar" <
+// "Q1" alphabetically, unrelated to actual chronological order).
 func (r *HealthCheckRepository) FindDistinctAssessmentPeriods(ctx context.Context) ([]string, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT DISTINCT assessment_period FROM health_check_sessions
 		WHERE assessment_period IS NOT NULL AND assessment_period != '' AND completed = true
-		ORDER BY assessment_period DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query assessment periods: %w", err)
@@ -528,6 +535,7 @@ func (r *HealthCheckRepository) FindDistinctAssessmentPeriods(ctx context.Contex
 	if periods == nil {
 		periods = []string{}
 	}
+	healthcheck.SortAssessmentPeriodsDescending(periods)
 
 	return periods, nil
 }

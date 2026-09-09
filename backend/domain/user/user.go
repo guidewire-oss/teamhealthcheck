@@ -44,6 +44,11 @@ type Repository interface {
 	Delete(ctx context.Context, id string) error
 	// Additional methods for team membership
 	FindTeamIDsForUser(ctx context.Context, userID string) ([]string, error)
+	// FindTeamIDsForUsers is the batched form of FindTeamIDsForUser, for
+	// callers that need every user's team memberships at once (e.g. the
+	// admin users list) — one query instead of one round trip per user.
+	// Users with no memberships are simply absent from the returned map.
+	FindTeamIDsForUsers(ctx context.Context, userIDs []string) (map[string][]string, error)
 	FindTeamsWhereUserIsLead(ctx context.Context, userID string) ([]string, error)
 	// Password management
 	UpdatePassword(ctx context.Context, userID string, hashedPassword string) error
