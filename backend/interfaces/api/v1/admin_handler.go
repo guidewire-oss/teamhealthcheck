@@ -57,6 +57,10 @@ func (h *AdminHandler) ListUsers(c *gin.Context) {
 	h.UserHandler.ListUsers(c)
 }
 
+func (h *AdminHandler) ListUsersLite(c *gin.Context) {
+	h.UserHandler.ListUsersLite(c)
+}
+
 func (h *AdminHandler) CreateUser(c *gin.Context) {
 	h.UserHandler.CreateUser(c)
 }

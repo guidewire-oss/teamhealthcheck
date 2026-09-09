@@ -121,6 +121,15 @@ var _ = Describe("E2E: Admin Modal Forms & Search/Filter", Label("e2e", "admin",
 				Expect(err).NotTo(HaveOccurred())
 				time.Sleep(1 * time.Second)
 
+				By("Searching for the test user so it appears regardless of its page")
+				searchInput := page.Locator("[data-testid='user-search-input']")
+				Eventually(func() bool {
+					visible, _ := searchInput.IsVisible()
+					return visible
+				}, 10*time.Second, 500*time.Millisecond).Should(BeTrue())
+				err = searchInput.Fill(testUsername)
+				Expect(err).NotTo(HaveOccurred())
+
 				By("Waiting for test user to appear")
 				testUserText := page.Locator(fmt.Sprintf("text=%s", testFullName))
 				Eventually(func() bool {
