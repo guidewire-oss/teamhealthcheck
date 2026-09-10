@@ -89,10 +89,34 @@ type UpdateUserRequest struct {
 	ReportsTo      *string `json:"reportsTo"`
 }
 
-// UsersResponse represents response with list of users
+// PaginationDTO represents pagination metadata for a paginated list response
+type PaginationDTO struct {
+	Page            int  `json:"page"`
+	PageSize        int  `json:"pageSize"`
+	TotalItems      int  `json:"totalItems"`
+	TotalPages      int  `json:"totalPages"`
+	HasNextPage     bool `json:"hasNextPage"`
+	HasPreviousPage bool `json:"hasPreviousPage"`
+}
+
+// UsersResponse represents a paginated response with a page of users
 type UsersResponse struct {
-	Users []AdminUserDTO `json:"users"`
-	Total int            `json:"total"`
+	Users      []AdminUserDTO `json:"users"`
+	Pagination PaginationDTO  `json:"pagination"`
+}
+
+// UserLiteDTO represents minimal user data for dropdowns/pickers that need
+// the full user set without the cost of the full paginated listing.
+type UserLiteDTO struct {
+	ID             string `json:"id"`
+	Username       string `json:"username"`
+	FullName       string `json:"fullName"`
+	HierarchyLevel string `json:"hierarchyLevel"`
+}
+
+// UsersLiteResponse represents a response with the full lightweight user list
+type UsersLiteResponse struct {
+	Users []UserLiteDTO `json:"users"`
 }
 
 // ============================================================================

@@ -249,3 +249,8 @@ docs/prompts.txt
 docs/ses-migration-plan.md
 backend/main
 backend/api
+scripts/dev-*-fake/
+.claude
+.claude-session-head
+backend/response.json
+.DS_Store

@@ -14,10 +14,11 @@ import (
 	"github.com/XSAM/otelsql"
 	"github.com/agopalakrishnan/teams360/backend/application/services"
 	"github.com/agopalakrishnan/teams360/backend/application/trends"
+	"github.com/agopalakrishnan/teams360/backend/infrastructure/dataprovider"
 	"github.com/agopalakrishnan/teams360/backend/infrastructure/email"
 	"github.com/agopalakrishnan/teams360/backend/infrastructure/persistence/postgres"
 	"github.com/agopalakrishnan/teams360/backend/interfaces/api/middleware"
-	"github.com/agopalakrishnan/teams360/backend/interfaces/api/v1"
+	v1 "github.com/agopalakrishnan/teams360/backend/interfaces/api/v1"
 	"github.com/agopalakrishnan/teams360/backend/pkg/logger"
 	"github.com/agopalakrishnan/teams360/backend/pkg/telemetry"
 	"github.com/gin-gonic/gin"
@@ -159,6 +160,7 @@ func main() {
 	userRepo := postgres.NewUserRepository(db)
 	teamRepo := postgres.NewTeamRepository(db)
 	orgRepo := postgres.NewOrganizationRepository(db)
+	orgProviderRepo := postgres.NewOrganizationProviderRepository(db)
 
 	// Initialize services
 	trendsService := trends.NewService(db)
@@ -186,6 +188,25 @@ func main() {
 	// Initialize password reset service
 	passwordResetRepo := postgres.NewPasswordResetRepository(db)
 	passwordResetService := services.NewPasswordResetService(passwordResetRepo, userRepo, emailSender)
+
+	// Initialize organization provider sync (external org-data source).
+	// The provider credential is environment configuration only -- never
+	// persisted. A missing or invalid DATA_PROVIDER_BASE_URL/API_TOKEN leaves
+	// sync disabled and reported as such via GetSettings, rather than failing
+	// startup.
+	var dataProviderFetcher services.SnapshotFetcher
+	dataProviderCfg, err := dataprovider.LoadConfig()
+	if err != nil {
+		log.WithError(err).Warn("data provider misconfigured, organization provider sync disabled")
+	} else if dataProviderCfg == nil {
+		log.Info("data provider base URL not set, organization provider sync disabled")
+	} else if dataProviderClient, err := dataprovider.NewClient(dataProviderCfg); err != nil {
+		log.WithError(err).Warn("data provider misconfigured, organization provider sync disabled")
+	} else {
+		dataProviderFetcher = dataProviderClient
+		log.Info("organization data provider configured")
+	}
+	orgSyncService := services.NewOrganizationSyncService(orgProviderRepo, dataProviderFetcher, userRepo, teamRepo)
 
 	// Initialize router (use gin.New() instead of gin.Default() to disable default logger)
 	router := gin.New()
@@ -218,7 +239,8 @@ func main() {
 	v1.SetupActionItemRoutes(router, db, jwtService)    // Action item CRUD routes
 	v1.SetupUserRoutes(router, db, jwtService)          // User routes with JWT + same-user-or-manager
 	v1.SetupProtectedUserRoutes(router, db, jwtService) // Protected routes requiring JWT
-	v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, jwtService)
+	v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, healthCheckRepo, jwtService)
+	v1.SetupOrganizationProviderRoutes(router, orgSyncService, jwtService)
 	v1.SetupPasswordResetRoutes(router, passwordResetService, userRepo)
 
 	// Static file serving for frontend SPA

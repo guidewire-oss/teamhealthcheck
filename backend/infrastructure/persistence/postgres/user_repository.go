@@ -318,6 +318,185 @@ func (r *UserRepository) FindAll(ctx context.Context) ([]*user.User, error) {
 	return users, nil
 }
 
+// FindPage retrieves one page of users matching filter, ordered deterministically
+// by username, along with the total count of users matching filter.
+// Filtering and limiting both happen at the SQL level to avoid loading the
+// full user table into memory.
+func (r *UserRepository) FindPage(ctx context.Context, filter user.ListFilter, page, pageSize int) ([]*user.User, int, error) {
+	offset := (page - 1) * pageSize
+
+	var total int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM users
+		WHERE ($1 = '' OR hierarchy_level_id = $1)
+		  AND ($2 = '' OR username ILIKE '%' || $2 || '%'
+		            OR full_name ILIKE '%' || $2 || '%'
+		            OR email ILIKE '%' || $2 || '%')
+	`, filter.HierarchyLevel, filter.Search).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to count users: %w", err)
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
+		       password_hash, auth_type, created_at, updated_at
+		FROM users
+		WHERE ($1 = '' OR hierarchy_level_id = $1)
+		  AND ($2 = '' OR username ILIKE '%' || $2 || '%'
+		            OR full_name ILIKE '%' || $2 || '%'
+		            OR email ILIKE '%' || $2 || '%')
+		ORDER BY username
+		LIMIT $3 OFFSET $4
+	`, filter.HierarchyLevel, filter.Search, pageSize, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to query users page: %w", err)
+	}
+	defer rows.Close()
+
+	users, err := r.scanUsersWithoutTeamIDs(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Batch-load team memberships for just this page's users in a single
+	// query to avoid an N+1 (one fetchTeamIDs call per row).
+	if len(users) > 0 {
+		userIDs := make([]string, len(users))
+		userMap := make(map[string]*user.User, len(users))
+		for i, u := range users {
+			userIDs[i] = u.ID
+			userMap[u.ID] = u
+			u.TeamIDs = []string{}
+		}
+
+		teamRows, err := r.db.QueryContext(ctx, `
+			SELECT user_id, team_id
+			FROM team_members
+			WHERE user_id = ANY($1)
+			ORDER BY user_id, team_id
+		`, pq.Array(userIDs))
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to batch-load team memberships: %w", err)
+		}
+		defer teamRows.Close()
+
+		for teamRows.Next() {
+			var userID, teamID string
+			if err := teamRows.Scan(&userID, &teamID); err != nil {
+				return nil, 0, fmt.Errorf("failed to scan team membership: %w", err)
+			}
+			if u, ok := userMap[userID]; ok {
+				u.TeamIDs = append(u.TeamIDs, teamID)
+			}
+		}
+		if err := teamRows.Err(); err != nil {
+			return nil, 0, fmt.Errorf("team rows error: %w", err)
+		}
+	}
+
+	return users, total, nil
+}
+
+// FindAllLite retrieves minimal fields (no team IDs, no password hash use) for
+// every user. Intended for dropdowns/pickers that need the full user set
+// without the cost of the team-membership joins used by the full listing.
+func (r *UserRepository) FindAllLite(ctx context.Context) ([]*user.User, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, username, full_name, hierarchy_level_id
+		FROM users
+		ORDER BY username
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query users (lite): %w", err)
+	}
+	defer rows.Close()
+
+	var users []*user.User
+	for rows.Next() {
+		var u user.User
+		var hierarchyLevelID sql.NullString
+		if err := rows.Scan(&u.ID, &u.Username, &u.Name, &hierarchyLevelID); err != nil {
+			return nil, fmt.Errorf("failed to scan user (lite): %w", err)
+		}
+		if hierarchyLevelID.Valid {
+			u.HierarchyLevelID = hierarchyLevelID.String
+		}
+		u.IsAdmin = u.Username == "admin"
+		u.TeamIDs = []string{}
+		users = append(users, &u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return users, nil
+}
+
+// scanUsersWithoutTeamIDs scans query results into users without fetching
+// team IDs per row (caller is responsible for batch-loading TeamIDs).
+func (r *UserRepository) scanUsersWithoutTeamIDs(rows *sql.Rows) ([]*user.User, error) {
+	var users []*user.User
+
+	for rows.Next() {
+		var u user.User
+		var email, hierarchyLevelID, reportsTo sql.NullString
+		var createdAt, updatedAt sql.NullTime
+		var passwordHash, authType sql.NullString
+
+		err := rows.Scan(
+			&u.ID,
+			&u.Username,
+			&u.Name,
+			&email,
+			&hierarchyLevelID,
+			&reportsTo,
+			&passwordHash,
+			&authType,
+			&createdAt,
+			&updatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan user: %w", err)
+		}
+
+		if email.Valid {
+			u.Email = email.String
+		}
+		if hierarchyLevelID.Valid {
+			u.HierarchyLevelID = hierarchyLevelID.String
+		}
+		if reportsTo.Valid {
+			u.ReportsTo = &reportsTo.String
+		}
+		if passwordHash.Valid {
+			u.PasswordHash = passwordHash.String
+		}
+		if authType.Valid {
+			u.AuthType = user.AuthType(authType.String)
+		}
+		if u.AuthType == "" {
+			u.AuthType = user.AuthTypeLocal
+		}
+		if createdAt.Valid {
+			u.CreatedAt = createdAt.Time
+		}
+		if updatedAt.Valid {
+			u.UpdatedAt = updatedAt.Time
+		}
+
+		u.IsAdmin = u.Username == "admin"
+
+		users = append(users, &u)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return users, nil
+}
+
 // FindByHierarchyLevel retrieves all users at a specific hierarchy level
 func (r *UserRepository) FindByHierarchyLevel(ctx context.Context, levelID string) ([]*user.User, error) {
 	rows, err := r.db.QueryContext(ctx, `
@@ -734,6 +913,42 @@ func (r *UserRepository) Delete(ctx context.Context, id string) error {
 // FindTeamIDsForUser retrieves all team IDs for a user
 func (r *UserRepository) FindTeamIDsForUser(ctx context.Context, userID string) ([]string, error) {
 	return r.fetchTeamIDs(ctx, userID)
+}
+
+// FindTeamIDsForUsers batch-loads team memberships for every given user in a
+// single query — the same "avoid N+1" pattern already used by
+// FindSubordinates, applied here for callers (like the admin users list)
+// that otherwise called FindTeamIDsForUser once per user. Users with no
+// memberships are simply absent from the returned map.
+func (r *UserRepository) FindTeamIDsForUsers(ctx context.Context, userIDs []string) (map[string][]string, error) {
+	result := make(map[string][]string, len(userIDs))
+	if len(userIDs) == 0 {
+		return result, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT user_id, team_id
+		FROM team_members
+		WHERE user_id = ANY($1)
+		ORDER BY user_id, team_id
+	`, pq.Array(userIDs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to batch-load team memberships: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var userID, teamID string
+		if err := rows.Scan(&userID, &teamID); err != nil {
+			return nil, fmt.Errorf("failed to scan team membership: %w", err)
+		}
+		result[userID] = append(result[userID], teamID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return result, nil
 }
 
 // FindTeamsWhereUserIsLead retrieves all team IDs where the user is a team lead

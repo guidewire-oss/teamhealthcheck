@@ -90,9 +90,37 @@ export interface UpdateUserRequest {
   reportsTo?: string | null;
 }
 
+export interface PaginationMeta {
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
+}
+
 export interface UsersListResponse {
   users: AdminUser[];
-  total: number;
+  pagination: PaginationMeta;
+}
+
+export interface ListUsersParams {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  role?: string;
+  signal?: AbortSignal;
+}
+
+export interface UserLite {
+  id: string;
+  username: string;
+  fullName: string;
+  hierarchyLevel: string;
+}
+
+export interface UsersLiteResponse {
+  users: UserLite[];
 }
 
 // ============================================================================
@@ -322,12 +350,38 @@ export async function deleteHierarchyLevel(levelId: string): Promise<void> {
 // ============================================================================
 
 /**
- * Fetches all users
+ * Fetches one page of users, with optional search/role filtering applied
+ * server-side.
  *
- * @returns List of all users with pagination info
+ * @param params - Pagination (page, pageSize), filters (search, role), and an
+ *   optional AbortSignal to cancel a stale in-flight request
+ * @returns The requested page of users plus pagination metadata
  */
-export async function listUsers(): Promise<UsersListResponse> {
-  return createApiClient<UsersListResponse>(`${API_BASE_URL}/api/v1/admin/users`);
+export async function listUsers(params: ListUsersParams = {}): Promise<UsersListResponse> {
+  const { page, pageSize, search, role, signal } = params;
+  const query = new URLSearchParams();
+  if (page !== undefined) query.set('page', String(page));
+  if (pageSize !== undefined) query.set('pageSize', String(pageSize));
+  if (search) query.set('search', search);
+  if (role) query.set('role', role);
+
+  const qs = query.toString();
+  return createApiClient<UsersListResponse>(
+    `${API_BASE_URL}/api/v1/admin/users${qs ? `?${qs}` : ''}`,
+    signal ? { signal } : undefined
+  );
+}
+
+/**
+ * Fetches minimal data (id, username, fullName, hierarchyLevel) for every
+ * user. Intended for dropdowns/pickers (team lead, reports-to) that need the
+ * full user set without the cost of the paginated listing's team-membership
+ * joins.
+ *
+ * @returns All users in minimal form
+ */
+export async function listUsersLite(): Promise<UsersLiteResponse> {
+  return createApiClient<UsersLiteResponse>(`${API_BASE_URL}/api/v1/admin/users/lite`);
 }
 
 /**
@@ -704,13 +758,6 @@ export async function listHierarchyLevelsCached(): Promise<HierarchyLevel[]> {
 }
 
 /**
- * Cached users list fetch
- */
-export async function listUsersCached(): Promise<UsersListResponse> {
-  return getCached('users-list', listUsers);
-}
-
-/**
  * Cached teams list fetch
  */
 export async function listAdminTeamsCached(): Promise<AdminTeamsListResponse> {
@@ -740,4 +787,81 @@ export function clearAdminCache(): void {
  */
 export function clearAdminCacheKeys(...keys: string[]): void {
   keys.forEach((key) => adminCache.delete(key));
+}
+
+// ============================================================================
+// ORGANIZATION PROVIDER API METHODS
+// ============================================================================
+
+/**
+ * Whether the external organization-data provider is configured.
+ *
+ * There is no token field: the provider credential lives only in the
+ * backend's environment configuration, never in the database or this response.
+ */
+export interface OrganizationProviderSettings {
+  provider: string;
+  /** DATA_PROVIDER_BASE_URL is set on the backend and passed construction-time validation. */
+  baseUrlConfigured: boolean;
+  /** DATA_PROVIDER_API_TOKEN is set on the backend. */
+  tokenConfigured: boolean;
+  /** Every prerequisite is met, so a sync can run. */
+  readyToSync: boolean;
+}
+
+/** A snapshot user that could not be imported, and why. */
+export interface SkippedProviderUser {
+  userId: string;
+  username: string;
+  hierarchyLevelId: string;
+  reason: string;
+}
+
+/** The outcome of one synchronization run. */
+export interface OrganizationSyncResult {
+  status: string;
+  teamsSynced: number;
+  usersSynced: number;
+  membershipsSynced: number;
+  membershipsRemoved: number;
+  healthChecksDisabled: number;
+  healthChecksEnabled: number;
+  usersDeleted: number;
+  teamsDeleted: number;
+  /** Action items removed as a side effect of the deletions above (cascaded, not held back). */
+  actionItemsDeleted: number;
+  usersSkipped: number;
+  skippedUsers?: SkippedProviderUser[];
+  managerLinksCleared: number;
+  teamLeadsCleared: number;
+  membershipsDiscarded: number;
+  startedAt: string;
+  completedAt: string;
+}
+
+/**
+ * Fetches organization provider configuration readiness.
+ *
+ * There is no token field anywhere in this response: the provider credential
+ * lives only in the backend's environment configuration
+ * (DATA_PROVIDER_BASE_URL / DATA_PROVIDER_API_TOKEN) and is never entered,
+ * stored, or displayed through this UI.
+ */
+export async function getOrganizationProviderSettings(): Promise<OrganizationProviderSettings> {
+  return createApiClient<OrganizationProviderSettings>(
+    `${API_BASE_URL}/api/v1/admin/settings/organization-provider`
+  );
+}
+
+/**
+ * Triggers a manual organization sync
+ *
+ * Rewrites users, teams and memberships, so callers must clear the admin cache
+ * on success or the UI will keep serving pre-sync counts for up to two minutes.
+ */
+export async function syncOrganizationProvider(): Promise<OrganizationSyncResult> {
+  return createApiClient<OrganizationSyncResult>(
+    `${API_BASE_URL}/api/v1/admin/organization-provider/sync`,
+    { method: 'POST' }
+  );
 }

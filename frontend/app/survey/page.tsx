@@ -690,7 +690,7 @@ function SurveyPageContent() {
                     rows={3}
                     placeholder="Add any additional context..."
                   />
-                  <p className={`text-xs mt-1 text-right ${(currentResponse?.comment?.length || 0) >= 950 ? 'text-red-500' : 'text-gray-400'}`}>
+                  <p className={`text-xs mt-1 text-right ${(currentResponse?.comment?.length || 0) >= 950 ? 'text-red-500' : 'text-gray-900'}`}>
                     {currentResponse?.comment?.length || 0}/1000
                   </p>
                 </div>

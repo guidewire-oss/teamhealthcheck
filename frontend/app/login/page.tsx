@@ -183,7 +183,7 @@ function LoginPageContent() {
                 <>
                   <div className="flex items-center gap-3 mt-6">
                     <div className="flex-1 h-px bg-gray-200" />
-                    <span className="text-sm text-gray-400">or</span>
+                    <span className="text-sm text-gray-900">or</span>
                     <div className="flex-1 h-px bg-gray-200" />
                   </div>
                   <button

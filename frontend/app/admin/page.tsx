@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { getCurrentUser, logout } from "@/lib/auth";
 // Removed HEALTH_DIMENSIONS - now using DimensionConfig component with database
 import {
   listUsers,
+  listUsersLite,
   createUser,
   updateUser,
   deleteUser,
@@ -22,10 +23,13 @@ import {
   getRetentionPolicy,
   updateRetentionPolicy,
   AdminUser,
+  UserLite,
   HierarchyLevel,
   AdminTeam,
   CreateUserRequest,
   UpdateUserRequest,
+  PaginationMeta,
+  UsersListResponse,
 } from "@/lib/api/admin";
 import {
   Settings,
@@ -41,18 +45,23 @@ import {
   Building2,
   AlertCircle,
   GitBranch,
+  BarChart3,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import HierarchyConfig from "@/components/HierarchyConfig";
 import DimensionConfig from "@/components/DimensionConfig";
+import DataProviderConfig from "@/components/DataProviderConfig";
 import SupervisorChainModal from "@/components/SupervisorChainModal";
 import TeamMembersModal from "@/components/TeamMembersModal";
+import SurveyCompletionDashboard from "@/components/SurveyCompletionDashboard";
 import DocsLink from "@/components/DocsLink";
 
 export default function AdminPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<
-    "hierarchy" | "teams" | "users" | "settings"
+    "hierarchy" | "teams" | "surveyCompletion" | "users" | "settings"
   >("hierarchy");
 
   // Teams tab state
@@ -72,7 +81,7 @@ export default function AdminPage() {
   const [deletingTeamId, setDeletingTeamId] = useState<string | null>(null);
   const [supervisorChainTeam, setSupervisorChainTeam] = useState<AdminTeam | null>(null);
   const [membersTeam, setMembersTeam] = useState<AdminTeam | null>(null);
-  const [availableTeamLeads, setAvailableTeamLeads] = useState<AdminUser[]>([]);
+  const [availableTeamLeads, setAvailableTeamLeads] = useState<UserLite[]>([]);
   const [teamLeadsLoading, setTeamLeadsLoading] = useState(false);
   const [teamSearchQuery, setTeamSearchQuery] = useState("");
 
@@ -100,7 +109,19 @@ export default function AdminPage() {
     null,
   );
   const [userSearchQuery, setUserSearchQuery] = useState("");
+  const [debouncedUserSearchQuery, setDebouncedUserSearchQuery] = useState("");
   const [userRoleFilter, setUserRoleFilter] = useState("");
+  const [currentUsersPage, setCurrentUsersPage] = useState(1);
+  const [usersPagination, setUsersPagination] = useState<PaginationMeta | null>(null);
+  const [usersPageLoading, setUsersPageLoading] = useState(false);
+  // All users in minimal form, for the "Reports To" / team-lead dropdowns
+  // that need the full user set rather than just the current page.
+  const [allUsersLite, setAllUsersLite] = useState<UserLite[]>([]);
+  const USERS_PAGE_SIZE = 25;
+  const usersAbortControllerRef = useRef<AbortController | null>(null);
+  const usersInFlightKeyRef = useRef<string | null>(null);
+  const usersPageCacheRef = useRef<Map<string, UsersListResponse>>(new Map());
+  const prevUsersFiltersRef = useRef({ search: "", role: "" });
 
   // Settings tab state
   const [emailEnabled, setEmailEnabled] = useState(false);
@@ -136,12 +157,50 @@ export default function AdminPage() {
     }
   }, [activeTab]);
 
-  // Fetch users, hierarchy levels, and teams when activeTab changes to 'users'
+  // Fetch hierarchy levels and teams (used by the users tab's role filter and
+  // team badges) once when the tab becomes active. The users list itself is
+  // fetched by the paginated effect below.
   useEffect(() => {
     if (activeTab === "users") {
-      loadUsersData();
+      loadUsersTabMeta();
     }
   }, [activeTab]);
+
+  // Debounce the search box so we don't fire a request per keystroke.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setDebouncedUserSearchQuery(userSearchQuery);
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [userSearchQuery]);
+
+  // Fetch the current page of users whenever the tab is active and the
+  // page/search/role selection changes. When the (debounced) search or role
+  // filter changes while not already on page 1, reset to page 1 first and
+  // skip fetching this pass — the resulting state update re-runs this effect
+  // with the corrected page, so we never fire a request for the old page
+  // number against the new filter.
+  useEffect(() => {
+    if (activeTab !== "users") return;
+
+    const filtersChanged =
+      prevUsersFiltersRef.current.search !== debouncedUserSearchQuery ||
+      prevUsersFiltersRef.current.role !== userRoleFilter;
+
+    if (filtersChanged) {
+      prevUsersFiltersRef.current = {
+        search: debouncedUserSearchQuery,
+        role: userRoleFilter,
+      };
+      if (currentUsersPage !== 1) {
+        setCurrentUsersPage(1);
+        return;
+      }
+    }
+
+    loadUsersPage(currentUsersPage, debouncedUserSearchQuery, userRoleFilter);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, currentUsersPage, debouncedUserSearchQuery, userRoleFilter]);
 
   // Fetch settings and teams when activeTab changes to 'settings'
   useEffect(() => {
@@ -223,26 +282,100 @@ export default function AdminPage() {
     reader.readAsDataURL(file);
   };
 
-  const loadUsersData = async () => {
-    setUsersLoading(true);
+  // Loads data shared by the users tab that isn't specific to any one page:
+  // hierarchy levels (role filter/badges), teams (team badges), and the
+  // lightweight full user list (for the "Reports To" dropdown).
+  const loadUsersTabMeta = async () => {
+    try {
+      const [levelsData, teamsData, liteData] = await Promise.all([
+        listHierarchyLevels(),
+        listAdminTeams(),
+        listUsersLite(),
+      ]);
+
+      setHierarchyLevels(levelsData);
+      setAdminTeams(teamsData.teams);
+      setAllUsersLite(liteData.users);
+    } catch (err: any) {
+      console.error("Failed to load users tab metadata:", err);
+      setUsersError(err.message || "Failed to load users. Please try again.");
+    }
+  };
+
+  // Fetches one page of users matching the given search/role filter.
+  // Guards against duplicate requests for the same page/filter combination,
+  // caches previously loaded pages for this session, and ignores stale
+  // responses from a request that's been superseded by a newer one.
+  const loadUsersPage = async (page: number, search: string, role: string) => {
+    const cacheKey = `${page}|${USERS_PAGE_SIZE}|${search}|${role}`;
+
+    if (usersInFlightKeyRef.current === cacheKey) {
+      return; // Already loading this exact page/filter combination
+    }
+
+    const cached = usersPageCacheRef.current.get(cacheKey);
+    if (cached) {
+      setUsers(cached.users);
+      setUsersPagination(cached.pagination);
+      setUsersError(null);
+      return;
+    }
+
+    // Cancel any previous in-flight request so its (older) response can't
+    // overwrite the results of this newer one.
+    usersAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    usersAbortControllerRef.current = controller;
+    usersInFlightKeyRef.current = cacheKey;
+
+    const isFirstLoad = users.length === 0 && !usersPagination;
+    if (isFirstLoad) {
+      setUsersLoading(true);
+    } else {
+      setUsersPageLoading(true);
+    }
     setUsersError(null);
 
     try {
-      const [usersData, levelsData, teamsData] = await Promise.all([
-        listUsers(),
-        listHierarchyLevels(),
-        listAdminTeams(),
-      ]);
+      const response = await listUsers({
+        page,
+        pageSize: USERS_PAGE_SIZE,
+        search: search || undefined,
+        role: role || undefined,
+        signal: controller.signal,
+      });
 
-      setUsers(usersData.users);
-      setHierarchyLevels(levelsData);
-      setAdminTeams(teamsData.teams);
+      // If this request was superseded, don't apply its result.
+      if (usersAbortControllerRef.current !== controller) {
+        return;
+      }
+
+      usersPageCacheRef.current.set(cacheKey, response);
+      setUsers(response.users);
+      setUsersPagination(response.pagination);
     } catch (err: any) {
-      console.error("Failed to load users data:", err);
+      if (err?.name === "AbortError") {
+        return; // Superseded by a newer request
+      }
+      console.error("Failed to load users:", err);
       setUsersError(err.message || "Failed to load users. Please try again.");
     } finally {
-      setUsersLoading(false);
+      if (usersAbortControllerRef.current === controller) {
+        usersInFlightKeyRef.current = null;
+        setUsersLoading(false);
+        setUsersPageLoading(false);
+      }
     }
+  };
+
+  // Clears cached user pages and re-fetches the current page. Call after any
+  // mutation (create/update/delete) so the list reflects the change.
+  const reloadUsersData = async () => {
+    usersPageCacheRef.current.clear();
+    await Promise.all([
+      loadUsersTabMeta(),
+      loadUsersPage(currentUsersPage, debouncedUserSearchQuery, userRoleFilter),
+    ]);
   };
 
   const handleLogout = async () => {
@@ -268,7 +401,7 @@ export default function AdminPage() {
   const fetchTeamLeads = async () => {
     setTeamLeadsLoading(true);
     try {
-      const response = await listUsers();
+      const response = await listUsersLite();
       // Filter to managers, team leads, and directors for team lead dropdown
       const eligibleUsers = response.users.filter((u) =>
         ["level-3", "level-4", "level-2"].includes(u.hierarchyLevel),
@@ -419,10 +552,8 @@ export default function AdminPage() {
   };
 
   // Get user's teams
-  const getUserTeams = (userId: string): string => {
-    const userTeams = adminTeams.filter((team) =>
-      users.find((u) => u.id === userId)?.teamIds.includes(team.id),
-    );
+  const getUserTeams = (teamIds: string[]): string => {
+    const userTeams = adminTeams.filter((team) => teamIds.includes(team.id));
 
     if (userTeams.length === 0) return "-";
     if (userTeams.length === 1) return userTeams[0].name;
@@ -529,7 +660,7 @@ export default function AdminPage() {
 
       // Clear cache and reload users
       clearAdminCache();
-      await loadUsersData();
+      await reloadUsersData();
       resetUserForm();
     } catch (err: any) {
       console.error("Failed to save user:", err);
@@ -562,7 +693,7 @@ export default function AdminPage() {
     try {
       await deleteUser(deleteConfirmUserId);
       clearAdminCache();
-      await loadUsersData();
+      await reloadUsersData();
       setDeleteConfirmUserId(null);
     } catch (err: any) {
       console.error("Failed to delete user:", err);
@@ -570,8 +701,11 @@ export default function AdminPage() {
     }
   };
 
-  // Get potential supervisors (users at higher hierarchy levels)
-  const getPotentialSupervisors = (): AdminUser[] => {
+  // Get potential supervisors (users at higher hierarchy levels).
+  // Sourced from the full lightweight user list, not the paginated `users`
+  // state, so the dropdown always covers every user regardless of which
+  // page is currently loaded.
+  const getPotentialSupervisors = (): UserLite[] => {
     if (!userFormData.hierarchyLevel) return [];
 
     const selectedLevel = hierarchyLevels.find(
@@ -579,7 +713,7 @@ export default function AdminPage() {
     );
     if (!selectedLevel) return [];
 
-    return users.filter((u) => {
+    return allUsersLite.filter((u) => {
       const userLevel = hierarchyLevels.find((l) => l.id === u.hierarchyLevel);
       if (!userLevel) return false;
       // Only show users at higher positions (lower position number)
@@ -622,11 +756,11 @@ export default function AdminPage() {
       </div>
 
       <div className="container mx-auto px-4 py-8">
-        <div className="flex gap-4 mb-8 border-b">
+        <div className="flex gap-4 mb-8 border-b overflow-x-auto" data-testid="admin-tab-bar">
           <button
             data-testid="hierarchy-tab"
             onClick={() => setActiveTab("hierarchy")}
-            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
               activeTab === "hierarchy"
                 ? "text-indigo-600 border-indigo-600"
                 : "text-gray-500 border-transparent hover:text-gray-700"
@@ -640,7 +774,7 @@ export default function AdminPage() {
           <button
             data-testid="teams-tab"
             onClick={() => setActiveTab("teams")}
-            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
               activeTab === "teams"
                 ? "text-indigo-600 border-indigo-600"
                 : "text-gray-500 border-transparent hover:text-gray-700"
@@ -652,9 +786,23 @@ export default function AdminPage() {
             </div>
           </button>
           <button
+            data-testid="survey-completion-tab"
+            onClick={() => setActiveTab("surveyCompletion")}
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
+              activeTab === "surveyCompletion"
+                ? "text-indigo-600 border-indigo-600"
+                : "text-gray-500 border-transparent hover:text-gray-700"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <BarChart3 className="w-5 h-5" />
+              Survey completion
+            </div>
+          </button>
+          <button
             data-testid="users-tab"
             onClick={() => setActiveTab("users")}
-            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
               activeTab === "users"
                 ? "text-indigo-600 border-indigo-600"
                 : "text-gray-500 border-transparent hover:text-gray-700"
@@ -668,7 +816,7 @@ export default function AdminPage() {
           <button
             data-testid="settings-tab"
             onClick={() => setActiveTab("settings")}
-            className={`px-6 py-3 font-medium transition-colors border-b-2 ${
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
               activeTab === "settings"
                 ? "text-indigo-600 border-indigo-600"
                 : "text-gray-500 border-transparent hover:text-gray-700"
@@ -1007,6 +1155,8 @@ export default function AdminPage() {
             )}
           </div>
         )}
+
+        {activeTab === "surveyCompletion" && <SurveyCompletionDashboard />}
 
         {activeTab === "users" && (
           <div>
@@ -1428,7 +1578,7 @@ export default function AdminPage() {
               </div>
             )}
 
-            {!usersLoading && users.length > 0 && (
+            {!usersLoading && (
               <div className="mb-4 flex gap-4 items-center">
                 <input
                   type="text"
@@ -1449,20 +1599,32 @@ export default function AdminPage() {
                     <option key={level.id} value={level.id}>{level.name}</option>
                   ))}
                 </select>
+                {usersPageLoading && (
+                  <div
+                    data-testid="users-page-loading"
+                    className="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-600 flex-shrink-0"
+                    aria-label="Loading page"
+                  />
+                )}
               </div>
             )}
 
             {usersLoading ? (
-              <div className="text-center py-8">
+              <div className="text-center py-8" data-testid="users-loading">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mx-auto mb-4"></div>
                 <p className="text-gray-500">Loading users...</p>
               </div>
             ) : users.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                No users found. Add your first user to get started.
+              <div className="text-center py-8 text-gray-500" data-testid="users-empty-state">
+                {userSearchQuery || userRoleFilter
+                  ? "No users match your search or filters."
+                  : "No users found. Add your first user to get started."}
               </div>
             ) : (
-              <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
+              <div
+                className="bg-white rounded-xl shadow-sm border overflow-hidden"
+                style={{ opacity: usersPageLoading ? 0.6 : 1 }}
+              >
                 <table className="w-full">
                   <thead className="bg-gray-50">
                     <tr>
@@ -1487,12 +1649,7 @@ export default function AdminPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {users.filter((userItem) => {
-                      const q = userSearchQuery.toLowerCase();
-                      const matchesSearch = !q || userItem.username.toLowerCase().includes(q) || userItem.fullName.toLowerCase().includes(q) || userItem.email.toLowerCase().includes(q);
-                      const matchesRole = !userRoleFilter || userItem.hierarchyLevel === userRoleFilter;
-                      return matchesSearch && matchesRole;
-                    }).map((userItem) => (
+                    {users.map((userItem) => (
                       <tr key={userItem.id} data-testid="user-row">
                         <td className="px-6 py-4">
                           <div className="font-medium text-gray-900">
@@ -1529,7 +1686,7 @@ export default function AdminPage() {
                         </td>
                         <td className="px-6 py-4">
                           <div className="text-sm text-gray-500">
-                            {getUserTeams(userItem.id)}
+                            {getUserTeams(userItem.teamIds)}
                           </div>
                         </td>
                         <td className="px-6 py-4">
@@ -1563,6 +1720,42 @@ export default function AdminPage() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            )}
+
+            {!usersLoading && usersPagination && usersPagination.totalItems > 0 && (
+              <div
+                data-testid="users-pagination"
+                className="mt-4 flex items-center justify-between"
+              >
+                <p className="text-sm text-gray-500">
+                  Page {usersPagination.page} of {Math.max(usersPagination.totalPages, 1)}
+                  {" · "}
+                  {usersPagination.totalItems} user
+                  {usersPagination.totalItems === 1 ? "" : "s"}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    data-testid="users-prev-page-btn"
+                    onClick={() => setCurrentUsersPage((p) => Math.max(1, p - 1))}
+                    disabled={!usersPagination.hasPreviousPage || usersPageLoading}
+                    className="flex items-center gap-1 px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="users-next-page-btn"
+                    onClick={() => setCurrentUsersPage((p) => p + 1)}
+                    disabled={!usersPagination.hasNextPage || usersPageLoading}
+                    className="flex items-center gap-1 px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Next
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             )}
 
@@ -1611,6 +1804,10 @@ export default function AdminPage() {
               </h2>
 
               <div className="space-y-6">
+                <div className="border rounded-lg p-4" data-testid="data-provider-settings">
+                  <DataProviderConfig />
+                </div>
+
                 <div data-testid="dimensions-settings">
                   <DimensionConfig />
                 </div>
