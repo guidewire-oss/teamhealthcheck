@@ -109,13 +109,18 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 		return nil, err
 	}
 
+	currentProtectedUserIDSet := make(map[string]bool, len(currentProtectedUserIDs))
+	for _, id := range currentProtectedUserIDs {
+		currentProtectedUserIDSet[id] = true
+	}
+
 	if err := countHealthCheckTransitions(ctx, tx, in, result); err != nil {
 		return nil, err
 	}
-	if err := upsertSnapshotUsers(ctx, tx, in); err != nil {
+	if err := upsertSnapshotUsers(ctx, tx, in, currentProtectedUserIDSet); err != nil {
 		return nil, err
 	}
-	if err := applySnapshotReportsTo(ctx, tx, in); err != nil {
+	if err := applySnapshotReportsTo(ctx, tx, in, currentProtectedUserIDSet); err != nil {
 		return nil, err
 	}
 	if err := upsertSnapshotTeams(ctx, tx, in); err != nil {
@@ -140,7 +145,6 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 
 	result.UsersSynced = len(in.Snapshot.Users)
 	result.TeamsSynced = len(in.Snapshot.Teams)
-	result.MembershipsSynced = len(in.Snapshot.Memberships)
 
 	return result, nil
 }
@@ -245,9 +249,17 @@ func countHealthCheckTransitions(ctx context.Context, tx *sql.Tx, in orgprovider
 // admin, or a fixed demo/test/E2E fixture) is skipped entirely -- defense in
 // depth alongside the deletion-scope exclusion, since the provider's real ids never
 // take this shape in practice.
-func upsertSnapshotUsers(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput) error {
+//
+// currentProtectedUserIDs additionally skips any user this deployment's own
+// database already recognizes as protected, regardless of what the snapshot
+// claims their hierarchy level is now. Checking IsProtectedUser against the
+// snapshot's level alone would let a malicious or incorrect snapshot relabel
+// the permanent admin to a non-admin level and have this upsert overwrite
+// them; protection must be evaluated against the record actually in THC, not
+// the incoming claim.
+func upsertSnapshotUsers(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool) error {
 	for _, u := range in.Snapshot.Users {
-		if orgprovider.IsProtectedUser(u.ID, u.HierarchyLevelID) {
+		if orgprovider.IsProtectedUser(u.ID, u.HierarchyLevelID) || currentProtectedUserIDs[u.ID] {
 			continue
 		}
 
@@ -273,9 +285,12 @@ func upsertSnapshotUsers(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyIn
 }
 
 // applySnapshotReportsTo writes manager links now that every snapshot user exists.
-func applySnapshotReportsTo(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput) error {
+// See upsertSnapshotUsers for why currentProtectedUserIDs is checked alongside
+// IsProtectedUser: protection must survive a snapshot that relabels a
+// currently-protected user's hierarchy level.
+func applySnapshotReportsTo(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool) error {
 	for _, u := range in.Snapshot.Users {
-		if orgprovider.IsProtectedUser(u.ID, u.HierarchyLevelID) {
+		if orgprovider.IsProtectedUser(u.ID, u.HierarchyLevelID) || currentProtectedUserIDs[u.ID] {
 			continue
 		}
 		if in.PreserveReportsToUserIDs[u.ID] {
@@ -345,6 +360,11 @@ func upsertSnapshotTeams(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyIn
 // clearing every membership when a team is returned with zero of them. A team
 // absent from the snapshot entirely is never visited here -- it is handled by
 // deleteMissingTeams below, whose cascade removes its team_members rows.
+//
+// result.MembershipsSynced is set here to the count actually reconciled for a
+// tracked (non-protected) team, not len(in.Snapshot.Memberships) -- a
+// membership entry for a protected team, or a team absent from the
+// snapshot's own teams[], is dropped above and must not be reported as synced.
 func replaceSnapshotMemberships(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs []string, result *orgprovider.ApplyResult) error {
 	membersByTeam := make(map[string][]string, len(in.Snapshot.Teams))
 	for _, t := range in.Snapshot.Teams {
@@ -361,6 +381,8 @@ func replaceSnapshotMemberships(ctx context.Context, tx *sql.Tx, in orgprovider.
 	}
 
 	for teamID, members := range membersByTeam {
+		result.MembershipsSynced += len(members)
+
 		keep := append([]string{}, members...)
 		keep = append(keep, in.PreservedMemberUserIDs...)
 		keep = append(keep, currentProtectedUserIDs...)

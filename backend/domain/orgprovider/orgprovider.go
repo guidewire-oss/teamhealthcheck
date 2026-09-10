@@ -108,8 +108,13 @@ type ApplyInput struct {
 
 // ApplyResult reports what a sync changed.
 type ApplyResult struct {
-	TeamsSynced        int `json:"teamsSynced"`
-	UsersSynced        int `json:"usersSynced"`
+	TeamsSynced int `json:"teamsSynced"`
+	UsersSynced int `json:"usersSynced"`
+
+	// MembershipsSynced counts memberships actually reconciled against a
+	// tracked (non-protected) team -- not the raw count of entries the
+	// snapshot sent. A membership for a protected team, or for a team absent
+	// from the snapshot's own teams[], is dropped before reaching this count.
 	MembershipsSynced  int `json:"membershipsSynced"`
 	MembershipsRemoved int `json:"membershipsRemoved"`
 

@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"strconv"
 	"sync/atomic"
@@ -34,6 +35,11 @@ var (
 	ErrProviderNotConfigured = errors.New("organization provider is not configured")
 	// ErrInvalidSnapshot means the provider returned data that breaches the contract.
 	ErrInvalidSnapshot = errors.New("provider snapshot failed contract validation")
+	// ErrProviderFetchFailed means the fetch to the external provider itself
+	// failed (network error, non-200 response, oversized/malformed body). This
+	// is distinct from an internal/DB failure: the handler maps it to 502
+	// Bad Gateway, since it genuinely reflects an unusable upstream response.
+	ErrProviderFetchFailed = errors.New("failed to fetch snapshot from provider")
 )
 
 // SnapshotFetcher fetches a complete organization snapshot from an external
@@ -128,7 +134,10 @@ func (s *OrganizationSyncService) Sync(ctx context.Context) (*SyncResult, error)
 
 	snapshot, err := s.fetcher.FetchSnapshot(ctx)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(ErrProviderFetchFailed, err)
+	}
+	if snapshot == nil {
+		return nil, errors.Join(ErrInvalidSnapshot, errors.New("provider returned no snapshot"))
 	}
 
 	knownLevels, err := s.repo.KnownHierarchyLevelIDs(ctx)
@@ -206,7 +215,8 @@ func maxDeletePercent() float64 {
 		return defaultMaxDeletePercent
 	}
 	value, err := strconv.ParseFloat(raw, 64)
-	if err != nil || value <= 0 {
+// Reject NaN/Inf since they can bypass the percentage validation.
+	if err != nil || value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
 		return defaultMaxDeletePercent
 	}
 	return value

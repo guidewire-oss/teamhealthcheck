@@ -38,7 +38,7 @@ setting:
 
 - **Endpoint**: `GET {DATA_PROVIDER_BASE_URL}/org-snapshot`
 - **Authentication**: the credential configured in `DATA_PROVIDER_API_TOKEN`
-  must be sent in an `x-api-key` request header. No other header or auth
+  must be sent in an `x-api-key` request header. No other auth header or auth
   scheme is sent.
 - **Response**: `200 OK` with a JSON body matching the shape below. Any other
   status code is treated as a failed fetch.

@@ -37,8 +37,8 @@ var ErrSnapshotTooLarge = errors.New("dataprovider: provider response exceeds th
 func (c *Client) FetchSnapshot(ctx context.Context) (*orgsnapshot.Snapshot, error) {
 	resp, err := c.Do(ctx, http.MethodGet, snapshotPath, nil)
 	if err != nil {
-		// net/http wraps the request URL into its errors. That is safe here: the
-		// token travels in a header rather than the query string.
+		// Do already sanitizes the underlying transport error (see
+		// ErrRequestFailed), so err carries no request URL or credential here.
 		return nil, fmt.Errorf("dataprovider: provider request failed: %w", err)
 	}
 	defer resp.Body.Close()

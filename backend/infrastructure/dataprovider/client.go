@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/agopalakrishnan/teams360/backend/pkg/logger"
 )
 
 const (
@@ -33,6 +35,9 @@ var ErrNilConfig = errors.New("dataprovider: config must not be nil")
 
 // ErrEmptyAPIToken is returned by NewClient when the config's APIToken is empty.
 var ErrEmptyAPIToken = errors.New("dataprovider: APIToken must not be empty")
+
+// ErrRequestFailed is returned by Do when the underlying transport fails; raw URL-containing errors are logged server-side only.
+var ErrRequestFailed = errors.New("dataprovider: request failed")
 
 // Client makes HTTP requests to the data provider API, authenticating every
 // outbound request with the x-api-key header.
@@ -110,7 +115,14 @@ func (c *Client) Do(ctx context.Context, method, path string, body io.Reader) (*
 	req.Header.Set(apiKeyHeader, c.config.APIToken)
 	req.Header.Set("Accept", acceptJSON)
 
-	return c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+// Log raw URL-containing errors server-side; return only a fixed, credential-free error to callers.
+		logger.Get().WithError(err).Error("dataprovider: request failed")
+		return nil, ErrRequestFailed
+	}
+
+	return resp, nil
 }
 
 // resolve joins path onto the configured base URL using net/url, so the

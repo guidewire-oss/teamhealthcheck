@@ -24,6 +24,8 @@ export default function DataProviderConfig() {
   const [settings, setSettings] = useState<OrganizationProviderSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+// Distinguish an unfetched/failed settings request from an unconfigured provider
+  const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
 
   // Initialized synchronously from localStorage so a remount (tab switch,
   // navigation, or page reload) never paints an enabled button before the
@@ -104,11 +106,11 @@ export default function DataProviderConfig() {
 
   const loadSettings = async () => {
     setLoading(true);
-    setError(null);
+    setSettingsLoadError(null);
     try {
       setSettings(await getOrganizationProviderSettings());
     } catch (err: any) {
-      setError(err.message || "Failed to load provider settings");
+      setSettingsLoadError(err.message || "Failed to load provider settings");
     } finally {
       setLoading(false);
     }
@@ -147,6 +149,10 @@ export default function DataProviderConfig() {
 
   const readyToSync = settings?.readyToSync ?? false;
   const isMassDeletionHold = !!error?.toLowerCase().includes("held for review");
+  // Only render the "not configured" guidance once settings actually loaded
+  // and said so -- a failed fetch (settingsLoadError) means readiness is
+  // simply unknown, not that the provider is unconfigured.
+  const showNotConfigured = !!settings && !readyToSync;
 
   return (
     <div>
@@ -155,7 +161,7 @@ export default function DataProviderConfig() {
         <button
           data-testid="sync-now-btn"
           onClick={handleSync}
-          disabled={syncing || !readyToSync}
+          disabled={syncing || !readyToSync || !!settingsLoadError}
           aria-label="Sync organization data from provider"
           aria-busy={syncing}
           className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -174,7 +180,26 @@ export default function DataProviderConfig() {
         authoritative: a user or team no longer reported by Data Provider is removed from Team360.
       </p>
 
-      {!readyToSync && (
+      {settingsLoadError && (
+        <div
+          data-testid="provider-settings-load-error"
+          className="mb-4 flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-lg"
+        >
+          <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 flex-shrink-0" />
+          <div>
+            <p className="text-sm font-medium text-red-900">Couldn't load provider settings</p>
+            <p className="text-sm text-red-700 mt-1">{settingsLoadError}</p>
+            <button
+              onClick={loadSettings}
+              className="text-sm text-red-800 underline mt-2"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showNotConfigured && (
         <div
           data-testid="provider-not-configured"
           className="mb-4 flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg"

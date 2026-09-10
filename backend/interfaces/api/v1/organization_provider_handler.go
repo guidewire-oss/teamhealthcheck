@@ -86,6 +86,13 @@ func mapSyncError(err error) (int, dto.ErrorResponse) {
 			Message: err.Error(),
 		}
 
+	case errors.Is(err, services.ErrProviderFetchFailed):
+		// The provider failed or returned an unusable response, so return 502 for this upstream failure.
+		return http.StatusBadGateway, dto.ErrorResponse{
+			Error:   "Failed to reach the organization data provider",
+			Message: err.Error(),
+		}
+
 	case errors.Is(err, orgprovider.ErrMassDeletionBlocked):
 		return http.StatusConflict, dto.ErrorResponse{
 			Error:   "Synchronization held for review",
@@ -93,8 +100,9 @@ func mapSyncError(err error) (int, dto.ErrorResponse) {
 		}
 
 	default:
+		// Service-side failures are internal errors, so return 500 rather than 502.
 		logger.Get().WithError(err).Error("organization provider sync failed")
-		return http.StatusBadGateway, dto.ErrorResponse{
+		return http.StatusInternalServerError, dto.ErrorResponse{
 			Error:   "Synchronization failed",
 			Message: err.Error(),
 		}
