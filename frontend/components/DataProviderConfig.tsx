@@ -6,6 +6,7 @@ import {
   getOrganizationProviderSettings,
   syncOrganizationProvider,
   getMassDeletionHold,
+  dismissMassDeletionHold,
   clearAdminCache,
   ConfirmedMassDeletion,
   DeletionMetric,
@@ -25,6 +26,7 @@ import {
   setActiveRequestId,
   onSyncStateChange,
 } from "@/lib/admin-sync-state";
+import MassDeletionThresholdSettings from "./MassDeletionThresholdSettings";
 
 /**
  * Manual trigger for the external organization-data provider sync.
@@ -84,6 +86,7 @@ export default function DataProviderConfig() {
   // pattern used elsewhere in admin: clicking Sync Anyway reveals a confirm
   // button rather than firing the request.
   const [confirmingOverride, setConfirmingOverride] = useState(false);
+  const [dismissingHold, setDismissingHold] = useState(false);
   const staleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The requestId of the sync this component instance is following -- either
   // one it started itself, or one it reattached to after a remount. Scoping
@@ -251,6 +254,24 @@ export default function DataProviderConfig() {
     }
   };
 
+  /**
+   * Resolves a hold the admin has decided not to override -- because the
+   * provider's data is what needs fixing. It applies nothing; it only clears
+   * the review, which is also what unfreezes the deletion threshold.
+   */
+  const handleDismissHold = async () => {
+    setDismissingHold(true);
+    try {
+      await dismissMassDeletionHold();
+      setHold(null);
+      setConfirmingOverride(false);
+    } catch (err: any) {
+      setError(err?.message || "Failed to dismiss the hold");
+    } finally {
+      setDismissingHold(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="text-center py-8">
@@ -374,15 +395,30 @@ export default function DataProviderConfig() {
               This sync has not been applied; no data was changed.
             </p>
 
+            <p className="text-xs text-red-700 mt-1" data-testid="sync-hold-threshold-locked">
+              The deletion threshold is frozen at this sync&apos;s value until the hold is resolved,
+              so raising it is not a way past this review.
+            </p>
+
             {!confirmingOverride ? (
-              <button
-                data-testid="sync-anyway-btn"
-                onClick={() => setConfirmingOverride(true)}
-                disabled={syncing}
-                className="mt-3 px-3 py-1.5 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Sync Anyway
-              </button>
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  data-testid="sync-anyway-btn"
+                  onClick={() => setConfirmingOverride(true)}
+                  disabled={syncing}
+                  className="px-3 py-1.5 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Sync Anyway
+                </button>
+                <button
+                  data-testid="sync-hold-dismiss-btn"
+                  onClick={handleDismissHold}
+                  disabled={syncing || dismissingHold}
+                  className="px-3 py-1.5 text-sm text-red-800 underline disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {dismissingHold ? "Dismissing..." : "Dismiss without syncing"}
+                </button>
+              </div>
             ) : (
               <div data-testid="sync-anyway-confirm" className="mt-3">
                 <p className="text-sm font-medium text-red-900">
@@ -479,6 +515,10 @@ export default function DataProviderConfig() {
           </div>
         </div>
       )}
+
+      {/* Configures the hold above: the percentage at which a sync stops and
+          asks for review, rather than applying its deletions. */}
+      <MassDeletionThresholdSettings syncActivity={syncing || !!hold} />
     </div>
   );
 }

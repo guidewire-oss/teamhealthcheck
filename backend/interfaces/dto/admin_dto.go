@@ -262,6 +262,50 @@ type NotificationSettings struct {
 	SmtpConfigured     bool     `json:"smtpConfigured"`
 }
 
+// OrgSyncDeletionThreshold reports the mass-deletion threshold in force for
+// the organization sync, and where it came from. It carries no provider
+// credentials: the threshold is a safety percentage, nothing more.
+type OrgSyncDeletionThreshold struct {
+	// MaxDeletePercent is the threshold actually in force.
+	MaxDeletePercent float64 `json:"maxDeletePercent"`
+	// Source is "admin" (an administrator saved it), "environment"
+	// (ORG_SYNC_MAX_DELETE_PERCENT), or "default".
+	Source string `json:"source"`
+	// DefaultPercent, MinPercent and MaxPercent let the UI show the
+	// recommended value and bound its inputs without hardcoding them.
+	DefaultPercent float64 `json:"defaultPercent"`
+	MinPercent     float64 `json:"minPercent"`
+	MaxPercent     float64 `json:"maxPercent"`
+
+	// Locked is true while a running or held sync freezes the threshold, and
+	// LockReason says which. A held sync keeps the value frozen so that
+	// raising the limit can never be the answer to a mass-deletion hold.
+	Locked     bool   `json:"locked"`
+	LockReason string `json:"lockReason,omitempty"`
+	// ActiveSyncThreshold is the value in force for the run holding the lock,
+	// which can differ from the saved setting. Absent when nothing is locked.
+	ActiveSyncThreshold *float64 `json:"activeSyncThreshold,omitempty"`
+}
+
+// Reasons a deletion threshold is locked, reported in
+// OrgSyncDeletionThreshold.LockReason.
+const (
+	ThresholdLockSyncing = "syncing"
+	ThresholdLockHeld    = "held"
+)
+
+// CodeThresholdLocked is the ErrorResponse.Code returned when a threshold
+// update is refused because a sync is running or held, so a client can tell
+// this conflict apart from other 409s by the typed field.
+const CodeThresholdLocked = "threshold_locked"
+
+// UpdateOrgSyncDeletionThresholdRequest updates the mass-deletion threshold.
+// The field is a pointer so an absent or null value is rejected outright
+// rather than silently read as 0.
+type UpdateOrgSyncDeletionThresholdRequest struct {
+	MaxDeletePercent *float64 `json:"maxDeletePercent"`
+}
+
 // RetentionPolicy represents data retention configuration
 type RetentionPolicy struct {
 	KeepSessionsMonths int  `json:"keepSessionsMonths"`

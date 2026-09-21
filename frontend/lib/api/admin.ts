@@ -857,6 +857,72 @@ export async function getOrganizationProviderSettings(): Promise<OrganizationPro
   );
 }
 
+/**
+ * The mass-deletion threshold in force for the organization sync, and where it
+ * came from. Carries no provider credentials -- it is a safety percentage.
+ */
+export interface OrgSyncDeletionThreshold {
+  /** The percentage actually applied by the guard. */
+  maxDeletePercent: number;
+  /** 'admin' (saved here), 'environment' (ORG_SYNC_MAX_DELETE_PERCENT), or 'default'. */
+  source: 'admin' | 'environment' | 'default';
+  /** The recommended value, shown as a hint rather than hardcoded in the UI. */
+  defaultPercent: number;
+  minPercent: number;
+  maxPercent: number;
+  /**
+   * True while a running or held sync freezes the threshold. The backend
+   * enforces this independently -- the disabled controls are a courtesy, not
+   * the guarantee.
+   */
+  locked: boolean;
+  /** Why it is frozen: 'syncing' or 'held'. Absent when editable. */
+  lockReason?: 'syncing' | 'held';
+  /** The value in force for the run holding the lock, when one is. */
+  activeSyncThreshold?: number;
+}
+
+/** ErrorResponse.code returned when a threshold update is refused by the lock. */
+export const THRESHOLD_LOCKED_CODE = 'threshold_locked';
+
+/**
+ * Reads the mass-deletion threshold in force, resolved by the same precedence
+ * the sync itself uses.
+ */
+export async function getOrgSyncDeletionThreshold(): Promise<OrgSyncDeletionThreshold> {
+  return createApiClient<OrgSyncDeletionThreshold>(
+    `${API_BASE_URL}/api/v1/admin/settings/organization-provider/deletion-threshold`
+  );
+}
+
+/**
+ * Saves the mass-deletion threshold. Only finite values from 1 to 100 are
+ * accepted; the backend validates independently of this client.
+ */
+export async function updateOrgSyncDeletionThreshold(
+  maxDeletePercent: number
+): Promise<OrgSyncDeletionThreshold> {
+  return createApiClient<OrgSyncDeletionThreshold>(
+    `${API_BASE_URL}/api/v1/admin/settings/organization-provider/deletion-threshold`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ maxDeletePercent }),
+    }
+  );
+}
+
+/**
+ * Resolves a mass-deletion hold without applying it, which unfreezes the
+ * threshold. It applies nothing and deletes nothing -- the held sync stays
+ * unapplied. Overriding a hold is the separate, explicit Sync Anyway action.
+ */
+export async function dismissMassDeletionHold(): Promise<OrgSyncDeletionThreshold> {
+  return createApiClient<OrgSyncDeletionThreshold>(
+    `${API_BASE_URL}/api/v1/admin/organization-provider/sync/hold`,
+    { method: 'DELETE' }
+  );
+}
+
 /** How a deletion metric's rows are removed. */
 export type DeletionMetricKind = 'deleted' | 'cascaded';
 

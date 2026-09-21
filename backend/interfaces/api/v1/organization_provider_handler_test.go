@@ -105,7 +105,7 @@ var _ = Describe("Organization Provider Handler: mass-deletion override", func()
 	rewireFetcher := func(fetcher services.SnapshotFetcher) {
 		syncService := services.NewOrganizationSyncService(repo, fetcher, nil, nil)
 		router = gin.New()
-		v1.SetupOrganizationProviderRoutes(router, syncService, services.NewJWTService())
+		v1.SetupOrganizationProviderRoutes(router, syncService, &thresholdRepo{}, services.NewJWTService())
 	}
 
 	postSync := func(token, body string) *httptest.ResponseRecorder {
@@ -145,7 +145,7 @@ var _ = Describe("Organization Provider Handler: mass-deletion override", func()
 		memberToken = memberPair.AccessToken
 
 		router = gin.New()
-		v1.SetupOrganizationProviderRoutes(router, syncService, jwtService)
+		v1.SetupOrganizationProviderRoutes(router, syncService, &thresholdRepo{}, jwtService)
 	})
 
 	AfterEach(func() {
@@ -301,7 +301,7 @@ var _ = Describe("Organization Provider Handler: settings", func() {
 		adminToken = adminPair.AccessToken
 
 		router = gin.New()
-		v1.SetupOrganizationProviderRoutes(router, syncService, jwtService)
+		v1.SetupOrganizationProviderRoutes(router, syncService, &thresholdRepo{}, jwtService)
 	})
 
 	AfterEach(func() {

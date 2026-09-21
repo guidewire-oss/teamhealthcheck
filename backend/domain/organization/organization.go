@@ -49,6 +49,13 @@ type AppSettings struct {
 	RetentionMonths    int    `json:"retentionMonths"`
 	CompanyName        string `json:"companyName"`
 	LogoURL            string `json:"logoURL"`
+
+	// OrgSyncMaxDeletePercent is the administrator-configured ceiling, as a
+	// percentage from 1 to 100, on how much of the existing non-protected
+	// user or team population one organization sync may delete before the
+	// sync is held for review. nil means no administrator has saved a value,
+	// which is what makes the environment-variable fallback reachable.
+	OrgSyncMaxDeletePercent *float64 `json:"orgSyncMaxDeletePercent,omitempty"`
 }
 
 // OrganizationConfig represents the organization configuration
@@ -95,4 +102,9 @@ type Repository interface {
 	UpdateBrandingSettings(ctx context.Context, companyName string, logoURL string) error
 	UpdateNotificationSettings(ctx context.Context, email, slack, digest bool) error
 	UpdateRetentionSettings(ctx context.Context, months int) error
+
+	// Organization-sync mass-deletion threshold (percentage, 1-100).
+	// A nil result means no administrator has configured one.
+	GetOrgSyncMaxDeletePercent(ctx context.Context) (*float64, error)
+	UpdateOrgSyncMaxDeletePercent(ctx context.Context, percent float64) error
 }

@@ -699,10 +699,13 @@ func (r *OrganizationRepository) DeleteDimension(ctx context.Context, id string)
 func (r *OrganizationRepository) GetAppSettings(ctx context.Context) (*organization.AppSettings, error) {
 	var s organization.AppSettings
 	var logoURL sql.NullString
+	var syncDeletePercent sql.NullFloat64
 	err := r.db.QueryRowContext(ctx, `
-		SELECT email_notifications, slack_notifications, weekly_digest, retention_months, company_name, logo_url
+		SELECT email_notifications, slack_notifications, weekly_digest, retention_months, company_name, logo_url,
+		       org_sync_max_delete_percent
 		FROM app_settings WHERE id = 1
-	`).Scan(&s.EmailNotifications, &s.SlackNotifications, &s.WeeklyDigest, &s.RetentionMonths, &s.CompanyName, &logoURL)
+	`).Scan(&s.EmailNotifications, &s.SlackNotifications, &s.WeeklyDigest, &s.RetentionMonths, &s.CompanyName, &logoURL,
+		&syncDeletePercent)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// Return defaults if row doesn't exist yet
@@ -712,6 +715,10 @@ func (r *OrganizationRepository) GetAppSettings(ctx context.Context) (*organizat
 	}
 	if logoURL.Valid {
 		s.LogoURL = logoURL.String
+	}
+	if syncDeletePercent.Valid {
+		value := syncDeletePercent.Float64
+		s.OrgSyncMaxDeletePercent = &value
 	}
 	return &s, nil
 }
@@ -788,6 +795,46 @@ func (r *OrganizationRepository) UpdateRetentionSettings(ctx context.Context, mo
 	`, months)
 	if err != nil {
 		return fmt.Errorf("failed to update retention settings: %w", err)
+	}
+	return nil
+}
+
+// GetOrgSyncMaxDeletePercent reads the administrator-configured mass-deletion
+// threshold for the organization sync. A nil result means no administrator has
+// saved one, which leaves the environment-variable fallback in charge.
+func (r *OrganizationRepository) GetOrgSyncMaxDeletePercent(ctx context.Context) (*float64, error) {
+	var percent sql.NullFloat64
+	err := r.db.QueryRowContext(ctx, `
+		SELECT org_sync_max_delete_percent FROM app_settings WHERE id = 1
+	`).Scan(&percent)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// No settings row yet is "not configured", not a failure.
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to query organization sync delete threshold: %w", err)
+	}
+	if !percent.Valid {
+		return nil, nil
+	}
+	value := percent.Float64
+	return &value, nil
+}
+
+// UpdateOrgSyncMaxDeletePercent persists the mass-deletion threshold. The
+// caller is responsible for validating the range; the column carries a
+// matching CHECK constraint so an out-of-range write is rejected by the
+// database as well.
+func (r *OrganizationRepository) UpdateOrgSyncMaxDeletePercent(ctx context.Context, percent float64) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO app_settings (id, org_sync_max_delete_percent, updated_at)
+		VALUES (1, $1, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			org_sync_max_delete_percent = EXCLUDED.org_sync_max_delete_percent,
+			updated_at = NOW()
+	`, percent)
+	if err != nil {
+		return fmt.Errorf("failed to update organization sync delete threshold: %w", err)
 	}
 	return nil
 }

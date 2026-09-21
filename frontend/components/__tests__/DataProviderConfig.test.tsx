@@ -7,6 +7,20 @@ import userEvent from '@testing-library/user-event';
 const getSettings = vi.fn();
 const sync = vi.fn();
 const clearCache = vi.fn();
+// The threshold card nested in this component fetches on mount; stub it so
+// these specs stay about the sync flow and never hit the network.
+// The unlocked-default threshold response, shared by the threshold-read and
+// hold-dismiss stubs below so this suite's baseline lives in one place.
+const UNLOCKED_THRESHOLD = {
+  maxDeletePercent: 20,
+  source: 'default',
+  defaultPercent: 20,
+  minPercent: 1,
+  maxPercent: 100,
+  locked: false,
+};
+const getThreshold = vi.fn().mockResolvedValue(UNLOCKED_THRESHOLD);
+const dismissHold = vi.fn().mockResolvedValue(UNLOCKED_THRESHOLD);
 
 // getMassDeletionHold is deliberately NOT mocked: the component's decision to
 // show the hold banner depends on how that helper reads a real error body, so
@@ -18,6 +32,8 @@ vi.mock('@/lib/api/admin', async (importOriginal) => {
     getOrganizationProviderSettings: (...a: any[]) => getSettings(...a),
     syncOrganizationProvider: (...a: any[]) => sync(...a),
     clearAdminCache: (...a: any[]) => clearCache(...a),
+    getOrgSyncDeletionThreshold: (...a: any[]) => getThreshold(...a),
+    dismissMassDeletionHold: (...a: any[]) => dismissHold(...a),
   };
 });
 
@@ -652,5 +668,41 @@ describe('DataProviderConfig — mass-deletion hold and Sync Anyway override', (
     expect(screen.getByTestId('sync-hold-users')).toHaveTextContent('provider sent 240');
     expect(screen.getByTestId('sync-hold-teams')).toHaveTextContent('237 deleted / 243 existing = 97.5%');
     expect(screen.getByTestId('sync-hold-teams')).toHaveTextContent('provider sent 6');
+  });
+
+  it('locks the deletion threshold while a hold is unresolved', async () => {
+    const user = userEvent.setup();
+    sync.mockRejectedValue(holdError());
+    await renderReady();
+
+    await user.click(screen.getByTestId('sync-now-btn'));
+    await screen.findByTestId('sync-mass-deletion-hold');
+
+    // The hold banner says so, and the threshold card's controls are disabled.
+    expect(screen.getByTestId('sync-hold-threshold-locked')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId('threshold-input')).toBeDisabled()
+    );
+    expect(screen.getByTestId('threshold-save-btn')).toBeDisabled();
+  });
+
+  it('dismisses a hold without applying it, which unlocks the threshold', async () => {
+    const user = userEvent.setup();
+    sync.mockRejectedValue(holdError());
+    await renderReady();
+
+    await user.click(screen.getByTestId('sync-now-btn'));
+    await screen.findByTestId('sync-mass-deletion-hold');
+
+    const syncCallsBefore = sync.mock.calls.length;
+    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('sync-mass-deletion-hold')).not.toBeInTheDocument()
+    );
+    expect(dismissHold).toHaveBeenCalledTimes(1);
+    // Dismissing resolves the review; it never applies the sync.
+    expect(sync).toHaveBeenCalledTimes(syncCallsBefore);
+    await waitFor(() => expect(screen.getByTestId('threshold-input')).not.toBeDisabled());
   });
 });

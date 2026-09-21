@@ -3,10 +3,12 @@ package v1
 import (
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"os"
 
 	"github.com/agopalakrishnan/teams360/backend/application/services"
+	"github.com/agopalakrishnan/teams360/backend/domain/organization"
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
 	"github.com/agopalakrishnan/teams360/backend/infrastructure/dataprovider"
 	"github.com/agopalakrishnan/teams360/backend/interfaces/dto"
@@ -20,16 +22,223 @@ import (
 // credential and performs no persistence or mapping of its own -- both live
 // in OrganizationSyncService and OrganizationProviderRepository respectively.
 type OrganizationProviderHandler struct {
-	syncService  *services.OrganizationSyncService
+	syncService *services.OrganizationSyncService
+	// settingsRepo persists the admin-configured mass-deletion threshold.
+	// The threshold endpoints live here, next to the sync, because whether
+	// they may run at all depends on the sync's own state.
+	settingsRepo organization.Repository
 	providerName string
 }
 
 // NewOrganizationProviderHandler creates the handler.
-func NewOrganizationProviderHandler(syncService *services.OrganizationSyncService) *OrganizationProviderHandler {
+func NewOrganizationProviderHandler(
+	syncService *services.OrganizationSyncService,
+	settingsRepo organization.Repository,
+) *OrganizationProviderHandler {
 	return &OrganizationProviderHandler{
 		syncService:  syncService,
+		settingsRepo: settingsRepo,
 		providerName: "data-provider",
 	}
+}
+
+// lockState reports the current threshold lock, tolerating a nil sync service
+// (which only happens in tests that exercise the settings endpoints alone).
+func (h *OrganizationProviderHandler) lockState() services.SyncLockState {
+	if h.syncService == nil {
+		return services.SyncLockState{}
+	}
+	return h.syncService.LockState()
+}
+
+// thresholdResponse builds the settings body, including why the threshold is
+// frozen and at what value, so a tab that has just loaded knows to disable its
+// controls without a second request.
+func (h *OrganizationProviderHandler) thresholdResponse(
+	saved *float64,
+	value float64,
+	source string,
+) dto.OrgSyncDeletionThreshold {
+	body := dto.OrgSyncDeletionThreshold{
+		MaxDeletePercent: value,
+		Source:           source,
+		DefaultPercent:   services.DefaultMaxDeletePercent,
+		MinPercent:       services.MinConfigurableDeletePercent,
+		MaxPercent:       services.MaxConfigurableDeletePercent,
+	}
+
+	state := h.lockState()
+	body.Locked = state.Locked()
+	switch {
+	case state.Syncing:
+		body.LockReason = dto.ThresholdLockSyncing
+	case state.Held:
+		body.LockReason = dto.ThresholdLockHeld
+	}
+	if body.Locked && state.Threshold > 0 {
+		locked := state.Threshold
+		body.ActiveSyncThreshold = &locked
+	}
+	return body
+}
+
+// GetDeletionThreshold handles
+// GET /api/v1/admin/settings/organization-provider/deletion-threshold.
+//
+// It reports the threshold the guard would apply next, resolved by the same
+// precedence the sync uses (saved admin setting, then
+// ORG_SYNC_MAX_DELETE_PERCENT, then the built-in default), plus whether it is
+// currently frozen by a running or held sync.
+func (h *OrganizationProviderHandler) GetDeletionThreshold(c *gin.Context) {
+	saved, err := h.settingsRepo.GetOrgSyncMaxDeletePercent(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to fetch deletion threshold",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	value, source, err := services.ResolveMaxDeletePercent(saved)
+	if err != nil {
+		// A stored value outside the allowed range: report it as a
+		// misconfiguration rather than pretending a different number applies.
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Configured deletion threshold is invalid",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, h.thresholdResponse(saved, value, source))
+}
+
+// UpdateDeletionThreshold handles
+// PUT /api/v1/admin/settings/organization-provider/deletion-threshold.
+//
+// Only finite values from 1 through 100 are accepted, and only while no sync is
+// running or held. That second rule is the substance of the guard: without it
+// an admin could answer a mass-deletion hold by raising the limit and retrying,
+// which would make the review step decorative. The one sanctioned way past a
+// hold remains the explicit, authorized Sync Anyway override, which waives the
+// threshold alone -- not validation, authorization, protected records, or the
+// single-transaction guarantee.
+func (h *OrganizationProviderHandler) UpdateDeletionThreshold(c *gin.Context) {
+	// Checked before the body is even read, so a request from another tab is
+	// refused on the same grounds as one from this tab.
+	if state := h.lockState(); state.Locked() {
+		c.JSON(http.StatusConflict, dto.ErrorResponse{
+			Error:   "Deletion threshold is locked",
+			Message: thresholdLockMessage(state),
+			Code:    dto.CodeThresholdLocked,
+		})
+		return
+	}
+
+	var req dto.UpdateOrgSyncDeletionThresholdRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Error:   "Invalid request body",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	if req.MaxDeletePercent == nil {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Error:   "maxDeletePercent is required",
+			Message: "Provide maxDeletePercent as a finite number between 1 and 100",
+		})
+		return
+	}
+
+	percent := *req.MaxDeletePercent
+	// NaN and Inf are rejected explicitly: both slip past a range comparison.
+	if math.IsNaN(percent) || math.IsInf(percent, 0) ||
+		percent < services.MinConfigurableDeletePercent || percent > services.MaxConfigurableDeletePercent {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Error:   "maxDeletePercent must be between 1 and 100",
+			Message: "maxDeletePercent must be a finite number between 1 and 100",
+		})
+		return
+	}
+
+	// Re-checked after validation and immediately before the write: a sync that
+	// started while this request was being parsed must not have its threshold
+	// moved out from under it.
+	if state := h.lockState(); state.Locked() {
+		c.JSON(http.StatusConflict, dto.ErrorResponse{
+			Error:   "Deletion threshold is locked",
+			Message: thresholdLockMessage(state),
+			Code:    dto.CodeThresholdLocked,
+		})
+		return
+	}
+
+	if err := h.settingsRepo.UpdateOrgSyncMaxDeletePercent(c.Request.Context(), percent); err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to save deletion threshold",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, h.thresholdResponse(&percent, percent, services.ThresholdSourceAdmin))
+}
+
+// DismissMassDeletionHold handles
+// DELETE /api/v1/admin/organization-provider/sync/hold.
+//
+// It resolves a hold the administrator has decided not to override -- because
+// the provider data is what needs fixing -- and so unfreezes the threshold. It
+// applies nothing and deletes nothing: the held sync stays unapplied.
+func (h *OrganizationProviderHandler) DismissMassDeletionHold(c *gin.Context) {
+	if h.syncService == nil {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Error:   "Organization provider is not configured",
+			Message: "There is no active synchronization or hold to dismiss",
+		})
+		return
+	}
+
+	// A hold cannot be dismissed out from under a running sync.
+	if h.syncService.LockState().Syncing {
+		c.JSON(http.StatusConflict, dto.ErrorResponse{
+			Error:   "A synchronization is already running",
+			Message: "Wait for the running synchronization to finish, then try again.",
+			Code:    dto.CodeThresholdLocked,
+		})
+		return
+	}
+
+	h.syncService.DismissHold()
+
+	saved, err := h.settingsRepo.GetOrgSyncMaxDeletePercent(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to fetch deletion threshold",
+			Message: err.Error(),
+		})
+		return
+	}
+	value, source, err := services.ResolveMaxDeletePercent(saved)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Configured deletion threshold is invalid",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, h.thresholdResponse(saved, value, source))
+}
+
+// thresholdLockMessage explains a refusal in the terms the admin is looking at.
+func thresholdLockMessage(state services.SyncLockState) string {
+	if state.Syncing {
+		return "A synchronization is running. The threshold cannot be changed until it finishes."
+	}
+	return "A synchronization is held for mass-deletion review. Resolve that hold -- apply it with Sync Anyway, or dismiss it -- before changing the threshold."
 }
 
 // GetSettings handles GET /api/v1/admin/settings/organization-provider.
@@ -155,8 +364,8 @@ func mapSyncError(err error) (int, any) {
 
 	case errors.Is(err, services.ErrMaxDeletePercentNotConfigured):
 		return http.StatusBadRequest, dto.ErrorResponse{
-			Error:   "Mass-deletion guard is not configured",
-			Message: "Set " + services.EnvMaxDeletePercent + " on the API service",
+			Error:   "Mass-deletion guard is misconfigured",
+			Message: "The saved mass-deletion threshold is outside the allowed 1-100% range. Correct it in Admin Settings, then re-run the sync.",
 		}
 
 	case errors.Is(err, services.ErrInvalidSnapshot):

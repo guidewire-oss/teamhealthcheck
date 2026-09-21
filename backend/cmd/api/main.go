@@ -206,7 +206,10 @@ func main() {
 		dataProviderFetcher = dataProviderClient
 		log.Info("organization data provider configured")
 	}
-	orgSyncService := services.NewOrganizationSyncService(orgProviderRepo, dataProviderFetcher, userRepo, teamRepo)
+	// orgRepo also serves the admin-configured mass-deletion threshold; without
+	// it the guard would silently fall back to the environment variable.
+	orgSyncService := services.NewOrganizationSyncService(orgProviderRepo, dataProviderFetcher, userRepo, teamRepo,
+		services.WithDeleteThresholdStore(orgRepo))
 
 	// Initialize router (use gin.New() instead of gin.Default() to disable default logger)
 	router := gin.New()
@@ -240,7 +243,7 @@ func main() {
 	v1.SetupUserRoutes(router, db, jwtService)          // User routes with JWT + same-user-or-manager
 	v1.SetupProtectedUserRoutes(router, db, jwtService) // Protected routes requiring JWT
 	v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, healthCheckRepo, jwtService)
-	v1.SetupOrganizationProviderRoutes(router, orgSyncService, jwtService)
+	v1.SetupOrganizationProviderRoutes(router, orgSyncService, orgRepo, jwtService)
 	v1.SetupPasswordResetRoutes(router, passwordResetService, userRepo)
 
 	// Static file serving for frontend SPA

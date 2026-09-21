@@ -191,7 +191,7 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 		syncService := services.NewOrganizationSyncService(providerRepo, dataProviderClient, userRepo, teamRepo)
 
 		router = gin.New()
-		v1.SetupOrganizationProviderRoutes(router, syncService, jwtService)
+		v1.SetupOrganizationProviderRoutes(router, syncService, postgres.NewOrganizationRepository(db), jwtService)
 	})
 
 	AfterEach(func() {
@@ -741,7 +741,7 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 			syncService := services.NewOrganizationSyncService(providerRepo, nil, userRepo, teamRepo)
 			jwtService := services.NewJWTService()
 			router = gin.New()
-			v1.SetupOrganizationProviderRoutes(router, syncService, jwtService)
+			v1.SetupOrganizationProviderRoutes(router, syncService, postgres.NewOrganizationRepository(db), jwtService)
 
 			w := doSync(adminToken)
 			Expect(w.Code).To(Equal(http.StatusBadRequest))
