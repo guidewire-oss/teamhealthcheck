@@ -16,9 +16,10 @@ export interface APIError {
   error: string;
   message: string;
   code?: string;
-  // Populated on duplicate-submission (409) errors, e.g. "Q1 2026" / "Q3 2026".
+  // Populated on submission-cooldown (409) errors: submittedPeriod is a user-facing H1/H2
+  // label (e.g. "H1 2026"); nextEligibleDate is an ISO "YYYY-MM-DD" date.
   submittedPeriod?: string;
-  nextEligiblePeriod?: string;
+  nextEligibleDate?: string;
 }
 
 /**

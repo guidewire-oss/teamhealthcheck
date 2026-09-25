@@ -10,7 +10,7 @@ import * as XLSX from 'xlsx';
 import { AlertCircle } from 'lucide-react';
 import { getTeamSubmissionStatus, getAssessmentPeriods, checkSurveyEligibility, TeamSubmissionStatus } from '@/lib/api/health-checks';
 import { API_BASE_URL } from '@/lib/api/client';
-import { getAssessmentPeriod, getSelectablePeriods, parseAssessmentPeriod, toCadence } from '@/lib/assessment-period';
+import { getAssessmentPeriod, getSelectablePeriods, parseAssessmentPeriod, toCadence, formatPeriodLabel, formatEligibleDate } from '@/lib/assessment-period';
 import { getTeamInfoCached } from '@/lib/api/teams';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line, ResponsiveContainer } from 'recharts';
 import OnboardingModal from '@/components/OnboardingModal';
@@ -47,6 +47,8 @@ interface IndividualResponse {
 
 interface TrendData {
   period: string;
+  /** User-facing H1/H2 label for `period`; never a quarter label. */
+  label: string;
   [key: string]: string | number;
 }
 
@@ -72,15 +74,14 @@ export default function DashboardPage() {
   const [teamCadence, setTeamCadence] = useState<string>('half-yearly');
   // Which survey flow the period-selection modal is being shown for, or null when closed.
   const [pendingSurveyType, setPendingSurveyType] = useState<'individual' | 'post_workshop' | null>(null);
-  // True while the pre-open duplicate-submission eligibility check is in flight.
+  // True while the pre-open six-month cooldown eligibility check is in flight.
   const [checkingEligibility, setCheckingEligibility] = useState(false);
-  // Set when the eligibility check finds the selected quarter already submitted; renders the
-  // "already submitted" info modal instead of opening the survey.
+  // Set when the eligibility check finds the scope still within the six-month cooldown;
+  // renders the "already submitted" info modal instead of opening the survey.
   const [duplicateInfo, setDuplicateInfo] = useState<{
     surveyType: 'individual' | 'post_workshop';
-    reason?: 'duplicate' | 'consecutive_quarter';
     submittedPeriod: string;
-    nextEligiblePeriod: string;
+    nextEligibleDate: string;
   } | null>(null);
   const [submissionStatus, setSubmissionStatus] = useState<TeamSubmissionStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -267,7 +268,7 @@ export default function DashboardPage() {
         // Frontend: [{ period, mission: 2.5, value: 3.0, ... }]
         if (data.periods && Array.isArray(data.periods) && data.dimensions) {
           const transformed = data.periods.map((period: string, idx: number) => {
-            const row: TrendData = { period };
+            const row: TrendData = { period, label: formatPeriodLabel(period) };
             (data.dimensions || []).forEach((dim: { dimensionId: string; scores: number[] }) => {
               row[dim.dimensionId] = dim.scores[idx] || 0;
             });
@@ -338,9 +339,8 @@ export default function DashboardPage() {
     return query ? `/survey?${query}` : '/survey';
   };
 
-  // Called from the period-selection modal's confirm button. Checks the shared
-  // duplicate-quarter rule (one submission per survey type per calendar quarter) before
-  // opening the survey; individual surveys are scoped to the Team Lead's own user ID,
+  // Called from the period-selection modal's confirm button. Checks the shared six-month
+  // submission cooldown before opening the survey; individual surveys are scoped to the Team Lead's own user ID,
   // post-workshop surveys are scoped to the selected team. If the eligibility check itself
   // fails (e.g. network error), we fail open and let the authoritative server-side check at
   // submit time (409 Conflict) be the backstop, rather than blocking a legitimate submission.
@@ -361,9 +361,8 @@ export default function DashboardPage() {
         setPendingSurveyType(null);
         setDuplicateInfo({
           surveyType,
-          reason: result.reason,
           submittedPeriod: result.submittedPeriod || takeSurveyPeriod,
-          nextEligiblePeriod: result.nextEligiblePeriod || takeSurveyPeriod,
+          nextEligibleDate: result.nextEligibleDate || '',
         });
         return;
       }
@@ -425,6 +424,7 @@ export default function DashboardPage() {
     () => HEALTH_DIMENSIONS.map((dim) => {
       const data = trends.map((t) => ({
         period: t.period as string,
+        label: t.label as string,
         value: (t[dim.id] as number) || 0,
       }));
       const validData = data.filter((p) => p.value > 0);
@@ -476,7 +476,7 @@ export default function DashboardPage() {
 
   const handleExportToExcel = async () => {
     const teamName = teamOptions.find(t => t.id === teamId)?.name || teamId;
-    const periodLabel = selectedPeriod || 'All Periods';
+    const periodLabel = selectedPeriod ? formatPeriodLabel(selectedPeriod) : 'All Periods';
 
     // Sheet 1: Summary — dimension averages with band labels
     const summaryRows = healthSummary.map(h => ({
@@ -674,7 +674,7 @@ export default function DashboardPage() {
             >
               <option value="">All Periods</option>
               {assessmentPeriodOptions.map((period) => (
-                <option key={period} value={period}>{period}</option>
+                <option key={period} value={period}>{formatPeriodLabel(period)}</option>
               ))}
             </select>
             {userPermissions.canExportData && healthSummary.length > 0 && (
@@ -1398,7 +1398,7 @@ export default function DashboardPage() {
                                         data={data}
                                         margin={{ top: 4, right: 4, left: 4, bottom: 4 }}
                                       >
-                                        <XAxis dataKey="period" hide />
+                                        <XAxis dataKey="label" hide />
                                         <YAxis domain={[1, 3]} hide />
                                         <Line
                                           type="monotone"
@@ -1466,7 +1466,7 @@ export default function DashboardPage() {
                                   >
                                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                                     <XAxis
-                                      dataKey="period"
+                                      dataKey="label"
                                       tick={{ fontSize: 12, fill: '#6b7280' }}
                                     />
                                     <YAxis
@@ -1679,7 +1679,7 @@ export default function DashboardPage() {
                   <AlertCircle className="w-5 h-5 text-amber-600" />
                 </div>
                 <h3 id="duplicate-submission-modal-title" className="text-xl font-semibold text-gray-900">
-                  {duplicateInfo.reason === 'consecutive_quarter' ? 'Submission Not Allowed' : 'Already Submitted'}
+                  Already Submitted
                 </h3>
               </div>
               <button
@@ -1692,26 +1692,17 @@ export default function DashboardPage() {
               </button>
             </div>
             <div data-testid="duplicate-submission-message">
-              {duplicateInfo.reason === 'consecutive_quarter' ? (
-                <p className="text-base text-gray-700 leading-relaxed mb-8">
-                  You cannot submit the survey in consecutive quarters. Your next eligible submission
-                  will be available in <span className="font-semibold">{duplicateInfo.nextEligiblePeriod}</span>.
-                </p>
-              ) : (
-                <>
-                  <p className="text-base text-gray-700 leading-relaxed mb-2">
-                    You have already submitted the{' '}
-                    <span className="font-semibold">
-                      {duplicateInfo.surveyType === 'post_workshop' ? 'Post-Workshop Survey' : 'Individual Survey'}
-                    </span>{' '}
-                    for <span className="font-semibold">{duplicateInfo.submittedPeriod}</span>.
-                  </p>
-                  <p className="text-base text-gray-700 leading-relaxed mb-8">
-                    Your next submission will be available in{' '}
-                    <span className="font-semibold">{duplicateInfo.nextEligiblePeriod}</span>.
-                  </p>
-                </>
-              )}
+              <p className="text-base text-gray-700 leading-relaxed mb-2">
+                You have already submitted the{' '}
+                <span className="font-semibold">
+                  {duplicateInfo.surveyType === 'post_workshop' ? 'Post-Workshop Survey' : 'Individual Survey'}
+                </span>{' '}
+                for <span className="font-semibold">{duplicateInfo.submittedPeriod}</span>.
+              </p>
+              <p className="text-base text-gray-700 leading-relaxed mb-8">
+                Your next submission will be available on{' '}
+                <span className="font-semibold">{formatEligibleDate(duplicateInfo.nextEligibleDate)}</span>.
+              </p>
             </div>
             <div className="flex justify-end">
               <button

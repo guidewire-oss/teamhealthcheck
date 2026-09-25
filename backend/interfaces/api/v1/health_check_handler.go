@@ -26,7 +26,6 @@ import (
 var (
 	legacyPeriodRegex     = regexp.MustCompile(`^(\d{4}) - (1st|2nd) Half$`)
 	monthlyPeriodRegex    = regexp.MustCompile(`^(\d{4}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$`)
-	quarterlyPeriodRegex  = regexp.MustCompile(`^(\d{4}) Q([1-4])$`)
 	halfYearlyPeriodRegex = regexp.MustCompile(`^(\d{4}) H([12])$`)
 	yearlyPeriodRegex     = regexp.MustCompile(`^(\d{4})$`)
 
@@ -108,7 +107,7 @@ func (h *HealthCheckHandler) SubmitHealthCheck(c *gin.Context) {
 			log.WithError(err).Warn("invalid assessment period format")
 			c.JSON(http.StatusBadRequest, dto.ErrorResponse{
 				Error:   err.Error(),
-				Message: "Assessment period must be in a valid format: 'YYYY Mon', 'YYYY Q1-Q4', 'YYYY H1/H2', 'YYYY', or 'YYYY - 1st/2nd Half'",
+				Message: "Assessment period must be in a valid format: 'YYYY Mon', 'YYYY H1/H2', 'YYYY', or 'YYYY - 1st/2nd Half'",
 			})
 			return
 		}
@@ -147,29 +146,16 @@ func (h *HealthCheckHandler) SubmitHealthCheck(c *gin.Context) {
 	if err != nil {
 		telemetry.SetSpanError(span, err)
 
-		var dupErr *healthcheck.DuplicateSubmissionError
-		if errors.As(err, &dupErr) {
-			log.WithField("team_id", req.TeamID).WithField("survey_type", dupErr.SurveyType).
-				Warn("rejected duplicate health check submission")
+		var cooldownErr *healthcheck.SubmissionCooldownError
+		if errors.As(err, &cooldownErr) {
+			log.WithField("team_id", req.TeamID).WithField("survey_type", cooldownErr.SurveyType).
+				Warn("rejected health check submission still within the six-month cooldown")
 			c.JSON(http.StatusConflict, dto.ErrorResponse{
-				Error:              "Duplicate submission",
-				Message:            dupErr.Error(),
-				Code:               "duplicate_submission",
-				SubmittedPeriod:    dupErr.SubmittedPeriod,
-				NextEligiblePeriod: dupErr.NextEligiblePeriod,
-			})
-			return
-		}
-
-		var consecErr *healthcheck.ConsecutiveQuarterError
-		if errors.As(err, &consecErr) {
-			log.WithField("team_id", req.TeamID).Warn("rejected consecutive-quarter health check submission")
-			c.JSON(http.StatusConflict, dto.ErrorResponse{
-				Error:              "Consecutive quarter submission",
-				Message:            consecErr.Error(),
-				Code:               "consecutive_quarter_submission",
-				SubmittedPeriod:    consecErr.LastSubmittedPeriod,
-				NextEligiblePeriod: consecErr.NextEligiblePeriod,
+				Error:            "Already submitted",
+				Message:          cooldownErr.Error(),
+				Code:             "submission_cooldown",
+				SubmittedPeriod:  cooldownErr.LastSubmittedPeriod,
+				NextEligibleDate: cooldownErr.NextEligible.Format("2006-01-02"),
 			})
 			return
 		}
@@ -402,8 +388,10 @@ func (h *HealthCheckHandler) GetTeamSubmissionStatus(c *gin.Context) {
 //
 // Pre-submission check used by the frontend before opening a survey: given a survey type,
 // assessment period, and the relevant scope (teamId for post_workshop, userId for
-// individual), reports whether that calendar quarter is still eligible or was already
-// submitted -- and if so, when the next eligible quarter is.
+// individual), reports whether the caller's scope is still within the combined eligibility
+// window (six-month cooldown, or the calendar half-year boundary, whichever comes first --
+// see healthcheck.NextEligibleDate) started by its last completed submission of the same
+// survey type -- and if so, when the next eligible date is.
 func (h *HealthCheckHandler) CheckSurveyEligibility(c *gin.Context) {
 	ctx := c.Request.Context()
 
@@ -420,14 +408,17 @@ func (h *HealthCheckHandler) CheckSurveyEligibility(c *gin.Context) {
 	}
 
 	assessmentPeriod := c.Query("assessmentPeriod")
-	quarter, year, ok := healthcheck.PeriodQuarter(assessmentPeriod)
-	if !ok {
+	if assessmentPeriod == "" {
 		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
 			Error:   "Invalid assessmentPeriod",
 			Message: "assessmentPeriod is required and must be a recognized assessment-period format",
 		})
 		return
 	}
+	// Eligibility is evaluated as of now, since an actual submission attempted right now
+	// would be dated now -- the eligibility window is computed from the prior submission's
+	// actual date, not from the (informational) assessment-period label.
+	newDate := time.Now()
 
 	teamID := c.Query("teamId")
 	userID := c.Query("userId")
@@ -446,12 +437,10 @@ func (h *HealthCheckHandler) CheckSurveyEligibility(c *gin.Context) {
 		return
 	}
 
-	existing, err := h.repository.FindQuarterSubmission(ctx, healthcheck.QuarterSubmissionQuery{
+	latest, err := h.repository.FindLatestSubmission(ctx, healthcheck.LatestSubmissionQuery{
 		SurveyType: surveyType,
 		TeamID:     teamID,
 		UserID:     userID,
-		Quarter:    quarter,
-		Year:       year,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
@@ -461,43 +450,31 @@ func (h *HealthCheckHandler) CheckSurveyEligibility(c *gin.Context) {
 		return
 	}
 
-	if existing != nil {
-		dupErr := healthcheck.NewDuplicateSubmissionError(surveyType, assessmentPeriod)
-		c.JSON(http.StatusOK, dto.SurveyEligibilityResponse{
-			Eligible:           false,
-			Reason:             "duplicate",
-			SubmittedPeriod:    dupErr.SubmittedPeriod,
-			NextEligiblePeriod: dupErr.NextEligiblePeriod,
-		})
-		return
-	}
-
-	// The consecutive-quarter restriction only applies to Individual Survey submissions.
-	if surveyType == healthcheck.SurveyTypeIndividual {
-		latest, err := h.repository.FindLatestIndividualSubmission(ctx, userID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
-				Error:   "Failed to check survey eligibility",
-				Message: err.Error(),
+	if latest != nil {
+		if lastDate, lastOK := parseFlexibleDate(latest.Date); lastOK && healthcheck.IsWithinCooldown(lastDate, newDate) {
+			cooldownErr := healthcheck.NewSubmissionCooldownError(surveyType, latest.AssessmentPeriod, lastDate)
+			c.JSON(http.StatusOK, dto.SurveyEligibilityResponse{
+				Eligible:         false,
+				SubmittedPeriod:  cooldownErr.LastSubmittedPeriod,
+				NextEligibleDate: cooldownErr.NextEligible.Format("2006-01-02"),
 			})
 			return
-		}
-		if latest != nil {
-			if lastQuarter, lastYear, lastOK := healthcheck.PeriodQuarter(latest.AssessmentPeriod); lastOK &&
-				healthcheck.IsConsecutiveQuarter(lastQuarter, lastYear, quarter, year) {
-				consecErr := healthcheck.NewConsecutiveQuarterError(lastQuarter, lastYear)
-				c.JSON(http.StatusOK, dto.SurveyEligibilityResponse{
-					Eligible:           false,
-					Reason:             "consecutive_quarter",
-					SubmittedPeriod:    consecErr.LastSubmittedPeriod,
-					NextEligiblePeriod: consecErr.NextEligiblePeriod,
-				})
-				return
-			}
 		}
 	}
 
 	c.JSON(http.StatusOK, dto.SurveyEligibilityResponse{Eligible: true})
+}
+
+// parseFlexibleDate parses a date in RFC3339 (frontend submission timestamps) or plain
+// "YYYY-MM-DD" (Postgres DATE columns) form.
+func parseFlexibleDate(date string) (time.Time, bool) {
+	if t, err := time.Parse(time.RFC3339, date); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse("2006-01-02", date); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
 }
 
 // GetAssessmentPeriods handles GET /api/v1/assessment-periods
@@ -540,10 +517,10 @@ func convertSessionToDTO(session *healthcheck.HealthCheckSession) dto.HealthChec
 }
 
 // validateAssessmentPeriod validates the assessment period format and ensures it's not in the future.
-// Valid formats:
+// Valid formats for new submissions (quarter-based periods are no longer accepted -- the
+// quarterly cadence option has been removed):
 //   - Legacy:      "YYYY - 1st Half" or "YYYY - 2nd Half"
 //   - Monthly:     "YYYY Jan" through "YYYY Dec"
-//   - Quarterly:   "YYYY Q1" through "YYYY Q4"
 //   - Half-yearly: "YYYY H1" or "YYYY H2"
 //   - Yearly:      "YYYY"
 func validateAssessmentPeriod(period string) error {
@@ -580,17 +557,6 @@ func validateAssessmentPeriod(period string) error {
 		return nil
 	}
 
-	// Try quarterly format: "YYYY Q1"
-	if m := quarterlyPeriodRegex.FindStringSubmatch(period); m != nil {
-		year, _ := strconv.Atoi(m[1])
-		quarter, _ := strconv.Atoi(m[2])
-		currentQuarter := (currentMonth-1)/3 + 1
-		if year > currentYear || (year == currentYear && quarter > currentQuarter) {
-			return fmt.Errorf("invalid assessment period: future assessment periods are not allowed")
-		}
-		return nil
-	}
-
 	// Try half-yearly format: "YYYY H1"
 	if m := halfYearlyPeriodRegex.FindStringSubmatch(period); m != nil {
 		year, _ := strconv.Atoi(m[1])
@@ -614,5 +580,5 @@ func validateAssessmentPeriod(period string) error {
 		return nil
 	}
 
-	return fmt.Errorf("invalid assessment period format: must be 'YYYY Mon', 'YYYY Q1-Q4', 'YYYY H1/H2', 'YYYY', or 'YYYY - 1st/2nd Half'")
+	return fmt.Errorf("invalid assessment period format: must be 'YYYY Mon', 'YYYY H1/H2', 'YYYY', or 'YYYY - 1st/2nd Half'")
 }

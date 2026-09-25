@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { getCurrentUser, logout } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { HealthCheckResponse } from '@/lib/types';
-import { getAssessmentPeriod, parseAssessmentPeriod, toCadence } from '@/lib/assessment-period';
+import { getAssessmentPeriod, parseAssessmentPeriod, toCadence, formatPeriodLabel } from '@/lib/assessment-period';
 import { submitHealthCheck, formatDateForAPI, HealthCheckAPIError } from '@/lib/api/health-checks';
 import { getTeamInfoCached, TeamInfo, TeamsAPIError } from '@/lib/api/teams';
 import { TrendingUp, TrendingDown, Minus, ChevronLeft, ChevronRight, Save, LogOut, CheckCircle, BarChart3, Loader2, AlertCircle, Info, X } from 'lucide-react';
@@ -512,11 +512,11 @@ function SurveyPageContent() {
                   ) : (team?.name || 'Unknown Team')}
                 </p>
                 <p className={`${isPostWorkshop ? 'text-amber-100' : 'text-indigo-100'} text-sm mt-1`}>
-                  Period: <span data-testid="selected-period" className="font-semibold">{assessmentPeriod}</span>
+                  Period: <span data-testid="selected-period" className="font-semibold">{formatPeriodLabel(assessmentPeriod)}</span>
                   {team?.cadence && ` • ${team.cadence.charAt(0).toUpperCase() + team.cadence.slice(1)} Check`}
                   {isPeriodOverridden && (
                     <span data-testid="period-overridden-label" className="ml-1 italic">
-                      Overridden — auto-detected period: {autoAssessmentPeriod}
+                      Overridden — auto-detected period: {formatPeriodLabel(autoAssessmentPeriod)}
                     </span>
                   )}
                 </p>
@@ -834,10 +834,10 @@ function SurveyPageContent() {
             </h2>
             <p data-testid="submit-confirm-message" className="text-sm text-gray-600 mb-6">
               {isPeriodOverridden
-                ? `You selected ${assessmentPeriod} instead of the automatically detected period ${autoAssessmentPeriod}. ` +
-                  `After submission, this health check will be recorded for ${assessmentPeriod}. ` +
+                ? `You selected ${formatPeriodLabel(assessmentPeriod)} instead of the automatically detected period ${formatPeriodLabel(autoAssessmentPeriod)}. ` +
+                  `After submission, this health check will be recorded for ${formatPeriodLabel(assessmentPeriod)}. ` +
                   `Please confirm that this is the correct assessment period.`
-                : `Your health check will be submitted for ${assessmentPeriod}. Please verify the assessment period before continuing.`}
+                : `Your health check will be submitted for ${formatPeriodLabel(assessmentPeriod)}. Please verify the assessment period before continuing.`}
             </p>
             <div className="flex justify-end gap-3">
               <button

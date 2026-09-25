@@ -741,7 +741,6 @@ export default function AdminPage() {
                       <label htmlFor="cadence" className="block text-sm font-medium text-gray-700 mb-2">Cadence *</label>
                       <select id="cadence" data-testid="team-cadence-select" value={teamFormData.cadence} onChange={(e) => setTeamFormData({ ...teamFormData, cadence: e.target.value })} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent" disabled={teamFormLoading}>
                         <option value="monthly">Monthly</option>
-                        <option value="quarterly">Quarterly</option>
                         <option value="half-yearly">Half-Yearly</option>
                         <option value="yearly">Yearly</option>
                       </select>
@@ -812,7 +811,6 @@ export default function AdminPage() {
                       <label htmlFor="edit-cadence" className="block text-sm font-medium text-gray-700 mb-2">Cadence *</label>
                       <select id="edit-cadence" data-testid="team-cadence-select" value={teamFormData.cadence} onChange={(e) => setTeamFormData({ ...teamFormData, cadence: e.target.value })} className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent" disabled={teamFormLoading}>
                         <option value="monthly">Monthly</option>
-                        <option value="quarterly">Quarterly</option>
                         <option value="half-yearly">Half-Yearly</option>
                         <option value="yearly">Yearly</option>
                       </select>

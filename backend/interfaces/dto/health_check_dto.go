@@ -78,21 +78,24 @@ type ErrorResponse struct {
 	Error   string `json:"error"`
 	Message string `json:"message,omitempty"`
 	Code    string `json:"code,omitempty"`
-	// SubmittedPeriod and NextEligiblePeriod are populated for duplicate-submission (409)
-	// errors, e.g. "Q1 2026" and "Q3 2026", so the frontend can render them without
-	// re-parsing the error message.
-	SubmittedPeriod    string `json:"submittedPeriod,omitempty"`
-	NextEligiblePeriod string `json:"nextEligiblePeriod,omitempty"`
+	// SubmittedPeriod and NextEligibleDate are populated for submission-cooldown (409)
+	// errors. SubmittedPeriod is a user-facing label, e.g. "H1 2026" -- always a half-year
+	// label, never a quarter. NextEligibleDate is an ISO "YYYY-MM-DD" date, exactly
+	// healthcheck.EligibilityCooldownMonths calendar months after the blocking submission,
+	// so the frontend can render both without re-parsing the error message.
+	SubmittedPeriod  string `json:"submittedPeriod,omitempty"`
+	NextEligibleDate string `json:"nextEligibleDate,omitempty"`
 }
 
-// SurveyEligibilityResponse represents the result of a pre-submission duplicate/consecutive
-// quarter check.
+// SurveyEligibilityResponse represents the result of a pre-submission cooldown check: the
+// caller's scope (user for Individual Survey, team for Post-Workshop Survey) is ineligible
+// if it has a completed submission of the same survey type within the last
+// healthcheck.EligibilityCooldownMonths calendar months.
 type SurveyEligibilityResponse struct {
 	Eligible bool `json:"eligible"`
-	// Reason is populated when Eligible is false: "duplicate" (same quarter already
-	// submitted) or "consecutive_quarter" (Individual Survey only -- immediately adjacent to
-	// the last submission).
-	Reason             string `json:"reason,omitempty"`
-	SubmittedPeriod    string `json:"submittedPeriod,omitempty"`
-	NextEligiblePeriod string `json:"nextEligiblePeriod,omitempty"`
+	// SubmittedPeriod is the user-facing H1/H2 label of the blocking submission's period,
+	// populated when Eligible is false.
+	SubmittedPeriod string `json:"submittedPeriod,omitempty"`
+	// NextEligibleDate is an ISO "YYYY-MM-DD" date, populated when Eligible is false.
+	NextEligibleDate string `json:"nextEligibleDate,omitempty"`
 }

@@ -146,26 +146,25 @@ export async function getTeamSubmissionStatus(
 
 export interface SurveyEligibility {
   eligible: boolean;
-  // Populated when eligible is false: 'duplicate' (same quarter already submitted) or
-  // 'consecutive_quarter' (Individual Survey only -- immediately adjacent to the last
-  // submission).
-  reason?: 'duplicate' | 'consecutive_quarter';
+  // Populated when eligible is false: the user-facing H1/H2 label of the blocking
+  // submission's period, and the ISO "YYYY-MM-DD" date it becomes eligible again -- exactly
+  // six calendar months after that submission's actual date.
   submittedPeriod?: string;
-  nextEligiblePeriod?: string;
+  nextEligibleDate?: string;
 }
 
 /**
- * Checks whether a survey can be submitted for the given assessment period before opening
- * the survey form -- each survey type (and, for post-workshop, calendar quarter) can only
- * be submitted once. Individual surveys are scoped to the user; post-workshop surveys are
- * scoped to the team.
+ * Checks whether a survey can be submitted right now, before opening the survey form -- each
+ * survey type can only be resubmitted once six calendar months have elapsed since the
+ * scope's last completed submission of that type. Individual surveys are scoped to the
+ * user; post-workshop surveys are scoped to the team.
  *
  * @param params.surveyType 'individual' or 'post_workshop'
- * @param params.assessmentPeriod Assessment period to check (e.g. "2026 Q1")
+ * @param params.assessmentPeriod Assessment period the survey would be recorded under (e.g. "H1 2026")
  * @param params.teamId Required when surveyType is 'post_workshop'
  * @param params.userId Required when surveyType is 'individual'
  * @returns Eligibility result; when ineligible, includes the already-submitted period and
- *          the next eligible one
+ *          the next eligible date
  */
 export async function checkSurveyEligibility(params: {
   surveyType: 'individual' | 'post_workshop';

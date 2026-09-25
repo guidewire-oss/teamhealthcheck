@@ -6,9 +6,9 @@
  *  - Rendering the bordered "Select assessment period" panel inside the blue Current Period card.
  *  - Opening/using the dropdown and selecting a previous period (e.g. H1 2026).
  *  - Clicking "Take Survey" opens the period-selection modal instead of navigating immediately.
- *  - Confirming the modal checks duplicate/consecutive-quarter eligibility before navigating.
+ *  - Confirming the modal checks the six-month submission cooldown before navigating.
  *  - Cancel/close dismisses the modal without navigating.
- *  - Duplicate-quarter and consecutive-quarter submissions show the amber info modal instead
+ *  - A submission still within the six-month cooldown shows the amber info modal instead
  *    of opening the survey.
  *  - No Post-Workshop Survey button or functionality is rendered for Team Members.
  */
@@ -208,13 +208,12 @@ describe('Member Home: Take Survey flow', () => {
     expect(push).not.toHaveBeenCalled();
   });
 
-  describe('duplicate- and consecutive-quarter submission prevention', () => {
-    it('shows an amber "already submitted" info modal instead of opening the survey on a duplicate submission', async () => {
+  describe('six-month submission cooldown', () => {
+    it('shows an amber "already submitted" info modal instead of opening the survey when still within the cooldown', async () => {
       checkSurveyEligibility.mockResolvedValue({
         eligible: false,
-        reason: 'duplicate',
-        submittedPeriod: 'Q1 2026',
-        nextEligiblePeriod: 'Q3 2026',
+        submittedPeriod: 'H1 2026',
+        nextEligibleDate: '2026-07-15',
       });
       const user = userEvent.setup({ delay: null });
       render(<MemberHomePage />);
@@ -226,34 +225,13 @@ describe('Member Home: Take Survey flow', () => {
       await waitFor(() => expect(screen.getByTestId('duplicate-submission-modal')).toBeInTheDocument());
       expect(screen.queryByTestId('period-selection-modal')).not.toBeInTheDocument();
       expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Individual Survey');
-      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Q1 2026');
-      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Q3 2026');
+      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('H1 2026');
+      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Jul 15, 2026');
+      expect(screen.getByTestId('duplicate-submission-message').textContent).not.toMatch(/Q[1-4]/);
       expect(push).not.toHaveBeenCalled();
     });
 
-    it('shows an amber "consecutive quarters" info modal with the exact required wording', async () => {
-      checkSurveyEligibility.mockResolvedValue({
-        eligible: false,
-        reason: 'consecutive_quarter',
-        submittedPeriod: 'Q2 2025',
-        nextEligiblePeriod: 'Q4 2025',
-      });
-      const user = userEvent.setup({ delay: null });
-      render(<MemberHomePage />);
-
-      await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
-      await user.click(screen.getByTestId('take-survey-btn'));
-      await user.click(screen.getByTestId('period-selection-confirm-button'));
-
-      await waitFor(() => expect(screen.getByTestId('duplicate-submission-modal')).toBeInTheDocument());
-      expect(screen.queryByTestId('period-selection-modal')).not.toBeInTheDocument();
-      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent(
-        'You cannot submit the survey in consecutive quarters. Your next eligible submission will be available in Q4 2025.'
-      );
-      expect(push).not.toHaveBeenCalled();
-    });
-
-    it('opens the survey normally when the selected quarter is eligible', async () => {
+    it('opens the survey normally when eligible', async () => {
       checkSurveyEligibility.mockResolvedValue({ eligible: true });
       const user = userEvent.setup({ delay: null });
       render(<MemberHomePage />);
@@ -269,9 +247,8 @@ describe('Member Home: Take Survey flow', () => {
     it('closes the info modal via the Close button without navigating', async () => {
       checkSurveyEligibility.mockResolvedValue({
         eligible: false,
-        reason: 'consecutive_quarter',
-        submittedPeriod: 'Q2 2025',
-        nextEligiblePeriod: 'Q4 2025',
+        submittedPeriod: 'H1 2025',
+        nextEligibleDate: '2025-07-15',
       });
       const user = userEvent.setup({ delay: null });
       render(<MemberHomePage />);

@@ -10,7 +10,7 @@ import (
 type Team struct {
 	ID                    string           `json:"id"`
 	Name                  string           `json:"name"`
-	Cadence               string           `json:"cadence"` // monthly, quarterly, half-yearly, yearly
+	Cadence               string           `json:"cadence"` // monthly, half-yearly, yearly
 	NextCheckDate         string           `json:"nextCheckDate"`
 	TeamLeadID            *string          `json:"teamLeadId,omitempty"`
 	TeamLeadName          *string          `json:"teamLeadName,omitempty"`

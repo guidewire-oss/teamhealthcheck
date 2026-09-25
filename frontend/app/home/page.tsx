@@ -6,7 +6,7 @@ import { getCurrentUser, logout, authenticatedFetch } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { API_BASE_URL } from '@/lib/api/client';
 import { getOrgConfig, getHierarchyLevel } from '@/lib/org-config';
-import { getAssessmentPeriod, getSelectablePeriods, toCadence } from '@/lib/assessment-period';
+import { getAssessmentPeriod, getSelectablePeriods, toCadence, formatPeriodLabel, formatEligibleDate } from '@/lib/assessment-period';
 import { LogOut, Building2, ChevronDown, ClipboardList, TrendingUp, Calendar, Clock, CalendarClock, X, AlertCircle } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts';
 import { getTeamInfoCached, TeamInfo } from '@/lib/api/teams';
@@ -74,6 +74,8 @@ interface SurveyHistoryEntry {
 
 interface TrendDataPoint {
   period: string;
+  /** User-facing H1/H2 label for `period`; never a quarter label. */
+  label: string;
   [key: string]: string | number;
 }
 
@@ -93,14 +95,13 @@ export default function MemberHomePage() {
   // Whether the assessment-period confirmation modal is open (shown before the Individual
   // Survey is opened, so the Team Member can confirm/change the period first).
   const [showSurveyModal, setShowSurveyModal] = useState(false);
-  // True while the pre-open duplicate/consecutive-quarter eligibility check is in flight.
+  // True while the pre-open six-month cooldown eligibility check is in flight.
   const [checkingEligibility, setCheckingEligibility] = useState(false);
-  // Set when the eligibility check finds the selected quarter ineligible; renders an info
-  // modal instead of opening the survey.
+  // Set when the eligibility check finds the user still within the six-month cooldown;
+  // renders an info modal instead of opening the survey.
   const [blockedInfo, setBlockedInfo] = useState<{
-    reason: 'duplicate' | 'consecutive_quarter';
     submittedPeriod: string;
-    nextEligiblePeriod: string;
+    nextEligibleDate: string;
   } | null>(null);
 
   useEffect(() => {
@@ -157,7 +158,10 @@ export default function MemberHomePage() {
 
             historyData.forEach((entry: SurveyHistoryEntry) => {
               if (!trendMap.has(entry.assessmentPeriod)) {
-                trendMap.set(entry.assessmentPeriod, { period: entry.assessmentPeriod });
+                trendMap.set(entry.assessmentPeriod, {
+                  period: entry.assessmentPeriod,
+                  label: formatPeriodLabel(entry.assessmentPeriod),
+                });
               }
               const point = trendMap.get(entry.assessmentPeriod)!;
 
@@ -205,10 +209,10 @@ export default function MemberHomePage() {
     setShowSurveyModal(true);
   };
 
-  // Called from the period-confirmation modal's "Take Survey" button. Checks duplicate- and
-  // consecutive-quarter eligibility (scoped to this Team Member's own submissions) before
-  // opening the survey. If the eligibility check itself fails (e.g. network error), fail open
-  // and let the authoritative server-side check at submit time (409 Conflict) be the backstop.
+  // Called from the period-confirmation modal's "Take Survey" button. Checks the six-month
+  // submission cooldown (scoped to this Team Member's own submissions) before opening the
+  // survey. If the eligibility check itself fails (e.g. network error), fail open and let
+  // the authoritative server-side check at submit time (409 Conflict) be the backstop.
   const handleConfirmTakeSurvey = async () => {
     if (!user) return;
 
@@ -225,9 +229,8 @@ export default function MemberHomePage() {
       if (!result.eligible) {
         setShowSurveyModal(false);
         setBlockedInfo({
-          reason: result.reason === 'consecutive_quarter' ? 'consecutive_quarter' : 'duplicate',
           submittedPeriod: result.submittedPeriod || assessmentPeriod,
-          nextEligiblePeriod: result.nextEligiblePeriod || assessmentPeriod,
+          nextEligibleDate: result.nextEligibleDate || '',
         });
         return;
       }
@@ -339,7 +342,7 @@ export default function MemberHomePage() {
               <div className="flex items-center space-x-2 mb-2">
                 <Calendar className="h-5 w-5" />
                 <span data-testid="current-period" className="text-sm font-medium opacity-90">
-                  {autoAssessmentPeriod ? `Current Period: ${autoAssessmentPeriod}` : 'Current Period'}
+                  {autoAssessmentPeriod ? `Current Period: ${formatPeriodLabel(autoAssessmentPeriod)}` : 'Current Period'}
                 </span>
               </div>
               <h3 className="text-xl font-bold mb-2">Ready to share your feedback?</h3>
@@ -364,7 +367,7 @@ export default function MemberHomePage() {
                     >
                       {periodOptions.map((p) => (
                         <option key={p} value={p}>
-                          {p}{p === autoAssessmentPeriod ? ' (current)' : ''}
+                          {formatPeriodLabel(p)}{p === autoAssessmentPeriod ? ' (current)' : ''}
                         </option>
                       ))}
                     </select>
@@ -401,7 +404,7 @@ export default function MemberHomePage() {
                     <p className="text-lg font-semibold text-gray-900">
                       {new Date(latestSurvey.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                     </p>
-                    <p className="text-xs text-gray-400 mt-0.5">{latestSurvey.assessmentPeriod}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">{formatPeriodLabel(latestSurvey.assessmentPeriod)}</p>
                   </>
                 ) : (
                   <p className="text-lg font-semibold text-gray-400">No surveys yet</p>
@@ -464,7 +467,7 @@ export default function MemberHomePage() {
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-lg font-semibold text-gray-900">Latest Survey Summary</h3>
-                  <span className="text-sm text-gray-500">{latestSurvey.assessmentPeriod}</span>
+                  <span className="text-sm text-gray-500">{formatPeriodLabel(latestSurvey.assessmentPeriod)}</span>
                 </div>
                 <div data-testid="health-chart" className="h-80">
                   <ResponsiveContainer width="100%" height="100%">
@@ -497,7 +500,7 @@ export default function MemberHomePage() {
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={trendData}>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="period" tick={{ fontSize: 10 }} />
+                      <XAxis dataKey="label" tick={{ fontSize: 10 }} />
                       <YAxis domain={[0, 3]} tickCount={4} />
                       <Tooltip />
                       <Legend wrapperStyle={{ fontSize: '10px' }} />
@@ -538,7 +541,7 @@ export default function MemberHomePage() {
                         : '-';
                       return (
                         <tr key={entry.sessionId} data-testid="history-entry" className="border-b border-gray-100 last:border-0">
-                          <td className="py-3 text-sm text-gray-900">{entry.assessmentPeriod}</td>
+                          <td className="py-3 text-sm text-gray-900">{formatPeriodLabel(entry.assessmentPeriod)}</td>
                           <td className="py-3 text-sm text-gray-600">{entry.teamName}</td>
                           <td className="py-3 text-sm text-gray-600">{new Date(entry.date).toLocaleDateString()}</td>
                           <td className="py-3">
@@ -614,7 +617,7 @@ export default function MemberHomePage() {
               >
                 {periodOptions.map((p) => (
                   <option key={p} value={p}>
-                    {p}{p === autoAssessmentPeriod ? ' (current)' : ''}
+                    {formatPeriodLabel(p)}{p === autoAssessmentPeriod ? ' (current)' : ''}
                   </option>
                 ))}
               </select>
@@ -657,7 +660,7 @@ export default function MemberHomePage() {
                   <AlertCircle className="w-5 h-5 text-amber-600" />
                 </div>
                 <h3 id="duplicate-submission-modal-title" className="text-xl font-semibold text-gray-900">
-                  {blockedInfo.reason === 'consecutive_quarter' ? 'Submission Not Allowed' : 'Already Submitted'}
+                  Already Submitted
                 </h3>
               </div>
               <button
@@ -670,24 +673,15 @@ export default function MemberHomePage() {
               </button>
             </div>
             <div data-testid="duplicate-submission-message">
-              {blockedInfo.reason === 'consecutive_quarter' ? (
-                <p className="text-base text-gray-700 leading-relaxed mb-8">
-                  You cannot submit the survey in consecutive quarters. Your next eligible submission
-                  will be available in <span className="font-semibold">{blockedInfo.nextEligiblePeriod}</span>.
-                </p>
-              ) : (
-                <>
-                  <p className="text-base text-gray-700 leading-relaxed mb-2">
-                    You have already submitted the{' '}
-                    <span className="font-semibold">Individual Survey</span>{' '}
-                    for <span className="font-semibold">{blockedInfo.submittedPeriod}</span>.
-                  </p>
-                  <p className="text-base text-gray-700 leading-relaxed mb-8">
-                    Your next submission will be available in{' '}
-                    <span className="font-semibold">{blockedInfo.nextEligiblePeriod}</span>.
-                  </p>
-                </>
-              )}
+              <p className="text-base text-gray-700 leading-relaxed mb-2">
+                You have already submitted the{' '}
+                <span className="font-semibold">Individual Survey</span>{' '}
+                for <span className="font-semibold">{blockedInfo.submittedPeriod}</span>.
+              </p>
+              <p className="text-base text-gray-700 leading-relaxed mb-8">
+                Your next submission will be available on{' '}
+                <span className="font-semibold">{formatEligibleDate(blockedInfo.nextEligibleDate)}</span>.
+              </p>
             </div>
             <div className="flex justify-end">
               <button

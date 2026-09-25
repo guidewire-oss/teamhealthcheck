@@ -8,6 +8,18 @@ import (
 	"github.com/agopalakrishnan/teams360/backend/domain/healthcheck"
 )
 
+// parseSubmissionDate parses a session date in either RFC3339 (as sent by the frontend on
+// submission) or plain "YYYY-MM-DD" (as returned by Postgres DATE columns) form.
+func parseSubmissionDate(date string) (time.Time, bool) {
+	if t, err := time.Parse(time.RFC3339, date); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse("2006-01-02", date); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
 // SubmitHealthCheckCommand represents the command to submit a health check
 type SubmitHealthCheckCommand struct {
 	ID               string
@@ -58,40 +70,28 @@ func (h *SubmitHealthCheckHandler) Handle(cmd SubmitHealthCheckCommand) (*health
 		surveyType = healthcheck.SurveyTypeIndividual
 	}
 
-	// Reject a duplicate submission for the same calendar quarter before writing anything.
-	// This is a friendly pre-check; the database's partial unique indexes (see the
-	// "quarter duplicate prevention" migration) are the authoritative, race-safe guard
-	// against two concurrent requests both passing this check.
-	if quarter, year, ok := healthcheck.PeriodQuarter(cmd.AssessmentPeriod); ok && cmd.Completed {
-		existing, err := h.repository.FindQuarterSubmission(context.Background(), healthcheck.QuarterSubmissionQuery{
-			SurveyType: surveyType,
-			TeamID:     cmd.TeamID,
-			UserID:     cmd.UserID,
-			Quarter:    quarter,
-			Year:       year,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to check for duplicate submission: %w", err)
-		}
-		if existing != nil {
-			return nil, healthcheck.NewDuplicateSubmissionError(surveyType, cmd.AssessmentPeriod)
-		}
-	}
-
-	// Reject an Individual Survey submission for the calendar quarter immediately adjacent to
-	// the user's last completed Individual Survey submission (the "no consecutive quarters"
-	// rule) -- at least one full quarter must be skipped between submissions. Post-Workshop
-	// submissions are scoped per team and are not subject to this rule.
-	if surveyType == healthcheck.SurveyTypeIndividual && cmd.Completed {
-		if quarter, year, ok := healthcheck.PeriodQuarter(cmd.AssessmentPeriod); ok {
-			latest, err := h.repository.FindLatestIndividualSubmission(context.Background(), cmd.UserID)
+	// Reject a submission if the caller's scope (the user, for Individual Survey; the team,
+	// for Post-Workshop Survey) already has a completed submission of the same survey type
+	// and is still within the combined eligibility window: neither
+	// healthcheck.EligibilityCooldownMonths calendar months have elapsed, nor has the
+	// calendar moved into a new half-year period, since that submission (see
+	// healthcheck.NextEligibleDate). This is a friendly pre-check; the database's exclusion
+	// constraint (see the "half year boundary eligibility" migration) is the authoritative,
+	// race-safe guard against two concurrent requests both passing this check.
+	if cmd.Completed {
+		if newDate, ok := parseSubmissionDate(cmd.Date); ok {
+			latest, err := h.repository.FindLatestSubmission(context.Background(), healthcheck.LatestSubmissionQuery{
+				SurveyType: surveyType,
+				TeamID:     cmd.TeamID,
+				UserID:     cmd.UserID,
+			})
 			if err != nil {
-				return nil, fmt.Errorf("failed to check for consecutive-quarter submission: %w", err)
+				return nil, fmt.Errorf("failed to check submission eligibility: %w", err)
 			}
 			if latest != nil {
-				if lastQuarter, lastYear, lastOK := healthcheck.PeriodQuarter(latest.AssessmentPeriod); lastOK &&
-					healthcheck.IsConsecutiveQuarter(lastQuarter, lastYear, quarter, year) {
-					return nil, healthcheck.NewConsecutiveQuarterError(lastQuarter, lastYear)
+				if lastDate, lastOK := parseSubmissionDate(latest.Date); lastOK &&
+					healthcheck.IsWithinCooldown(lastDate, newDate) {
+					return nil, healthcheck.NewSubmissionCooldownError(surveyType, latest.AssessmentPeriod, lastDate)
 				}
 			}
 		}

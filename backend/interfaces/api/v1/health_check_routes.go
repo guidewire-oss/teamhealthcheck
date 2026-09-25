@@ -27,7 +27,8 @@ func SetupHealthCheckRoutes(router *gin.Engine, healthCheckRepo healthcheck.Repo
 		// Team submission status for post-workshop surveys
 		healthChecks.GET("/teams/:teamId/submission-status", handler.GetTeamSubmissionStatus)
 
-		// Pre-submission duplicate-quarter eligibility check (both survey types)
+		// Pre-submission eligibility check: six-month cooldown or half-year boundary,
+		// whichever comes first (both survey types)
 		healthChecks.GET("/health-checks/eligibility", handler.CheckSurveyEligibility)
 
 		// Assessment periods (dynamic dropdown data)

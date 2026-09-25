@@ -245,12 +245,12 @@ describe('Team Lead dashboard: assessment period selection modal', () => {
     expect(screen.queryByTestId('take-survey-period-select')).not.toBeInTheDocument();
   });
 
-  describe('duplicate-quarter submission prevention', () => {
+  describe('six-month submission cooldown', () => {
     it('shows the "already submitted" modal instead of opening the survey when Individual Survey is ineligible', async () => {
       checkSurveyEligibility.mockResolvedValue({
         eligible: false,
-        submittedPeriod: 'Q1 2026',
-        nextEligiblePeriod: 'Q3 2026',
+        submittedPeriod: 'H1 2026',
+        nextEligibleDate: '2026-07-15',
       });
       const user = userEvent.setup({ delay: null });
       render(<DashboardPage />);
@@ -262,16 +262,16 @@ describe('Team Lead dashboard: assessment period selection modal', () => {
       await waitFor(() => expect(screen.getByTestId('duplicate-submission-modal')).toBeInTheDocument());
       expect(screen.queryByTestId('period-selection-modal')).not.toBeInTheDocument();
       expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Individual Survey');
-      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Q1 2026');
-      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Q3 2026');
+      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('H1 2026');
+      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Jul 15, 2026');
       expect(push).not.toHaveBeenCalled();
     });
 
     it('shows the "already submitted" modal instead of opening the survey when Post-Workshop Survey is ineligible', async () => {
       checkSurveyEligibility.mockResolvedValue({
         eligible: false,
-        submittedPeriod: 'Q2 2026',
-        nextEligiblePeriod: 'Q4 2026',
+        submittedPeriod: 'H1 2026',
+        nextEligibleDate: '2026-07-15',
       });
       const user = userEvent.setup({ delay: null });
       render(<DashboardPage />);
@@ -282,12 +282,12 @@ describe('Team Lead dashboard: assessment period selection modal', () => {
 
       await waitFor(() => expect(screen.getByTestId('duplicate-submission-modal')).toBeInTheDocument());
       expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Post-Workshop Survey');
-      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Q2 2026');
-      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Q4 2026');
+      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('H1 2026');
+      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Jul 15, 2026');
       expect(push).not.toHaveBeenCalled();
     });
 
-    it('opens the survey normally when the selected quarter is eligible', async () => {
+    it('opens the survey normally when eligible', async () => {
       checkSurveyEligibility.mockResolvedValue({ eligible: true });
       const user = userEvent.setup({ delay: null });
       render(<DashboardPage />);
@@ -303,8 +303,8 @@ describe('Team Lead dashboard: assessment period selection modal', () => {
     it('closes the duplicate-submission modal via the Close button', async () => {
       checkSurveyEligibility.mockResolvedValue({
         eligible: false,
-        submittedPeriod: 'Q1 2026',
-        nextEligiblePeriod: 'Q3 2026',
+        submittedPeriod: 'H1 2026',
+        nextEligibleDate: '2026-07-15',
       });
       const user = userEvent.setup({ delay: null });
       render(<DashboardPage />);

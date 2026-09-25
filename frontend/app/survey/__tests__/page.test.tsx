@@ -112,13 +112,13 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
   it('auto-selects and displays the current-date period on load when no period param is given', async () => {
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H2'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H2 2026'));
   });
 
   it('does not render an editable period selector/edit control in the survey header (moved to Member Home)', async () => {
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H2'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H2 2026'));
 
     expect(screen.queryByTestId('edit-period-button')).not.toBeInTheDocument();
     expect(screen.queryByTestId('period-selector')).not.toBeInTheDocument();
@@ -131,19 +131,19 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
     searchParams = new URLSearchParams('period=2026 H1');
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H1'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H1 2026'));
     // It must stay "2026 H1" and not be recalculated back to today's auto-detected "2026 H2"
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H1');
+    expect(screen.getByTestId('selected-period')).toHaveTextContent('H1 2026');
   });
 
   it('shows the override indicator with the auto-detected period when the selected period differs', async () => {
     searchParams = new URLSearchParams('period=2026 H1');
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H1'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H1 2026'));
     expect(screen.getByTestId('period-overridden-label')).toHaveTextContent(
-      'Overridden — auto-detected period: 2026 H2'
+      'Overridden — auto-detected period: H2 2026'
     );
   });
 
@@ -164,7 +164,7 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
 
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H1'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H1 2026'));
     // The stale draft (for a different period) must not have been restored either
     expect(screen.queryByTestId('draft-restored-banner')).not.toBeInTheDocument();
   });
@@ -173,14 +173,14 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
     searchParams = new URLSearchParams('period=not-a-real-period');
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H2'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H2 2026'));
   });
 
   it('shows the default confirmation modal when the period matches auto-detection', async () => {
     const user = userEvent.setup({ delay: null });
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H2'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H2 2026'));
 
     await answerAllDimensions(user);
     await user.click(screen.getByRole('button', { name: /submit responses/i }));
@@ -189,7 +189,7 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
     expect(screen.getByTestId('submit-confirm-modal')).toBeInTheDocument();
     expect(screen.getByTestId('submit-confirm-title')).toHaveTextContent('Confirm health check submission');
     expect(screen.getByTestId('submit-confirm-message')).toHaveTextContent(
-      'Your health check will be submitted for 2026 H2. Please verify the assessment period before continuing.'
+      'Your health check will be submitted for H2 2026. Please verify the assessment period before continuing.'
     );
   });
 
@@ -198,15 +198,15 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
     const user = userEvent.setup({ delay: null });
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H1'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H1 2026'));
 
     await answerAllDimensions(user);
     await user.click(screen.getByRole('button', { name: /submit responses/i }));
 
     expect(screen.getByTestId('submit-confirm-title')).toHaveTextContent('Confirm assessment period');
     expect(screen.getByTestId('submit-confirm-message')).toHaveTextContent(
-      'You selected 2026 H1 instead of the automatically detected period 2026 H2. ' +
-        'After submission, this health check will be recorded for 2026 H1. ' +
+      'You selected H1 2026 instead of the automatically detected period H2 2026. ' +
+        'After submission, this health check will be recorded for H1 2026. ' +
         'Please confirm that this is the correct assessment period.'
     );
   });
@@ -216,7 +216,7 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
     const user = userEvent.setup({ delay: null });
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H1'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H1 2026'));
 
     await answerAllDimensions(user);
     await user.click(screen.getByRole('button', { name: /submit responses/i }));
@@ -225,7 +225,7 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
     expect(screen.queryByTestId('submit-confirm-modal')).not.toBeInTheDocument();
     expect(submitHealthCheck).not.toHaveBeenCalled();
     // Answers and the passed-in period are preserved
-    expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H1');
+    expect(screen.getByTestId('selected-period')).toHaveTextContent('H1 2026');
     expect(getGreenScoreButton()).toHaveClass('border-green-500');
   });
 
@@ -233,7 +233,7 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
     const user = userEvent.setup({ delay: null });
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H2'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H2 2026'));
 
     await answerAllDimensions(user);
     await user.click(screen.getByRole('button', { name: /submit responses/i }));
@@ -252,7 +252,7 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
     const user = userEvent.setup({ delay: null });
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H1'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H1 2026'));
 
     await answerAllDimensions(user);
     await user.click(screen.getByRole('button', { name: /submit responses/i }));
@@ -267,9 +267,9 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
     const user = userEvent.setup({ delay: null });
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H1'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H1 2026'));
     expect(screen.getByTestId('period-overridden-label')).toHaveTextContent(
-      'Overridden — auto-detected period: 2026 H2'
+      'Overridden — auto-detected period: H2 2026'
     );
 
     await answerAllDimensions(user);
@@ -293,7 +293,7 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
     searchParams = new URLSearchParams('type=post_workshop&period=2026 H1');
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H1'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H1 2026'));
 
     expect(screen.queryByTestId('edit-period-button')).not.toBeInTheDocument();
     expect(screen.queryByTestId('period-selector')).not.toBeInTheDocument();
@@ -304,7 +304,7 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
     const user = userEvent.setup({ delay: null });
     render(<SurveyPage />);
 
-    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('2026 H2'));
+    await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H2 2026'));
 
     // Only answer the first of two dimensions, then try to jump straight to the last-dimension submit button
     await user.click(getGreenScoreButton());
