@@ -382,8 +382,8 @@ export default function HierarchicalDashboard({ currentUser, users, teams }: Pro
               <RadarChart data={dimensionData}>
                 <PolarGrid strokeDasharray="3 3" />
                 <PolarAngleAxis dataKey="dimension" />
-                <PolarRadiusAxis angle={90} domain={[0, 3]} />
                 <Radar name="Score" dataKey="score" stroke="#6366F1" fill="#6366F1" fillOpacity={0.6} />
+                <PolarRadiusAxis angle={90} domain={[0, 3]} tick={{ fill: '#334155', fontSize: 12, fontWeight: 600 }} />
                 <Tooltip />
               </RadarChart>
             </ResponsiveContainer>

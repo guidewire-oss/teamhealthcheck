@@ -17,16 +17,13 @@ import {
   clearAdminCache,
   getBrandingSettings,
   updateBrandingSettings,
-  getNotificationSettings,
-  updateNotificationSettings,
-  getRetentionPolicy,
-  updateRetentionPolicy,
   AdminUser,
   HierarchyLevel,
   AdminTeam,
   CreateUserRequest,
   UpdateUserRequest,
 } from "@/lib/api/admin";
+import { API_BASE_URL } from "@/lib/api/client";
 import {
   Settings,
   Users,
@@ -35,7 +32,6 @@ import {
   Edit2,
   Trash2,
   LogOut,
-  Shield,
   Save,
   X,
   Building2,
@@ -47,6 +43,7 @@ import DimensionConfig from "@/components/DimensionConfig";
 import SupervisorChainModal from "@/components/SupervisorChainModal";
 import TeamMembersModal from "@/components/TeamMembersModal";
 import DocsLink from "@/components/DocsLink";
+import BrandMark from "@/components/BrandMark";
 
 export default function AdminPage() {
   const router = useRouter();
@@ -103,11 +100,6 @@ export default function AdminPage() {
   const [userRoleFilter, setUserRoleFilter] = useState("");
 
   // Settings tab state
-  const [emailEnabled, setEmailEnabled] = useState(false);
-  const [slackEnabled, setSlackEnabled] = useState(false);
-  const [notifyOnSubmission, setNotifyOnSubmission] = useState(false);
-  const [smtpConfigured, setSmtpConfigured] = useState(false);
-  const [retentionMonths, setRetentionMonths] = useState(12);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
@@ -116,6 +108,10 @@ export default function AdminPage() {
   // Branding state
   const [brandingCompanyName, setBrandingCompanyName] = useState("My Company");
   const [brandingLogoURL, setBrandingLogoURL] = useState("");
+
+  // Header branding (org identity shown in the page header, independent of the Settings form above)
+  const [brandingName, setBrandingName] = useState("");
+  const [brandingLogo, setBrandingLogo] = useState<string | null>(null);
 
   useEffect(() => {
     const currentUser = getCurrentUser();
@@ -127,6 +123,16 @@ export default function AdminPage() {
       setUser(currentUser);
     }
   }, [router]);
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/v1/config`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.companyName) setBrandingName(data.companyName);
+        if (data.logoURL) setBrandingLogo(data.logoURL);
+      })
+      .catch(() => {});
+  }, []);
 
   // Fetch teams and team leads when activeTab changes to 'teams'
   useEffect(() => {
@@ -143,11 +149,10 @@ export default function AdminPage() {
     }
   }, [activeTab]);
 
-  // Fetch settings and teams when activeTab changes to 'settings'
+  // Fetch settings when activeTab changes to 'settings'
   useEffect(() => {
     if (activeTab === "settings") {
       loadSettings();
-      if (teams.length === 0) fetchAdminTeams();
     }
   }, [activeTab]);
 
@@ -155,16 +160,7 @@ export default function AdminPage() {
     setSettingsLoading(true);
     setSettingsError(null);
     try {
-      const [notifSettings, retention, branding] = await Promise.all([
-        getNotificationSettings(),
-        getRetentionPolicy(),
-        getBrandingSettings(),
-      ]);
-      setEmailEnabled(notifSettings.emailEnabled);
-      setSlackEnabled(notifSettings.slackEnabled);
-      setNotifyOnSubmission(notifSettings.notifyOnSubmission);
-      setSmtpConfigured(notifSettings.smtpConfigured);
-      setRetentionMonths(retention.keepSessionsMonths);
+      const branding = await getBrandingSettings();
       setBrandingCompanyName(branding.companyName || "My Company");
       setBrandingLogoURL(branding.logoURL || "");
     } catch (err) {
@@ -179,18 +175,10 @@ export default function AdminPage() {
     setSettingsError(null);
     setSettingsSuccess(false);
     try {
-      await Promise.all([
-        updateBrandingSettings({
-          companyName: brandingCompanyName,
-          logoURL: brandingLogoURL,
-        }),
-        updateNotificationSettings({
-          emailEnabled,
-          slackEnabled,
-          notifyOnSubmission,
-        }),
-        updateRetentionPolicy({ keepSessionsMonths: retentionMonths }),
-      ]);
+      await updateBrandingSettings({
+        companyName: brandingCompanyName,
+        logoURL: brandingLogoURL,
+      });
       setSettingsSuccess(true);
       setTimeout(() => setSettingsSuccess(false), 3000);
     } catch (err) {
@@ -594,14 +582,12 @@ export default function AdminPage() {
       <div className="bg-white shadow-sm border-b">
         <div className="container mx-auto px-4 py-4">
           <div className="flex justify-between items-center">
-            <div className="flex items-center gap-3">
-              <Shield className="w-8 h-8 text-indigo-600" />
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900">
-                  Admin Dashboard
-                </h1>
-                <p className="text-gray-500">System Administration</p>
-              </div>
+            <div className="min-w-0">
+              <BrandMark logoUrl={brandingLogo} companyName={brandingName} size="header" className="mb-2" />
+              <h1 className="text-2xl font-bold text-gray-900">
+                Admin Dashboard
+              </h1>
+              <p className="text-gray-500 mt-1">System Administration</p>
             </div>
             <div className="flex items-center gap-4">
               <div className="text-right">
@@ -1619,56 +1605,59 @@ export default function AdminPage() {
                   <div className="text-center py-4 text-gray-500">Loading settings...</div>
                 ) : (
                   <>
-                <div data-testid="branding-settings">
-                  <h3 className="text-lg font-medium text-gray-900 mb-4">
+                <div data-testid="branding-settings" className="max-w-[680px]">
+                  <h3 className="text-lg font-medium text-gray-900">
                     Company Branding
                   </h3>
+                  <p className="text-sm text-gray-500 mt-1 mb-4">
+                    Manage the organization name and logo displayed across Team Health Check.
+                  </p>
+
                   <div className="space-y-4">
+                    {/* Company Name */}
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                      <label htmlFor="branding-company-name" className="block text-sm font-medium text-gray-700 mb-1.5">
                         Company Name
                       </label>
                       <input
+                        id="branding-company-name"
                         type="text"
                         data-testid="branding-company-name"
                         value={brandingCompanyName}
                         onChange={(e) => setBrandingCompanyName(e.target.value)}
-                        className="w-full max-w-md px-4 py-2 border border-gray-300 rounded-lg text-gray-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                         placeholder="Enter company name"
                         maxLength={100}
                       />
                     </div>
+
+                    {/* Company Logo */}
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                      <span className="block text-sm font-medium text-gray-700 mb-1.5">
                         Company Logo
-                      </label>
-                      <div className="flex items-center gap-4">
-                        {brandingLogoURL ? (
-                          <div className="flex items-center gap-3" data-testid="branding-logo-preview">
+                      </span>
+                      <div className="flex flex-nowrap items-center gap-2 sm:gap-3">
+                        <div
+                          data-testid="branding-logo-preview"
+                          className="w-14 h-14 sm:w-20 sm:h-20 flex-shrink-0 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden"
+                        >
+                          {brandingLogoURL ? (
+                            // eslint-disable-next-line @next/next/no-img-element -- fixed-size preview of an admin-uploaded data-URI logo
                             <img
                               src={brandingLogoURL}
-                              alt="Company logo"
-                              className="w-12 h-12 object-contain rounded border border-gray-200"
+                              alt="Company logo preview"
+                              className="w-full h-full object-contain p-1.5 sm:p-2"
                             />
-                            <button
-                              type="button"
-                              data-testid="branding-logo-remove"
-                              onClick={() => setBrandingLogoURL("")}
-                              className="text-sm text-red-600 hover:text-red-800"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="w-12 h-12 bg-gray-100 rounded border border-gray-200 flex items-center justify-center">
-                            <Building2 className="w-6 h-6 text-gray-400" />
-                          </div>
-                        )}
+                          ) : (
+                            <Building2 className="w-6 h-6 sm:w-8 sm:h-8 text-gray-400" />
+                          )}
+                        </div>
+
                         <label
                           data-testid="branding-logo-upload"
-                          className="cursor-pointer px-4 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                          className="flex-shrink-0 whitespace-nowrap cursor-pointer px-2.5 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-transparent transition-colors"
                         >
-                          {brandingLogoURL ? "Change Logo" : "Upload Logo"}
+                          {brandingLogoURL ? "Change logo" : "Upload logo"}
                           <input
                             type="file"
                             accept="image/*"
@@ -1676,130 +1665,23 @@ export default function AdminPage() {
                             onChange={handleLogoUpload}
                           />
                         </label>
-                        <span className="text-xs text-gray-500">Max 500KB</span>
+
+                        {brandingLogoURL && (
+                          <button
+                            type="button"
+                            data-testid="branding-logo-remove"
+                            onClick={() => setBrandingLogoURL("")}
+                            className="flex-shrink-0 whitespace-nowrap text-xs sm:text-sm text-gray-500 hover:text-red-600 transition-colors"
+                          >
+                            Remove logo
+                          </button>
+                        )}
                       </div>
+                      <p className="text-xs text-gray-500 mt-1.5">Max 500KB &middot; PNG, JPG, or WebP</p>
+                      <p className="text-xs text-gray-400 mt-0.5">Changes are applied when you save settings.</p>
                     </div>
                   </div>
                 </div>
-
-                {!smtpConfigured && (
-                  <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg">
-                    <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
-                    <div>
-                      <p className="text-sm font-medium text-amber-800">SMTP Not Configured</p>
-                      <p className="text-sm text-amber-700 mt-1">
-                        Email notifications are disabled. Set <code className="bg-amber-100 px-1 rounded">SMTP_HOST</code> and related environment variables to enable email delivery.
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                <div data-testid="team-dl-settings">
-                  <h3 className="text-lg font-medium text-gray-900 mb-4">
-                    Team Distribution Lists
-                  </h3>
-                  <p className="text-sm text-gray-500 mb-3">
-                    Teams with a distribution list email will receive post-workshop survey summaries.
-                  </p>
-                  <div className="border rounded-lg overflow-hidden">
-                    <table className="w-full text-sm">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="text-left px-4 py-2 font-medium text-gray-600">Team</th>
-                          <th className="text-left px-4 py-2 font-medium text-gray-600">Distribution List Email</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y">
-                        {teams.length === 0 ? (
-                          <tr><td colSpan={2} className="px-4 py-3 text-gray-400 text-center">No teams configured</td></tr>
-                        ) : teams.map((t) => (
-                          <tr key={t.id}>
-                            <td className="px-4 py-2 font-medium text-gray-900">{t.name}</td>
-                            <td className="px-4 py-2">
-                              {t.distributionListEmail ? (
-                                <span className="text-gray-700">{t.distributionListEmail}</span>
-                              ) : (
-                                <span className="text-gray-400">Not set</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                <div data-testid="notifications-settings">
-                <h3 className="text-lg font-medium text-gray-900 mb-4">
-                  Notification Settings
-                </h3>
-                <div className="space-y-4">
-                  <label className="flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4 text-indigo-600 rounded"
-                      data-testid="email-enabled-checkbox"
-                      checked={emailEnabled}
-                      onChange={(e) => setEmailEnabled(e.target.checked)}
-                    />
-                    <span className="text-gray-700">Send email reminders for upcoming health checks</span>
-                  </label>
-                  <label className="flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4 text-indigo-600 rounded"
-                      data-testid="slack-enabled-checkbox"
-                      checked={slackEnabled}
-                      onChange={(e) => setSlackEnabled(e.target.checked)}
-                    />
-                    <span className="text-gray-700">Notify managers when team health declines</span>
-                  </label>
-                  <label className="flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4 text-indigo-600 rounded"
-                      data-testid="weekly-digest-checkbox"
-                      checked={notifyOnSubmission}
-                      onChange={(e) => setNotifyOnSubmission(e.target.checked)}
-                    />
-                    <span className="text-gray-700">Send weekly summary reports</span>
-                  </label>
-                </div>
-              </div>
-
-              <div data-testid="retention-settings">
-                <h3 className="text-lg font-medium text-gray-900 mb-4">
-                  Data Retention Policy
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Keep health check data for
-                    </label>
-                    <select
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg text-gray-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                      data-testid="retention-months-select"
-                      value={retentionMonths}
-                      onChange={(e) => setRetentionMonths(Number(e.target.value))}
-                    >
-                      <option value={6}>6 months</option>
-                      <option value={12}>1 year</option>
-                      <option value={24}>2 years</option>
-                      <option value={120}>Forever</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Export format
-                    </label>
-                    <select className="w-full px-4 py-2 border border-gray-300 rounded-lg text-gray-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-                      <option>CSV</option>
-                      <option>JSON</option>
-                      <option>Excel</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
 
               {settingsError && (
                 <div className="text-red-600 text-sm" data-testid="settings-error">{settingsError}</div>

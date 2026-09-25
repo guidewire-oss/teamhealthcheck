@@ -7,7 +7,8 @@ import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { API_BASE_URL } from '@/lib/api/client';
 import { getOrgConfig, getHierarchyLevel } from '@/lib/org-config';
 // Assessment period import removed — period is team-specific, computed on survey page
-import { LogOut, Building2, ChevronDown, ClipboardList, TrendingUp, Calendar, Clock, CalendarClock, BookOpen } from 'lucide-react';
+import { LogOut, ChevronDown, ClipboardList, TrendingUp, Calendar, Clock, CalendarClock, BookOpen } from 'lucide-react';
+import BrandMark from '@/components/BrandMark';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts';
 import { getTeamInfoCached, TeamInfo } from '@/lib/api/teams';
 import OnboardingModal from '@/components/OnboardingModal';
@@ -215,16 +216,9 @@ export default function MemberHomePage() {
       <header className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex justify-between items-center">
-            <div className="flex items-center space-x-3">
-              {brandingLogo ? (
-                <img src={brandingLogo} alt="Company logo" className="w-8 h-8 object-contain rounded" />
-              ) : (
-                <Building2 className="h-8 w-8 text-blue-600" />
-              )}
-              <div>
-                <h1 className="text-xl font-bold text-gray-900">{brandingName || 'Team360'}</h1>
-                <p className="text-sm text-gray-500">Member Home</p>
-              </div>
+            <div className="min-w-0">
+              <BrandMark logoUrl={brandingLogo} companyName={brandingName} size="header" className="mb-1.5" />
+              <h1 className="text-xl font-bold text-gray-900">Member Home</h1>
             </div>
             <div className="relative">
               <button
@@ -383,7 +377,6 @@ export default function MemberHomePage() {
                     <RadarChart data={radarData}>
                       <PolarGrid />
                       <PolarAngleAxis dataKey="dimension" tick={{ fontSize: 10 }} />
-                      <PolarRadiusAxis domain={[0, 3]} tickCount={4} />
                       <Radar
                         name="Score"
                         dataKey="score"
@@ -391,6 +384,7 @@ export default function MemberHomePage() {
                         fill="#3b82f6"
                         fillOpacity={0.5}
                       />
+                      <PolarRadiusAxis domain={[0, 3]} tickCount={4} tick={{ fill: '#334155', fontSize: 12, fontWeight: 600 }} />
                       <Tooltip />
                     </RadarChart>
                   </ResponsiveContainer>
