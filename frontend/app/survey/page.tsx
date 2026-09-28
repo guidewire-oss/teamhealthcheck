@@ -60,6 +60,9 @@ function SurveyPageContent() {
   const [draftRestored, setDraftRestored] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const draftInitialized = useRef(false);
+  // Guards the actual API call against being fired more than once (e.g. a double click on
+  // "Confirm and submit" before the `submitting` state re-render disables the button).
+  const submitInFlightRef = useRef(false);
   const [teamOptions, setTeamOptions] = useState<{id: string, name: string}[]>([]);
   const [assessmentPeriod, setAssessmentPeriod] = useState<string>('');
   const [autoAssessmentPeriod, setAutoAssessmentPeriod] = useState<string>('');
@@ -360,8 +363,12 @@ function SurveyPageContent() {
   };
 
   // Called only from the "Confirm and submit" button in the submit-confirmation modal.
+  // Guarded by submitInFlightRef (checked synchronously, unlike the `submitting` state which
+  // only takes effect on the next render) so the API call fires exactly once even if this
+  // handler is invoked more than once before the button can be disabled.
   const performSubmit = async () => {
-    if (!user || !team) return;
+    if (!user || !team || submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
 
     setShowSubmitConfirm(false);
     setSubmitting(true);
@@ -391,12 +398,11 @@ function SurveyPageContent() {
       // Clear draft on successful submit
       localStorage.removeItem(getDraftKey(user.id, team.id));
 
-      // Store session ID and redirect
+      // Show the Thank You page and stay there -- the user leaves only by clicking the
+      // explicit navigation button below, never via an automatic redirect.
       setSessionId(session.id);
       setSubmitted(true);
-
-      // Post-workshop redirects to dashboard, individual to home
-      router.push(isPostWorkshop ? '/dashboard' : '/home');
+      setSubmitting(false);
     } catch (err) {
       console.error('Failed to submit health check:', err);
 
@@ -405,7 +411,8 @@ function SurveyPageContent() {
       } else {
         setError('An unexpected error occurred. Please check your connection and try again.');
       }
-    } finally {
+      // Allow retrying after a failed submission.
+      submitInFlightRef.current = false;
       setSubmitting(false);
     }
   };
@@ -450,8 +457,12 @@ function SurveyPageContent() {
   }
 
   if (submitted) {
+    const isTeamLeadUser = user.hierarchyLevelId === 'level-4';
     return (
-      <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100 flex items-center justify-center p-4">
+      <div
+        data-testid="thank-you-page"
+        className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100 flex items-center justify-center p-4"
+      >
         <div className="bg-white rounded-2xl shadow-xl p-12 max-w-md w-full text-center">
           <CheckCircle className="w-20 h-20 text-green-500 mx-auto mb-6" />
           <h1 className="text-3xl font-bold text-gray-900 mb-4">Thank You!</h1>
@@ -460,10 +471,11 @@ function SurveyPageContent() {
             <p className="text-sm text-gray-500 mb-8 font-mono">Session ID: {sessionId}</p>
           )}
           <button
-            onClick={() => router.push('/home')}
+            data-testid="thank-you-nav-button"
+            onClick={() => router.push(isTeamLeadUser ? '/dashboard' : '/home')}
             className="bg-indigo-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors"
           >
-            Back to Home
+            {isTeamLeadUser ? 'Return to Dashboard' : 'Back to Home'}
           </button>
         </div>
       </div>
@@ -851,8 +863,11 @@ function SurveyPageContent() {
               <button
                 type="button"
                 onClick={performSubmit}
+                disabled={submitting}
                 data-testid="submit-confirm-accept"
-                className="px-4 py-2 text-sm font-semibold rounded-lg text-white bg-green-600 hover:bg-green-700 transition-colors"
+                className={`px-4 py-2 text-sm font-semibold rounded-lg text-white transition-colors ${
+                  submitting ? 'bg-gray-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
+                }`}
               >
                 Confirm and submit
               </button>

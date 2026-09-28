@@ -60,116 +60,35 @@ func TestActiveHalfYearPeriod(t *testing.T) {
 	}
 }
 
-func TestNextHalfYearStart(t *testing.T) {
+func TestParsePeriodHalfYear(t *testing.T) {
 	cases := []struct {
-		name string
-		date string
-		want string
+		name     string
+		period   string
+		wantHalf int
+		wantYear int
+		wantOK   bool
 	}{
-		{"from the start of H1", "2026-01-01", "2026-07-01"},
-		{"from the middle of H1", "2026-03-15", "2026-07-01"},
-		{"from the last day of H1", "2026-06-30", "2026-07-01"},
-		{"from the start of H2", "2026-07-01", "2027-01-01"},
-		{"from the middle of H2", "2026-11-20", "2027-01-01"},
-		{"from the last day of H2", "2026-12-31", "2027-01-01"},
-		{"works for any year", "1999-08-01", "2000-01-01"},
+		{"storage half-yearly H1", "2026 H1", 1, 2026, true},
+		{"storage half-yearly H2", "2026 H2", 2, 2026, true},
+		{"legacy quarterly Q1 collapses to H1", "2026 Q1", 1, 2026, true},
+		{"legacy quarterly Q2 collapses to H1", "2026 Q2", 1, 2026, true},
+		{"legacy quarterly Q3 collapses to H2", "2026 Q3", 2, 2026, true},
+		{"legacy quarterly Q4 collapses to H2", "2026 Q4", 2, 2026, true},
+		{"legacy 1st half maps to H2 of the same year", "2024 - 1st Half", 2, 2024, true},
+		{"legacy 2nd half maps to H1 of the following year", "2024 - 2nd Half", 1, 2025, true},
+		{"monthly periods are not half-year labels", "2026 Mar", 0, 0, false},
+		{"yearly periods are not half-year labels", "2026", 0, 0, false},
+		{"unrecognized periods are not half-year labels", "not-a-period", 0, 0, false},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := NextHalfYearStart(mustParseDate(t, tc.date))
-			if got.Format("2006-01-02") != tc.want {
-				t.Errorf("NextHalfYearStart(%s) = %s, want %s", tc.date, got.Format("2006-01-02"), tc.want)
+			half, year, ok := ParsePeriodHalfYear(tc.period)
+			if ok != tc.wantOK || (ok && (half != tc.wantHalf || year != tc.wantYear)) {
+				t.Errorf("ParsePeriodHalfYear(%q) = (%d, %d, %v), want (%d, %d, %v)",
+					tc.period, half, year, ok, tc.wantHalf, tc.wantYear, tc.wantOK)
 			}
 		})
-	}
-}
-
-func TestNextEligibleDate(t *testing.T) {
-	cases := []struct {
-		name string
-		from string
-		want string
-	}{
-		// Submitting exactly on a half-year boundary: the six-month cooldown and the next
-		// half-year start coincide, so either rule alone would give the same answer.
-		{"exactly at the start of H1: both rules agree", "2026-01-01", "2026-07-01"},
-		{"exactly at the start of H2: both rules agree", "2026-07-01", "2027-01-01"},
-
-		// Submitting mid-period or late in a period: the half-year boundary is reached well
-		// before six calendar months would elapse, so it becomes the binding (earlier) rule.
-		// This is the acceptance-criteria example: submitting H2 in November must not force a
-		// wait until the six-month mark in May -- H1 of the following year opens January 1.
-		{"mid H2 (November): next half-year wins over the six-month cooldown", "2026-11-15", "2027-01-01"},
-		{"mid H1 (February): next half-year wins over the six-month cooldown", "2026-02-10", "2026-07-01"},
-		{"last day of H1: next half-year is the very next day", "1999-06-30", "1999-07-01"},
-		{"last day of H2: next half-year is the very next day, rolling the year", "2026-12-31", "2027-01-01"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := NextEligibleDate(mustParseDate(t, tc.from))
-			if got.Format("2006-01-02") != tc.want {
-				t.Errorf("NextEligibleDate(%s) = %s, want %s", tc.from, got.Format("2006-01-02"), tc.want)
-			}
-		})
-	}
-}
-
-func TestIsWithinCooldown(t *testing.T) {
-	cases := []struct {
-		name      string
-		last      string
-		candidate string
-		want      bool
-	}{
-		{"same day is blocked", "2026-01-15", "2026-01-15", true},
-		{"later the same half-year is still blocked (duplicate-period prevention)", "2026-01-15", "2026-06-30", true},
-		{"the moment the next half-year starts is eligible", "2026-01-15", "2026-07-01", false},
-		{"well into the next half-year is eligible", "2026-01-15", "2026-07-14", false},
-		{"well after six months is eligible", "2026-01-15", "2027-01-15", false},
-
-		// The acceptance-criteria scenario: a November H2 submission must not block January's
-		// H1, even though only ~6 weeks (nowhere near six months) have passed.
-		{"a November H2 submission does not block the following January (H1)", "2026-11-15", "2027-01-01", false},
-		{"the day before the following January is still blocked (still H2)", "2026-11-15", "2026-12-31", true},
-		{"under six months and still the same half-year remains blocked", "2025-11-20", "2025-12-31", true},
-		{"well under six months but into a new half-year is eligible", "2025-11-20", "2026-05-19", false},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := IsWithinCooldown(mustParseDate(t, tc.last), mustParseDate(t, tc.candidate))
-			if got != tc.want {
-				t.Errorf("IsWithinCooldown(%s, %s) = %v, want %v", tc.last, tc.candidate, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestIsWithinCooldown_NeverAllowsADuplicateWithinTheSameHalfYear is a property-style check
-// that submitting again anywhere within the same half-year period as the last submission is
-// always blocked, regardless of how many days remain in that period -- i.e. the six-month
-// cooldown and the half-year-boundary rule never combine to allow a same-period duplicate.
-func TestIsWithinCooldown_NeverAllowsADuplicateWithinTheSameHalfYear(t *testing.T) {
-	lastSubmissions := []string{"2026-01-01", "2026-03-15", "2026-06-30", "2026-07-01", "2026-09-20", "2026-12-31"}
-
-	for _, last := range lastSubmissions {
-		lastDate := mustParseDate(t, last)
-		lastHalf, lastYear := HalfYearOf(lastDate)
-
-		// Probe every day from the submission date through the last day of its half-year.
-		periodEnd := NextHalfYearStart(lastDate).AddDate(0, 0, -1)
-		for d := lastDate; !d.After(periodEnd); d = d.AddDate(0, 0, 1) {
-			half, year := HalfYearOf(d)
-			if half != lastHalf || year != lastYear {
-				t.Fatalf("test setup error: %s is not in the same half-year as %s", d.Format("2006-01-02"), last)
-			}
-			if !IsWithinCooldown(lastDate, d) {
-				t.Errorf("IsWithinCooldown(%s, %s) = false, want true (same half-year as the last submission)",
-					last, d.Format("2006-01-02"))
-			}
-		}
 	}
 }
 
@@ -202,6 +121,144 @@ func TestFormatPeriodForDisplay(t *testing.T) {
 			}
 			if matched, _ := regexp.MatchString(`Q[1-4]`, got); matched {
 				t.Errorf("FormatPeriodForDisplay(%q) = %q must never contain a quarter label", tc.period, got)
+			}
+		})
+	}
+}
+
+func TestCurrentlyOpenPeriods(t *testing.T) {
+	cases := []struct {
+		name string
+		now  string
+		want []string
+	}{
+		{"during H1, only the current H1 is open", "2026-03-15", []string{"2026 H1"}},
+		{"during H2, both the current H1 (catch-up) and H2 are open", "2026-11-20", []string{"2026 H1", "2026 H2"}},
+		{"the first day of H1", "2026-01-01", []string{"2026 H1"}},
+		{"the first day of H2", "2026-07-01", []string{"2026 H1", "2026 H2"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CurrentlyOpenPeriods(mustParseDate(t, tc.now))
+			if len(got) != len(tc.want) {
+				t.Fatalf("CurrentlyOpenPeriods(%s) = %v, want %v", tc.now, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("CurrentlyOpenPeriods(%s) = %v, want %v", tc.now, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckPeriodEligibility(t *testing.T) {
+	cases := []struct {
+		name             string
+		period           string
+		now              string
+		submittedPeriods []string
+		want             PeriodEligibilityReason
+	}{
+		{
+			name:   "during H1, H1 of the current year is eligible when never submitted",
+			period: "2026 H1", now: "2026-03-15", submittedPeriods: nil,
+			want: PeriodEligible,
+		},
+		{
+			name:   "H1 duplicate is blocked",
+			period: "2026 H1", now: "2026-03-15", submittedPeriods: []string{"2026 H1"},
+			want: PeriodReasonDuplicate,
+		},
+		{
+			name:   "H2 duplicate is blocked",
+			period: "2026 H2", now: "2026-11-20", submittedPeriods: []string{"2026 H2"},
+			want: PeriodReasonDuplicate,
+		},
+		{
+			name:   "H1 submitted, H2 of the same year is then eligible",
+			period: "2026 H2", now: "2026-11-20", submittedPeriods: []string{"2026 H1"},
+			want: PeriodEligible,
+		},
+		{
+			name:   "during H1, H2 of the same year is a future period and is blocked",
+			period: "2026 H2", now: "2026-03-15", submittedPeriods: nil,
+			want: PeriodReasonFuture,
+		},
+		{
+			name:   "during H2, H1 of the next year is a future period and is blocked",
+			period: "2027 H1", now: "2026-11-20", submittedPeriods: []string{"2026 H2"},
+			want: PeriodReasonFuture,
+		},
+		{
+			name:   "during H2, an unsubmitted H1 of the current year is a catch-up and is eligible",
+			period: "2026 H1", now: "2026-11-20", submittedPeriods: nil,
+			want: PeriodEligible,
+		},
+		{
+			name:   "during H2, an unsubmitted H1 of the current year is eligible even if H2 is already submitted",
+			period: "2026 H1", now: "2026-11-20", submittedPeriods: []string{"2026 H2"},
+			want: PeriodEligible,
+		},
+		{
+			name:   "a period from a previous year is blocked as past, even if never submitted",
+			period: "2025 H2", now: "2026-03-15", submittedPeriods: nil,
+			want: PeriodReasonPast,
+		},
+		{
+			name:   "once January begins, H1 of the new year is eligible",
+			period: "2027 H1", now: "2027-01-01", submittedPeriods: []string{"2026 H2"},
+			want: PeriodEligible,
+		},
+		{
+			name:   "a duplicate takes precedence even when the period is also stale",
+			period: "2025 H1", now: "2026-11-20", submittedPeriods: []string{"2025 H1"},
+			want: PeriodReasonDuplicate,
+		},
+		{
+			name:   "legacy quarter-labeled submissions are recognized for duplicate detection",
+			period: "2026 H1", now: "2026-03-15", submittedPeriods: []string{"2026 Q1"},
+			want: PeriodReasonDuplicate,
+		},
+		{
+			name:   "an unrecognized period format is reported distinctly",
+			period: "2026 Mar", now: "2026-03-15", submittedPeriods: nil,
+			want: PeriodReasonInvalidFormat,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CheckPeriodEligibility(tc.period, mustParseDate(t, tc.now), tc.submittedPeriods)
+			if got != tc.want {
+				t.Errorf("CheckPeriodEligibility(%q, %s, %v) = %q, want %q",
+					tc.period, tc.now, tc.submittedPeriods, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNextEligiblePeriod(t *testing.T) {
+	cases := []struct {
+		name             string
+		submittedPeriods []string
+		want             string
+	}{
+		{"H1 submitted, H2 not submitted -> H2 of the same year", []string{"2026 H1"}, "H2 2026"},
+		{"H1 and H2 both submitted -> H1 of the next year", []string{"2026 H1", "2026 H2"}, "H1 2027"},
+		{"only H2 submitted -> H1 of the next year", []string{"2026 H2"}, "H1 2027"},
+		{"order of the input slice does not matter", []string{"2026 H2", "2026 H1"}, "H1 2027"},
+		{"legacy quarter-labeled submissions are normalized first", []string{"2026 Q1"}, "H2 2026"},
+		{"no recognizable period returns empty", []string{"2026 Mar"}, ""},
+		{"empty input returns empty", nil, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NextEligiblePeriod(tc.submittedPeriods)
+			if got != tc.want {
+				t.Errorf("NextEligiblePeriod(%v) = %q, want %q", tc.submittedPeriods, got, tc.want)
 			}
 		})
 	}

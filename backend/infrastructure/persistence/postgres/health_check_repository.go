@@ -5,32 +5,19 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/lib/pq"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/healthcheck"
 )
 
-// uniqueViolationConstraints maps the Postgres exclusion-constraint names enforcing the
-// six-month submission cooldown to the survey type they guard, so a 23P01 (exclusion
-// violation) error from Save() can be translated into a friendly
+// uniqueViolationConstraints maps the Postgres unique-index names enforcing "one submission
+// per (scope, survey type, year, half-year)" to the survey type they guard, so a 23505
+// (unique violation) error from Save() can be translated into a friendly
 // healthcheck.SubmissionCooldownError.
 var uniqueViolationConstraints = map[string]string{
-	"excl_individual_six_month_gap":    healthcheck.SurveyTypeIndividual,
-	"excl_post_workshop_six_month_gap": healthcheck.SurveyTypePostWorkshop,
-}
-
-// parseSessionDate parses a session date in either RFC3339 (as sent by the frontend on
-// submission) or plain "YYYY-MM-DD" (as returned by Postgres DATE columns) form.
-func parseSessionDate(date string) (time.Time, bool) {
-	if t, err := time.Parse(time.RFC3339, date); err == nil {
-		return t, true
-	}
-	if t, err := time.Parse("2006-01-02", date); err == nil {
-		return t, true
-	}
-	return time.Time{}, false
+	"uniq_individual_period_submission":    healthcheck.SurveyTypeIndividual,
+	"uniq_post_workshop_period_submission": healthcheck.SurveyTypePostWorkshop,
 }
 
 // HealthCheckRepository implements the healthcheck.Repository interface
@@ -77,17 +64,15 @@ func (r *HealthCheckRepository) Save(ctx context.Context, session *healthcheck.H
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && (pqErr.Code == "23P01" || pqErr.Code == "23505") {
 			if constraintSurveyType, known := uniqueViolationConstraints[pqErr.Constraint]; known {
-				latest, lerr := r.FindLatestSubmission(ctx, healthcheck.LatestSubmissionQuery{
+				submitted, serr := r.FindSubmittedPeriods(ctx, healthcheck.LatestSubmissionQuery{
 					SurveyType: constraintSurveyType,
 					TeamID:     session.TeamID,
 					UserID:     session.UserID,
 				})
-				if lerr == nil && latest != nil {
-					if lastDate, ok := parseSessionDate(latest.Date); ok {
-						return healthcheck.NewSubmissionCooldownError(constraintSurveyType, latest.AssessmentPeriod, lastDate)
-					}
+				if serr == nil {
+					return healthcheck.NewSubmissionCooldownError(constraintSurveyType, session.AssessmentPeriod, submitted)
 				}
-				return fmt.Errorf("submission rejected: %s cooldown not yet elapsed", constraintSurveyType)
+				return fmt.Errorf("submission rejected: %s for %s already submitted", constraintSurveyType, session.AssessmentPeriod)
 			}
 		}
 		return fmt.Errorf("failed to save session: %w", err)
@@ -522,11 +507,15 @@ func (r *HealthCheckRepository) GetTeamSubmissionStatus(ctx context.Context, tea
 	}, nil
 }
 
-// FindLatestSubmission returns the most recent completed submission (by date) matching the
-// given survey type and scope, or nil if none exists. Scoping:
+// FindSubmittedPeriods returns the assessment-period labels of every completed submission
+// matching the given survey type and scope, or an empty slice if none exist. Scoping:
 //   - individual:    matches by UserID only (a different user's submission never conflicts).
 //   - post_workshop: matches by TeamID only (one workshop consensus per team).
-func (r *HealthCheckRepository) FindLatestSubmission(ctx context.Context, query healthcheck.LatestSubmissionQuery) (*healthcheck.HealthCheckSession, error) {
+//
+// This is the persisted source of truth healthcheck.CheckPeriodEligibility and
+// healthcheck.NextEligiblePeriod are evaluated against -- eligibility is never inferred from
+// submission dates.
+func (r *HealthCheckRepository) FindSubmittedPeriods(ctx context.Context, query healthcheck.LatestSubmissionQuery) ([]string, error) {
 	var scopeColumn, scopeValue string
 	if query.SurveyType == healthcheck.SurveyTypePostWorkshop {
 		scopeColumn, scopeValue = "team_id", query.TeamID
@@ -534,26 +523,25 @@ func (r *HealthCheckRepository) FindLatestSubmission(ctx context.Context, query 
 		scopeColumn, scopeValue = "user_id", query.UserID
 	}
 
-	var session healthcheck.HealthCheckSession
-	err := r.db.QueryRowContext(ctx, fmt.Sprintf(`
-		SELECT id, team_id, user_id, date, assessment_period, survey_type, completed
+	rows, err := r.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT assessment_period
 		FROM health_check_sessions
 		WHERE %s = $1 AND survey_type = $2 AND completed = true
-		ORDER BY date DESC
-		LIMIT 1
-	`, scopeColumn), scopeValue, query.SurveyType).Scan(
-		&session.ID, &session.TeamID, &session.UserID, &session.Date,
-		&session.AssessmentPeriod, &session.SurveyType, &session.Completed,
-	)
-
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	`, scopeColumn), scopeValue, query.SurveyType)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query latest submission: %w", err)
+		return nil, fmt.Errorf("failed to query submitted periods: %w", err)
 	}
+	defer rows.Close()
 
-	return &session, nil
+	var periods []string
+	for rows.Next() {
+		var period string
+		if err := rows.Scan(&period); err != nil {
+			return nil, fmt.Errorf("failed to scan submitted period: %w", err)
+		}
+		periods = append(periods, period)
+	}
+	return periods, rows.Err()
 }
 
 // Delete removes a session and its responses (cascade handled by DB)

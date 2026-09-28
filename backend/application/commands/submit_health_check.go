@@ -70,30 +70,34 @@ func (h *SubmitHealthCheckHandler) Handle(cmd SubmitHealthCheckCommand) (*health
 		surveyType = healthcheck.SurveyTypeIndividual
 	}
 
-	// Reject a submission if the caller's scope (the user, for Individual Survey; the team,
-	// for Post-Workshop Survey) already has a completed submission of the same survey type
-	// and is still within the combined eligibility window: neither
-	// healthcheck.EligibilityCooldownMonths calendar months have elapsed, nor has the
-	// calendar moved into a new half-year period, since that submission (see
-	// healthcheck.NextEligibleDate). This is a friendly pre-check; the database's exclusion
-	// constraint (see the "half year boundary eligibility" migration) is the authoritative,
-	// race-safe guard against two concurrent requests both passing this check.
+	// Enforce one submission per (scope, survey type, year, half-year): the caller's scope
+	// (the user, for Individual Survey; the team, for Post-Workshop Survey) may not resubmit
+	// an assessment period it has already completed, and may only target a period that is
+	// currently open (see healthcheck.CheckPeriodEligibility). Persisted records are the
+	// source of truth -- not submission dates or elapsed time. This is a friendly pre-check;
+	// the database's unique index (see the "period submission uniqueness" migration) is the
+	// authoritative, race-safe guard against two concurrent requests both passing this check.
 	if cmd.Completed {
-		if newDate, ok := parseSubmissionDate(cmd.Date); ok {
-			latest, err := h.repository.FindLatestSubmission(context.Background(), healthcheck.LatestSubmissionQuery{
-				SurveyType: surveyType,
-				TeamID:     cmd.TeamID,
-				UserID:     cmd.UserID,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("failed to check submission eligibility: %w", err)
-			}
-			if latest != nil {
-				if lastDate, lastOK := parseSubmissionDate(latest.Date); lastOK &&
-					healthcheck.IsWithinCooldown(lastDate, newDate) {
-					return nil, healthcheck.NewSubmissionCooldownError(surveyType, latest.AssessmentPeriod, lastDate)
-				}
-			}
+		submittedPeriods, err := h.repository.FindSubmittedPeriods(context.Background(), healthcheck.LatestSubmissionQuery{
+			SurveyType: surveyType,
+			TeamID:     cmd.TeamID,
+			UserID:     cmd.UserID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to check submission eligibility: %w", err)
+		}
+		now := time.Now()
+		if parsed, ok := parseSubmissionDate(cmd.Date); ok {
+			now = parsed
+		}
+		switch reason := healthcheck.CheckPeriodEligibility(cmd.AssessmentPeriod, now, submittedPeriods); reason {
+		case healthcheck.PeriodEligible, healthcheck.PeriodReasonInvalidFormat:
+			// An unrecognized period format is not this check's concern -- it is rejected
+			// by the HTTP layer's format validation before reaching this command.
+		case healthcheck.PeriodReasonDuplicate:
+			return nil, healthcheck.NewSubmissionCooldownError(surveyType, cmd.AssessmentPeriod, submittedPeriods)
+		default: // PeriodReasonFuture or PeriodReasonPast
+			return nil, healthcheck.NewPeriodNotOpenError(surveyType, cmd.AssessmentPeriod, reason)
 		}
 	}
 

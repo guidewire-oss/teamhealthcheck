@@ -213,7 +213,7 @@ describe('Member Home: Take Survey flow', () => {
       checkSurveyEligibility.mockResolvedValue({
         eligible: false,
         submittedPeriod: 'H1 2026',
-        nextEligibleDate: '2026-07-15',
+        nextEligiblePeriod: 'H2 2026',
       });
       const user = userEvent.setup({ delay: null });
       render(<MemberHomePage />);
@@ -226,9 +226,29 @@ describe('Member Home: Take Survey flow', () => {
       expect(screen.queryByTestId('period-selection-modal')).not.toBeInTheDocument();
       expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Individual Survey');
       expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('H1 2026');
-      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Jul 15, 2026');
+      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('H2 2026');
       expect(screen.getByTestId('duplicate-submission-message').textContent).not.toMatch(/Q[1-4]/);
       expect(push).not.toHaveBeenCalled();
+    });
+
+    it('shows "Your next survey is scheduled for H1 <next year>" when the last submission was H2 (year rollover)', async () => {
+      checkSurveyEligibility.mockResolvedValue({
+        eligible: false,
+        submittedPeriod: 'H2 2026',
+        nextEligiblePeriod: 'H1 2027',
+      });
+      const user = userEvent.setup({ delay: null });
+      render(<MemberHomePage />);
+
+      await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
+      await user.click(screen.getByTestId('take-survey-btn'));
+      await user.click(screen.getByTestId('period-selection-confirm-button'));
+
+      await waitFor(() => expect(screen.getByTestId('duplicate-submission-modal')).toBeInTheDocument());
+      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Individual Survey');
+      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('H2 2026');
+      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('H1 2027');
+      expect(screen.getByTestId('duplicate-submission-message').textContent).not.toMatch(/Q[1-4]/);
     });
 
     it('opens the survey normally when eligible', async () => {
@@ -248,7 +268,7 @@ describe('Member Home: Take Survey flow', () => {
       checkSurveyEligibility.mockResolvedValue({
         eligible: false,
         submittedPeriod: 'H1 2025',
-        nextEligibleDate: '2025-07-15',
+        nextEligiblePeriod: 'H2 2025',
       });
       const user = userEvent.setup({ delay: null });
       render(<MemberHomePage />);

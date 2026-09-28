@@ -149,13 +149,26 @@ func (h *HealthCheckHandler) SubmitHealthCheck(c *gin.Context) {
 		var cooldownErr *healthcheck.SubmissionCooldownError
 		if errors.As(err, &cooldownErr) {
 			log.WithField("team_id", req.TeamID).WithField("survey_type", cooldownErr.SurveyType).
-				Warn("rejected health check submission still within the six-month cooldown")
+				Warn("rejected duplicate health check submission for an already-submitted period")
 			c.JSON(http.StatusConflict, dto.ErrorResponse{
-				Error:            "Already submitted",
-				Message:          cooldownErr.Error(),
-				Code:             "submission_cooldown",
-				SubmittedPeriod:  cooldownErr.LastSubmittedPeriod,
-				NextEligibleDate: cooldownErr.NextEligible.Format("2006-01-02"),
+				Error:              "Already submitted",
+				Message:            cooldownErr.Error(),
+				Code:               string(healthcheck.PeriodReasonDuplicate),
+				SubmittedPeriod:    cooldownErr.LastSubmittedPeriod,
+				NextEligiblePeriod: cooldownErr.NextEligiblePeriod,
+			})
+			return
+		}
+
+		var notOpenErr *healthcheck.PeriodNotOpenError
+		if errors.As(err, &notOpenErr) {
+			log.WithField("team_id", req.TeamID).WithField("survey_type", notOpenErr.SurveyType).
+				WithField("reason", notOpenErr.Reason).
+				Warn("rejected health check submission for a period that is not currently open")
+			c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+				Error:   "Invalid assessment period",
+				Message: notOpenErr.Error(),
+				Code:    string(notOpenErr.Reason),
 			})
 			return
 		}
@@ -388,10 +401,9 @@ func (h *HealthCheckHandler) GetTeamSubmissionStatus(c *gin.Context) {
 //
 // Pre-submission check used by the frontend before opening a survey: given a survey type,
 // assessment period, and the relevant scope (teamId for post_workshop, userId for
-// individual), reports whether the caller's scope is still within the combined eligibility
-// window (six-month cooldown, or the calendar half-year boundary, whichever comes first --
-// see healthcheck.NextEligibleDate) started by its last completed submission of the same
-// survey type -- and if so, when the next eligible date is.
+// individual), reports whether that exact period is open for a brand-new submission right
+// now -- see healthcheck.CheckPeriodEligibility. Persisted records are the source of truth;
+// eligibility is never inferred from submission dates or elapsed time.
 func (h *HealthCheckHandler) CheckSurveyEligibility(c *gin.Context) {
 	ctx := c.Request.Context()
 
@@ -415,11 +427,6 @@ func (h *HealthCheckHandler) CheckSurveyEligibility(c *gin.Context) {
 		})
 		return
 	}
-	// Eligibility is evaluated as of now, since an actual submission attempted right now
-	// would be dated now -- the eligibility window is computed from the prior submission's
-	// actual date, not from the (informational) assessment-period label.
-	newDate := time.Now()
-
 	teamID := c.Query("teamId")
 	userID := c.Query("userId")
 	if surveyType == healthcheck.SurveyTypePostWorkshop && teamID == "" {
@@ -437,7 +444,7 @@ func (h *HealthCheckHandler) CheckSurveyEligibility(c *gin.Context) {
 		return
 	}
 
-	latest, err := h.repository.FindLatestSubmission(ctx, healthcheck.LatestSubmissionQuery{
+	submittedPeriods, err := h.repository.FindSubmittedPeriods(ctx, healthcheck.LatestSubmissionQuery{
 		SurveyType: surveyType,
 		TeamID:     teamID,
 		UserID:     userID,
@@ -450,31 +457,22 @@ func (h *HealthCheckHandler) CheckSurveyEligibility(c *gin.Context) {
 		return
 	}
 
-	if latest != nil {
-		if lastDate, lastOK := parseFlexibleDate(latest.Date); lastOK && healthcheck.IsWithinCooldown(lastDate, newDate) {
-			cooldownErr := healthcheck.NewSubmissionCooldownError(surveyType, latest.AssessmentPeriod, lastDate)
-			c.JSON(http.StatusOK, dto.SurveyEligibilityResponse{
-				Eligible:         false,
-				SubmittedPeriod:  cooldownErr.LastSubmittedPeriod,
-				NextEligibleDate: cooldownErr.NextEligible.Format("2006-01-02"),
-			})
-			return
-		}
+	switch reason := healthcheck.CheckPeriodEligibility(assessmentPeriod, time.Now(), submittedPeriods); reason {
+	case healthcheck.PeriodEligible:
+		c.JSON(http.StatusOK, dto.SurveyEligibilityResponse{Eligible: true})
+	case healthcheck.PeriodReasonDuplicate:
+		c.JSON(http.StatusOK, dto.SurveyEligibilityResponse{
+			Eligible:           false,
+			Reason:             string(reason),
+			SubmittedPeriod:    healthcheck.FormatPeriodForDisplay(assessmentPeriod),
+			NextEligiblePeriod: healthcheck.NextEligiblePeriod(submittedPeriods),
+		})
+	default: // future_period, past_period, or an unrecognized format
+		c.JSON(http.StatusOK, dto.SurveyEligibilityResponse{
+			Eligible: false,
+			Reason:   string(reason),
+		})
 	}
-
-	c.JSON(http.StatusOK, dto.SurveyEligibilityResponse{Eligible: true})
-}
-
-// parseFlexibleDate parses a date in RFC3339 (frontend submission timestamps) or plain
-// "YYYY-MM-DD" (Postgres DATE columns) form.
-func parseFlexibleDate(date string) (time.Time, bool) {
-	if t, err := time.Parse(time.RFC3339, date); err == nil {
-		return t, true
-	}
-	if t, err := time.Parse("2006-01-02", date); err == nil {
-		return t, true
-	}
-	return time.Time{}, false
 }
 
 // GetAssessmentPeriods handles GET /api/v1/assessment-periods
@@ -557,7 +555,11 @@ func validateAssessmentPeriod(period string) error {
 		return nil
 	}
 
-	// Try half-yearly format: "YYYY H1"
+	// Try half-yearly format: "YYYY H1". The Individual and Post-Workshop surveys only ever
+	// submit this format, and only for a currently open period -- see
+	// healthcheck.CheckPeriodEligibility for the authoritative, persisted-record-aware check
+	// this mirrors at the format-validation layer (a cheap, DB-free rejection of an obviously
+	// out-of-range period before the command handler even runs).
 	if m := halfYearlyPeriodRegex.FindStringSubmatch(period); m != nil {
 		year, _ := strconv.Atoi(m[1])
 		half, _ := strconv.Atoi(m[2])
@@ -567,6 +569,9 @@ func validateAssessmentPeriod(period string) error {
 		}
 		if year > currentYear || (year == currentYear && half > currentHalf) {
 			return fmt.Errorf("invalid assessment period: future assessment periods are not allowed")
+		}
+		if year < currentYear {
+			return fmt.Errorf("invalid assessment period: previous-year assessment periods are not allowed")
 		}
 		return nil
 	}

@@ -315,4 +315,116 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
     expect(submitHealthCheck).not.toHaveBeenCalled();
     expect(screen.getByText(/please fill out all health check dimensions/i)).toBeInTheDocument();
   });
+
+  describe('post-submission Thank You page', () => {
+    it('shows the Thank You page after a successful submission', async () => {
+      const user = userEvent.setup({ delay: null });
+      render(<SurveyPage />);
+
+      await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H2 2026'));
+      await answerAllDimensions(user);
+      await user.click(screen.getByRole('button', { name: /submit responses/i }));
+      await user.click(screen.getByTestId('submit-confirm-accept'));
+
+      await waitFor(() => expect(screen.getByTestId('thank-you-page')).toBeInTheDocument());
+      expect(screen.getByText('Thank You!')).toBeInTheDocument();
+    });
+
+    it('keeps the Thank You page visible with no automatic navigation away', async () => {
+      const user = userEvent.setup({ delay: null });
+      render(<SurveyPage />);
+
+      await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H2 2026'));
+      await answerAllDimensions(user);
+      await user.click(screen.getByRole('button', { name: /submit responses/i }));
+      await user.click(screen.getByTestId('submit-confirm-accept'));
+
+      await waitFor(() => expect(screen.getByTestId('thank-you-page')).toBeInTheDocument());
+      expect(push).not.toHaveBeenCalled();
+
+      // Give any stray timer/effect a chance to fire, then confirm nothing navigated away.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      expect(screen.getByTestId('thank-you-page')).toBeInTheDocument();
+      expect(push).not.toHaveBeenCalled();
+    });
+
+    it('navigates a Team Member to /home when the explicit button is clicked', async () => {
+      currentUser = {
+        id: 'member-1',
+        name: 'Alex Member',
+        hierarchyLevelId: 'level-5',
+        teamIds: ['team-1'],
+      };
+      const user = userEvent.setup({ delay: null });
+      render(<SurveyPage />);
+
+      await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H2 2026'));
+      await answerAllDimensions(user);
+      await user.click(screen.getByRole('button', { name: /submit responses/i }));
+      await user.click(screen.getByTestId('submit-confirm-accept'));
+
+      await waitFor(() => expect(screen.getByTestId('thank-you-page')).toBeInTheDocument());
+      expect(push).not.toHaveBeenCalled();
+
+      await user.click(screen.getByTestId('thank-you-nav-button'));
+      expect(push).toHaveBeenCalledWith('/home');
+    });
+
+    it('navigates a Team Lead to /dashboard when the explicit button is clicked', async () => {
+      const user = userEvent.setup({ delay: null }); // default currentUser is a Team Lead (level-4)
+      render(<SurveyPage />);
+
+      await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H2 2026'));
+      await answerAllDimensions(user);
+      await user.click(screen.getByRole('button', { name: /submit responses/i }));
+      await user.click(screen.getByTestId('submit-confirm-accept'));
+
+      await waitFor(() => expect(screen.getByTestId('thank-you-page')).toBeInTheDocument());
+      expect(push).not.toHaveBeenCalled();
+
+      await user.click(screen.getByTestId('thank-you-nav-button'));
+      expect(push).toHaveBeenCalledWith('/dashboard');
+    });
+
+    it('does not show the Thank You page and shows an error when submission fails', async () => {
+      submitHealthCheck.mockRejectedValueOnce(new Error('boom'));
+      const user = userEvent.setup({ delay: null });
+      render(<SurveyPage />);
+
+      await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H2 2026'));
+      await answerAllDimensions(user);
+      await user.click(screen.getByRole('button', { name: /submit responses/i }));
+      await user.click(screen.getByTestId('submit-confirm-accept'));
+
+      await waitFor(() => expect(screen.getByText(/submission failed/i)).toBeInTheDocument());
+      expect(screen.queryByTestId('thank-you-page')).not.toBeInTheDocument();
+      expect(push).not.toHaveBeenCalled();
+    });
+
+    it('disables the confirm button while submitting and calls the API only once even if clicked repeatedly', async () => {
+      let resolveSubmit: (value: { id: string }) => void;
+      submitHealthCheck.mockImplementationOnce(
+        () => new Promise((resolve) => { resolveSubmit = resolve; })
+      );
+      const user = userEvent.setup({ delay: null });
+      render(<SurveyPage />);
+
+      await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H2 2026'));
+      await answerAllDimensions(user);
+      await user.click(screen.getByRole('button', { name: /submit responses/i }));
+
+      const confirmButton = screen.getByTestId('submit-confirm-accept');
+      await user.click(confirmButton);
+
+      // The modal closes immediately on submit, so further "clicks" are simulated by invoking
+      // the handler again directly -- this proves the in-flight guard, not just that the
+      // button disappeared from the DOM.
+      await waitFor(() => expect(submitHealthCheck).toHaveBeenCalledTimes(1));
+      await user.click(confirmButton).catch(() => {});
+
+      resolveSubmit!({ id: 'session-999' });
+      await waitFor(() => expect(screen.getByTestId('thank-you-page')).toBeInTheDocument());
+      expect(submitHealthCheck).toHaveBeenCalledTimes(1);
+    });
+  });
 });

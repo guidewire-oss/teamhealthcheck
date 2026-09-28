@@ -6,7 +6,7 @@ import { getCurrentUser, logout, authenticatedFetch } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { API_BASE_URL } from '@/lib/api/client';
 import { getOrgConfig, getHierarchyLevel } from '@/lib/org-config';
-import { getAssessmentPeriod, getSelectablePeriods, toCadence, formatPeriodLabel, formatEligibleDate } from '@/lib/assessment-period';
+import { getAssessmentPeriod, getSelectablePeriods, toCadence, formatPeriodLabel, formatMonthYear } from '@/lib/assessment-period';
 import { LogOut, Building2, ChevronDown, ClipboardList, TrendingUp, Calendar, Clock, CalendarClock, X, AlertCircle } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts';
 import { getTeamInfoCached, TeamInfo } from '@/lib/api/teams';
@@ -25,9 +25,6 @@ function getNextSurveyDate(lastSurveyDate: string, cadence: string): Date {
       break;
     case 'monthly':
       next.setMonth(last.getMonth() + 1);
-      break;
-    case 'quarterly':
-      next.setMonth(last.getMonth() + 3);
       break;
     case 'half-yearly':
       next.setMonth(last.getMonth() + 6);
@@ -53,7 +50,7 @@ function formatRelativeDate(date: Date): string {
   if (diffDays === 0) return 'Today';
   if (diffDays === 1) return 'Tomorrow';
   if (diffDays <= 7) return `In ${diffDays} days`;
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  return formatMonthYear(date);
 }
 
 interface SurveyHistoryEntry {
@@ -101,7 +98,7 @@ export default function MemberHomePage() {
   // renders an info modal instead of opening the survey.
   const [blockedInfo, setBlockedInfo] = useState<{
     submittedPeriod: string;
-    nextEligibleDate: string;
+    nextEligiblePeriod: string;
   } | null>(null);
 
   useEffect(() => {
@@ -230,7 +227,7 @@ export default function MemberHomePage() {
         setShowSurveyModal(false);
         setBlockedInfo({
           submittedPeriod: result.submittedPeriod || assessmentPeriod,
-          nextEligibleDate: result.nextEligibleDate || '',
+          nextEligiblePeriod: result.nextEligiblePeriod || '',
         });
         return;
       }
@@ -402,7 +399,7 @@ export default function MemberHomePage() {
                 {latestSurvey ? (
                   <>
                     <p className="text-lg font-semibold text-gray-900">
-                      {new Date(latestSurvey.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                      {formatMonthYear(latestSurvey.date)}
                     </p>
                     <p className="text-xs text-gray-400 mt-0.5">{formatPeriodLabel(latestSurvey.assessmentPeriod)}</p>
                   </>
@@ -424,7 +421,7 @@ export default function MemberHomePage() {
                     return (
                       <>
                         <p className={`text-lg font-semibold ${isOverdue ? 'text-red-600' : 'text-gray-900'}`}>
-                          {nextDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                          {formatMonthYear(nextDate)}
                         </p>
                         <p className={`text-xs mt-0.5 ${isOverdue ? 'text-red-400' : 'text-gray-400'}`}>
                           {formatRelativeDate(nextDate)} · {team.cadence.charAt(0).toUpperCase() + team.cadence.slice(1)} cadence
@@ -543,7 +540,7 @@ export default function MemberHomePage() {
                         <tr key={entry.sessionId} data-testid="history-entry" className="border-b border-gray-100 last:border-0">
                           <td className="py-3 text-sm text-gray-900">{formatPeriodLabel(entry.assessmentPeriod)}</td>
                           <td className="py-3 text-sm text-gray-600">{entry.teamName}</td>
-                          <td className="py-3 text-sm text-gray-600">{new Date(entry.date).toLocaleDateString()}</td>
+                          <td className="py-3 text-sm text-gray-600">{formatMonthYear(entry.date)}</td>
                           <td className="py-3">
                             <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                               entry.completed ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
@@ -679,8 +676,8 @@ export default function MemberHomePage() {
                 for <span className="font-semibold">{blockedInfo.submittedPeriod}</span>.
               </p>
               <p className="text-base text-gray-700 leading-relaxed mb-8">
-                Your next submission will be available on{' '}
-                <span className="font-semibold">{formatEligibleDate(blockedInfo.nextEligibleDate)}</span>.
+                Your next survey is scheduled for{' '}
+                <span className="font-semibold">{blockedInfo.nextEligiblePeriod}</span>.
               </p>
             </div>
             <div className="flex justify-end">

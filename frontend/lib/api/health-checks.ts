@@ -147,10 +147,10 @@ export async function getTeamSubmissionStatus(
 export interface SurveyEligibility {
   eligible: boolean;
   // Populated when eligible is false: the user-facing H1/H2 label of the blocking
-  // submission's period, and the ISO "YYYY-MM-DD" date it becomes eligible again -- exactly
-  // six calendar months after that submission's actual date.
+  // submission's period, and the H1/H2 label the caller becomes eligible in. Never a
+  // day-level date -- the survey experience is based on month/year (period) values only.
   submittedPeriod?: string;
-  nextEligibleDate?: string;
+  nextEligiblePeriod?: string;
 }
 
 /**
@@ -164,7 +164,7 @@ export interface SurveyEligibility {
  * @param params.teamId Required when surveyType is 'post_workshop'
  * @param params.userId Required when surveyType is 'individual'
  * @returns Eligibility result; when ineligible, includes the already-submitted period and
- *          the next eligible date
+ *          the next eligible H1/H2 period
  */
 export async function checkSurveyEligibility(params: {
   surveyType: 'individual' | 'post_workshop';

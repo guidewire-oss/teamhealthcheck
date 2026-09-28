@@ -6,6 +6,7 @@ import { AlertCircle, Calendar, Users, TrendingUp, TrendingDown, Minus } from 'l
 import { authenticatedFetch } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { API_BASE_URL } from '@/lib/api/client';
+import { formatMonthYear } from '@/lib/assessment-period';
 
 // Types matching backend API response
 interface DimensionScore {
@@ -267,8 +268,8 @@ export default function TeamResultsPage() {
                         Session: <span className="text-indigo-600">{session.sessionId}</span>
                       </h3>
                       <p className="text-sm text-gray-600">
-                        Submitted by: {session.userName} on{' '}
-                        {new Date(session.submittedAt).toLocaleDateString()}
+                        Submitted by: {session.userName} in{' '}
+                        {formatMonthYear(session.submittedAt)}
                       </p>
                     </div>
                   </div>

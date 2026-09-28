@@ -497,7 +497,7 @@ var _ = Describe("Health Check API", func() {
 		})
 	})
 
-	Describe("POST /api/v1/health-checks - six-month submission cooldown", func() {
+	Describe("POST /api/v1/health-checks - one submission per (scope, survey type, year, half-year)", func() {
 		submitPayload := func(payload map[string]interface{}) *httptest.ResponseRecorder {
 			body, _ := json.Marshal(payload)
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/health-checks", bytes.NewBuffer(body))
@@ -508,111 +508,94 @@ var _ = Describe("Health Check API", func() {
 			return w
 		}
 
-		individualSubmission := func(userID, teamID string, date time.Time) map[string]interface{} {
-			return individualSubmissionPayload(userID, teamID, date)
+		individualSubmission := func(userID, teamID, period string) map[string]interface{} {
+			return individualSubmissionPayload(userID, teamID, period)
 		}
 
-		postWorkshopSubmission := func(userID, teamID string, date time.Time) map[string]interface{} {
-			s := individualSubmission(userID, teamID, date)
+		postWorkshopSubmission := func(userID, teamID, period string) map[string]interface{} {
+			s := individualSubmission(userID, teamID, period)
 			s["surveyType"] = "post_workshop"
 			return s
 		}
 
 		Context("individual survey", func() {
-			It("rejects a second submission by the same user within the same half-year with 409 Conflict", func() {
-				first := stillWithinSameHalfYearAs(time.Now())
-				w1 := submitPayload(individualSubmission("dup-user-1", "team1", first))
+			It("rejects a second submission by the same user for the same period with 409 Conflict", func() {
+				period := currentPeriod()
+				w1 := submitPayload(individualSubmission("dup-user-1", "team1", period))
 				Expect(w1.Code).To(Equal(http.StatusCreated))
 
-				w2 := submitPayload(individualSubmission("dup-user-1", "team1", time.Now()))
+				w2 := submitPayload(individualSubmission("dup-user-1", "team1", period))
 				Expect(w2.Code).To(Equal(http.StatusConflict))
 
 				var response map[string]interface{}
 				Expect(json.Unmarshal(w2.Body.Bytes(), &response)).To(Succeed())
-				Expect(response["submittedPeriod"]).To(Equal(halfYearPeriodFor(first)))
-				Expect(response["nextEligibleDate"]).To(Equal(healthcheck.NextEligibleDate(first).Format("2006-01-02")))
+				Expect(response["submittedPeriod"]).To(Equal(healthcheck.FormatPeriodForDisplay(period)))
+				Expect(response["nextEligiblePeriod"]).To(Equal(healthcheck.NextEligiblePeriod([]string{period})))
 				Expect(response["message"]).To(ContainSubstring("Individual Survey"))
 				Expect(response["message"]).NotTo(MatchRegexp(`Q[1-4]`))
 			})
 
-			It("allows a second submission by a different user within the same window", func() {
-				first := stillWithinSameHalfYearAs(time.Now())
-				w1 := submitPayload(individualSubmission("dup-user-2", "team1", first))
+			It("allows a second submission by a different user for the same period", func() {
+				period := currentPeriod()
+				w1 := submitPayload(individualSubmission("dup-user-2", "team1", period))
 				Expect(w1.Code).To(Equal(http.StatusCreated))
 
-				w2 := submitPayload(individualSubmission("dup-user-3", "team1", time.Now()))
+				w2 := submitPayload(individualSubmission("dup-user-3", "team1", period))
 				Expect(w2.Code).To(Equal(http.StatusCreated))
 			})
 
-			It("allows the same user to submit again once the calendar has moved into a new half-year", func() {
-				first := inThePreviousHalfYearRelativeTo(time.Now())
-				w1 := submitPayload(individualSubmission("dup-user-6", "team1", first))
-				Expect(w1.Code).To(Equal(http.StatusCreated))
-
-				w2 := submitPayload(individualSubmission("dup-user-6", "team1", time.Now()))
-				Expect(w2.Code).To(Equal(http.StatusCreated))
+			It("rejects a submission for a future period with 400 Bad Request", func() {
+				w := submitPayload(individualSubmission("dup-user-future", "team1", futurePeriodRelativeToNow()))
+				Expect(w.Code).To(Equal(http.StatusBadRequest))
 			})
 
-			It("allows the same user to submit again once six months have elapsed", func() {
-				first := time.Now().AddDate(0, -7, 0) // seven months ago -- cooldown has elapsed
-				w1 := submitPayload(individualSubmission("dup-user-4", "team1", first))
-				Expect(w1.Code).To(Equal(http.StatusCreated))
-
-				w2 := submitPayload(individualSubmission("dup-user-4", "team1", time.Now()))
-				Expect(w2.Code).To(Equal(http.StatusCreated))
+			It("rejects a submission for a period from a previous year with 400 Bad Request", func() {
+				w := submitPayload(individualSubmission("dup-user-past", "team1", pastPeriodRelativeToNow()))
+				Expect(w.Code).To(Equal(http.StatusBadRequest))
 			})
 		})
 
 		Context("post-workshop survey", func() {
-			It("rejects a second submission for the same team within the same half-year with 409 Conflict, even from a different Team Lead", func() {
-				first := stillWithinSameHalfYearAs(time.Now())
-				w1 := submitPayload(postWorkshopSubmission("lead-1", "dup-team-1", first))
+			It("rejects a second submission for the same team and period with 409 Conflict, even from a different Team Lead", func() {
+				period := currentPeriod()
+				w1 := submitPayload(postWorkshopSubmission("lead-1", "dup-team-1", period))
 				Expect(w1.Code).To(Equal(http.StatusCreated))
 
-				w2 := submitPayload(postWorkshopSubmission("lead-2", "dup-team-1", time.Now()))
+				w2 := submitPayload(postWorkshopSubmission("lead-2", "dup-team-1", period))
 				Expect(w2.Code).To(Equal(http.StatusConflict))
 
 				var response map[string]interface{}
 				Expect(json.Unmarshal(w2.Body.Bytes(), &response)).To(Succeed())
-				Expect(response["submittedPeriod"]).To(Equal(halfYearPeriodFor(first)))
+				Expect(response["submittedPeriod"]).To(Equal(healthcheck.FormatPeriodForDisplay(period)))
 				Expect(response["message"]).To(ContainSubstring("Post-Workshop Survey"))
 			})
 
-			It("allows a different team to submit within the same window", func() {
-				first := stillWithinSameHalfYearAs(time.Now())
-				w1 := submitPayload(postWorkshopSubmission("lead-1", "dup-team-2", first))
+			It("allows a different team to submit the same period", func() {
+				period := currentPeriod()
+				w1 := submitPayload(postWorkshopSubmission("lead-1", "dup-team-2", period))
 				Expect(w1.Code).To(Equal(http.StatusCreated))
 
-				w2 := submitPayload(postWorkshopSubmission("lead-1", "dup-team-3", time.Now()))
-				Expect(w2.Code).To(Equal(http.StatusCreated))
-			})
-
-			It("allows the same team to submit again once the calendar has moved into a new half-year", func() {
-				first := inThePreviousHalfYearRelativeTo(time.Now())
-				w1 := submitPayload(postWorkshopSubmission("lead-3", "dup-team-5", first))
-				Expect(w1.Code).To(Equal(http.StatusCreated))
-
-				w2 := submitPayload(postWorkshopSubmission("lead-4", "dup-team-5", time.Now()))
+				w2 := submitPayload(postWorkshopSubmission("lead-1", "dup-team-3", period))
 				Expect(w2.Code).To(Equal(http.StatusCreated))
 			})
 		})
 
 		Context("separation between survey types", func() {
-			It("does not let a post-workshop submission block an individual submission for the same user/team/window, or vice versa", func() {
-				now := time.Now()
-				w1 := submitPayload(individualSubmission("dup-user-5", "dup-team-4", now))
+			It("does not let a post-workshop submission block an individual submission for the same user/team/period, or vice versa", func() {
+				period := currentPeriod()
+				w1 := submitPayload(individualSubmission("dup-user-5", "dup-team-4", period))
 				Expect(w1.Code).To(Equal(http.StatusCreated))
 
-				w2 := submitPayload(postWorkshopSubmission("dup-user-5", "dup-team-4", now))
+				w2 := submitPayload(postWorkshopSubmission("dup-user-5", "dup-team-4", period))
 				Expect(w2.Code).To(Equal(http.StatusCreated))
 			})
 		})
 
 		Context("concurrent submission attempts", func() {
-			It("allows exactly one of several concurrent submissions for the same user to succeed", func() {
+			It("allows exactly one of several concurrent submissions for the same user and period to succeed", func() {
 				const attempts = 5
 				codes := make(chan int, attempts)
-				now := time.Now()
+				period := currentPeriod()
 
 				var wg sync.WaitGroup
 				for i := 0; i < attempts; i++ {
@@ -620,7 +603,7 @@ var _ = Describe("Health Check API", func() {
 					go func() {
 						defer GinkgoRecover()
 						defer wg.Done()
-						w := submitPayload(individualSubmission("dup-user-concurrent", "team1", now))
+						w := submitPayload(individualSubmission("dup-user-concurrent", "team1", period))
 						codes <- w.Code
 					}()
 				}
@@ -637,7 +620,7 @@ var _ = Describe("Health Check API", func() {
 					}
 				}
 				Expect(created).To(Equal(1), "exactly one concurrent submission should be accepted")
-				Expect(conflict).To(Equal(attempts-1), "every other concurrent submission should be rejected as within the cooldown")
+				Expect(conflict).To(Equal(attempts-1), "every other concurrent submission for the same period should be rejected as a duplicate")
 			})
 		})
 	})
@@ -646,7 +629,7 @@ var _ = Describe("Health Check API", func() {
 		Context("individual survey", func() {
 			It("reports eligible when no prior submission exists", func() {
 				req := httptest.NewRequest(http.MethodGet,
-					"/api/v1/health-checks/eligibility?surveyType=individual&userId=elig-user-1&assessmentPeriod="+url.QueryEscape(halfYearPeriodFor(time.Now())), nil)
+					"/api/v1/health-checks/eligibility?surveyType=individual&userId=elig-user-1&assessmentPeriod="+url.QueryEscape(currentPeriod()), nil)
 				req.Header.Set("Authorization", "Bearer "+userToken)
 				w := httptest.NewRecorder()
 				router.ServeHTTP(w, req)
@@ -657,9 +640,9 @@ var _ = Describe("Health Check API", func() {
 				Expect(response["eligible"]).To(BeTrue())
 			})
 
-			It("reports ineligible with the submitted period and next-eligible date after a submission within the same half-year", func() {
-				submittedAt := stillWithinSameHalfYearAs(time.Now())
-				body, _ := json.Marshal(individualSubmissionPayload("elig-user-2", "team1", submittedAt))
+			It("reports ineligible as a duplicate, with the submitted period and next-eligible period, after a submission for that period", func() {
+				period := currentPeriod()
+				body, _ := json.Marshal(individualSubmissionPayload("elig-user-2", "team1", period))
 				req := httptest.NewRequest(http.MethodPost, "/api/v1/health-checks", bytes.NewBuffer(body))
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("Authorization", "Bearer "+userToken)
@@ -668,7 +651,7 @@ var _ = Describe("Health Check API", func() {
 				Expect(w.Code).To(Equal(http.StatusCreated))
 
 				req2 := httptest.NewRequest(http.MethodGet,
-					"/api/v1/health-checks/eligibility?surveyType=individual&userId=elig-user-2&assessmentPeriod="+url.QueryEscape(halfYearPeriodFor(time.Now())), nil)
+					"/api/v1/health-checks/eligibility?surveyType=individual&userId=elig-user-2&assessmentPeriod="+url.QueryEscape(period), nil)
 				req2.Header.Set("Authorization", "Bearer "+userToken)
 				w2 := httptest.NewRecorder()
 				router.ServeHTTP(w2, req2)
@@ -677,30 +660,37 @@ var _ = Describe("Health Check API", func() {
 				var response map[string]interface{}
 				Expect(json.Unmarshal(w2.Body.Bytes(), &response)).To(Succeed())
 				Expect(response["eligible"]).To(BeFalse())
-				Expect(response["submittedPeriod"]).To(Equal(halfYearPeriodFor(submittedAt)))
-				Expect(response["nextEligibleDate"]).To(Equal(healthcheck.NextEligibleDate(submittedAt).Format("2006-01-02")))
+				Expect(response["reason"]).To(Equal("duplicate"))
+				Expect(response["submittedPeriod"]).To(Equal(healthcheck.FormatPeriodForDisplay(period)))
+				Expect(response["nextEligiblePeriod"]).To(Equal(healthcheck.NextEligiblePeriod([]string{period})))
 			})
 
-			It("reports eligible again once the calendar has moved into a new half-year since the prior submission", func() {
-				submittedAt := inThePreviousHalfYearRelativeTo(time.Now())
-				body, _ := json.Marshal(individualSubmissionPayload("elig-user-5", "team1", submittedAt))
-				req := httptest.NewRequest(http.MethodPost, "/api/v1/health-checks", bytes.NewBuffer(body))
-				req.Header.Set("Content-Type", "application/json")
+			It("reports ineligible as a future period without touching persisted records", func() {
+				req := httptest.NewRequest(http.MethodGet,
+					"/api/v1/health-checks/eligibility?surveyType=individual&userId=elig-user-future&assessmentPeriod="+url.QueryEscape(futurePeriodRelativeToNow()), nil)
 				req.Header.Set("Authorization", "Bearer "+userToken)
 				w := httptest.NewRecorder()
 				router.ServeHTTP(w, req)
-				Expect(w.Code).To(Equal(http.StatusCreated))
 
-				req2 := httptest.NewRequest(http.MethodGet,
-					"/api/v1/health-checks/eligibility?surveyType=individual&userId=elig-user-5&assessmentPeriod="+url.QueryEscape(halfYearPeriodFor(time.Now())), nil)
-				req2.Header.Set("Authorization", "Bearer "+userToken)
-				w2 := httptest.NewRecorder()
-				router.ServeHTTP(w2, req2)
-
-				Expect(w2.Code).To(Equal(http.StatusOK))
+				Expect(w.Code).To(Equal(http.StatusOK))
 				var response map[string]interface{}
-				Expect(json.Unmarshal(w2.Body.Bytes(), &response)).To(Succeed())
-				Expect(response["eligible"]).To(BeTrue())
+				Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+				Expect(response["eligible"]).To(BeFalse())
+				Expect(response["reason"]).To(Equal("future_period"))
+			})
+
+			It("reports ineligible as a past period for a period from a previous year", func() {
+				req := httptest.NewRequest(http.MethodGet,
+					"/api/v1/health-checks/eligibility?surveyType=individual&userId=elig-user-past&assessmentPeriod="+url.QueryEscape(pastPeriodRelativeToNow()), nil)
+				req.Header.Set("Authorization", "Bearer "+userToken)
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+
+				Expect(w.Code).To(Equal(http.StatusOK))
+				var response map[string]interface{}
+				Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+				Expect(response["eligible"]).To(BeFalse())
+				Expect(response["reason"]).To(Equal("past_period"))
 			})
 		})
 
@@ -716,7 +706,7 @@ var _ = Describe("Health Check API", func() {
 
 			It("returns 400 when teamId is missing for a post_workshop check", func() {
 				req := httptest.NewRequest(http.MethodGet,
-					"/api/v1/health-checks/eligibility?surveyType=post_workshop&assessmentPeriod="+url.QueryEscape(halfYearPeriodFor(time.Now())), nil)
+					"/api/v1/health-checks/eligibility?surveyType=post_workshop&assessmentPeriod="+url.QueryEscape(currentPeriod()), nil)
 				req.Header.Set("Authorization", "Bearer "+userToken)
 				w := httptest.NewRecorder()
 				router.ServeHTTP(w, req)
@@ -725,7 +715,7 @@ var _ = Describe("Health Check API", func() {
 
 			It("returns 400 when userId is missing for an individual check", func() {
 				req := httptest.NewRequest(http.MethodGet,
-					"/api/v1/health-checks/eligibility?surveyType=individual&assessmentPeriod="+url.QueryEscape(halfYearPeriodFor(time.Now())), nil)
+					"/api/v1/health-checks/eligibility?surveyType=individual&assessmentPeriod="+url.QueryEscape(currentPeriod()), nil)
 				req.Header.Set("Authorization", "Bearer "+userToken)
 				w := httptest.NewRecorder()
 				router.ServeHTTP(w, req)
@@ -735,50 +725,38 @@ var _ = Describe("Health Check API", func() {
 	})
 })
 
-// halfYearPeriodFor renders t as an assessment-period string in the half-year format
-// ("YYYY H1" / "YYYY H2"), dynamically derived from t's actual year -- never hardcoded --
-// so payloads built from relative dates (e.g. "N months ago") always produce a valid,
-// never-in-the-future assessment period.
-func halfYearPeriodFor(t time.Time) string {
-	half := 1
-	if t.Month() >= time.July {
-		half = 2
+// currentPeriod returns the assessment-period string (storage format "YYYY H1"/"YYYY H2")
+// for the half-year "now" actually falls in, so tests never hardcode a period that could
+// become stale or future depending on which real-world day the suite runs.
+func currentPeriod() string {
+	half, year := healthcheck.HalfYearOf(time.Now())
+	return fmt.Sprintf("%d H%d", year, half)
+}
+
+// futurePeriodRelativeToNow returns a period that is always in the future relative to now,
+// regardless of which half "now" currently falls in: H2 of the same year during H1, or H1 of
+// the following year during H2.
+func futurePeriodRelativeToNow() string {
+	half, year := healthcheck.HalfYearOf(time.Now())
+	if half == 1 {
+		return fmt.Sprintf("%d H2", year)
 	}
-	return fmt.Sprintf("%d H%d", t.Year(), half)
+	return fmt.Sprintf("%d H1", year+1)
 }
 
-// startOfCurrentHalfYear returns midnight on the first day of reference's calendar
-// half-year (January 1 for H1, July 1 for H2), dynamically derived -- never hardcoded.
-func startOfCurrentHalfYear(reference time.Time) time.Time {
-	half, year := healthcheck.HalfYearOf(reference)
-	month := time.January
-	if half == 2 {
-		month = time.July
-	}
-	return time.Date(year, month, 1, 0, 0, 0, 0, reference.Location())
+// pastPeriodRelativeToNow returns a period from an earlier year than now, which is never open
+// for a new submission even though it was never itself submitted.
+func pastPeriodRelativeToNow() string {
+	_, year := healthcheck.HalfYearOf(time.Now())
+	return fmt.Sprintf("%d H2", year-1)
 }
 
-// stillWithinSameHalfYearAs returns a date guaranteed to fall in the same calendar
-// half-year as reference (the start of that half-year), so "still blocked" test cases never
-// flake depending on which real-world day the suite happens to run.
-func stillWithinSameHalfYearAs(reference time.Time) time.Time {
-	return startOfCurrentHalfYear(reference)
-}
-
-// inThePreviousHalfYearRelativeTo returns a date guaranteed to fall in the calendar
-// half-year immediately before reference's (the last day of that prior half-year), so
-// "eligible because the half-year boundary was crossed" test cases never flake depending on
-// which real-world day the suite happens to run.
-func inThePreviousHalfYearRelativeTo(reference time.Time) time.Time {
-	return startOfCurrentHalfYear(reference).AddDate(0, 0, -1)
-}
-
-func individualSubmissionPayload(userID, teamID string, date time.Time) map[string]interface{} {
+func individualSubmissionPayload(userID, teamID, assessmentPeriod string) map[string]interface{} {
 	return map[string]interface{}{
 		"teamId":           teamID,
 		"userId":           userID,
-		"date":             date.Format(time.RFC3339),
-		"assessmentPeriod": halfYearPeriodFor(date),
+		"date":             time.Now().Format(time.RFC3339),
+		"assessmentPeriod": assessmentPeriod,
 		"surveyType":       "individual",
 		"responses": []map[string]interface{}{
 			{"dimensionId": "mission", "score": 3, "trend": "improving"},

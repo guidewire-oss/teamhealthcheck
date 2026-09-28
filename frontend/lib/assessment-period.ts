@@ -177,15 +177,15 @@ export function formatPeriodLabel(period: string): string {
 }
 
 /**
- * Render an ISO "YYYY-MM-DD" next-eligible-submission date (as returned by the
- * submission-cooldown eligibility check) as a user-facing date, e.g. "Jul 15, 2026".
- * Returns the input unchanged if it isn't a valid date.
+ * Render a date as a user-facing month + year value, e.g. "March 2026". The survey
+ * experience never displays day-, hour-, minute-, second-, or timezone-level precision --
+ * eligibility, duplicate checks, and history/last-updated displays are all based on the
+ * calendar month and year alone. Returns the input unchanged if it isn't a valid date.
  */
-export function formatEligibleDate(isoDate: string): string {
-  if (!isoDate) return isoDate;
-  const d = new Date(isoDate);
-  if (Number.isNaN(d.getTime())) return isoDate;
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+export function formatMonthYear(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  if (Number.isNaN(d.getTime())) return typeof date === 'string' ? date : '';
+  return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' });
 }
 
 /**

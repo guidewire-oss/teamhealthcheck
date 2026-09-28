@@ -4,36 +4,45 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/healthcheck"
 )
 
 // fakeHealthCheckRepository is an in-memory healthcheck.Repository used to unit test the
-// submit command's six-month submission cooldown pre-check without a live Postgres
-// database. Save() mirrors the database's exclusion-constraint behavior (see the "six month
-// submission cooldown" migration): a second completed save for the same scope within six
-// months of that scope's most recent completed submission fails.
+// submit command's period-eligibility pre-check without a live Postgres database. Save()
+// mirrors the database's unique-index behavior (see the "period submission uniqueness"
+// migration): a second completed save for the same scope, survey type, and exact assessment
+// period fails.
 type fakeHealthCheckRepository struct {
 	sessions []*healthcheck.HealthCheckSession
 }
 
+func scopeMatches(session *healthcheck.HealthCheckSession, surveyType, teamID, userID string) bool {
+	if session.SurveyType != surveyType {
+		return false
+	}
+	if surveyType == healthcheck.SurveyTypePostWorkshop {
+		return session.TeamID == teamID
+	}
+	return session.UserID == userID
+}
+
 func (f *fakeHealthCheckRepository) Save(_ context.Context, session *healthcheck.HealthCheckSession) error {
 	if session.Completed {
-		if newDate, ok := parseSubmissionDate(session.Date); ok {
-			for _, existing := range f.sessions {
-				if !existing.Completed || existing.ID == session.ID || existing.SurveyType != session.SurveyType {
-					continue
-				}
-				sameScope := (session.SurveyType == healthcheck.SurveyTypePostWorkshop && existing.TeamID == session.TeamID) ||
-					(session.SurveyType != healthcheck.SurveyTypePostWorkshop && existing.UserID == session.UserID)
-				if !sameScope {
-					continue
-				}
-				existingDate, existingOK := parseSubmissionDate(existing.Date)
-				if existingOK && healthcheck.IsWithinCooldown(existingDate, newDate) {
-					return healthcheck.NewSubmissionCooldownError(session.SurveyType, existing.AssessmentPeriod, existingDate)
-				}
+		for _, existing := range f.sessions {
+			if !existing.Completed || existing.ID == session.ID {
+				continue
+			}
+			if !scopeMatches(existing, session.SurveyType, session.TeamID, session.UserID) {
+				continue
+			}
+			if existing.AssessmentPeriod == session.AssessmentPeriod {
+				submitted, _ := f.FindSubmittedPeriods(context.Background(), healthcheck.LatestSubmissionQuery{
+					SurveyType: session.SurveyType,
+					TeamID:     session.TeamID,
+					UserID:     session.UserID,
+				})
+				return healthcheck.NewSubmissionCooldownError(session.SurveyType, session.AssessmentPeriod, submitted)
 			}
 		}
 	}
@@ -41,30 +50,15 @@ func (f *fakeHealthCheckRepository) Save(_ context.Context, session *healthcheck
 	return nil
 }
 
-func (f *fakeHealthCheckRepository) FindLatestSubmission(_ context.Context, query healthcheck.LatestSubmissionQuery) (*healthcheck.HealthCheckSession, error) {
-	var latest *healthcheck.HealthCheckSession
-	var latestDate time.Time
+func (f *fakeHealthCheckRepository) FindSubmittedPeriods(_ context.Context, query healthcheck.LatestSubmissionQuery) ([]string, error) {
+	var periods []string
 	for _, existing := range f.sessions {
-		if !existing.Completed || existing.SurveyType != query.SurveyType {
+		if !existing.Completed || !scopeMatches(existing, query.SurveyType, query.TeamID, query.UserID) {
 			continue
 		}
-		if query.SurveyType == healthcheck.SurveyTypePostWorkshop {
-			if existing.TeamID != query.TeamID {
-				continue
-			}
-		} else if existing.UserID != query.UserID {
-			continue
-		}
-		d, ok := parseSubmissionDate(existing.Date)
-		if !ok {
-			continue
-		}
-		if latest == nil || d.After(latestDate) {
-			latest = existing
-			latestDate = d
-		}
+		periods = append(periods, existing.AssessmentPeriod)
 	}
-	return latest, nil
+	return periods, nil
 }
 
 func (f *fakeHealthCheckRepository) FindByID(context.Context, string) (*healthcheck.HealthCheckSession, error) {
@@ -93,6 +87,11 @@ func (f *fakeHealthCheckRepository) FindDistinctAssessmentPeriods(context.Contex
 	return nil, nil
 }
 
+// baseCommand builds a command dated "now" (mustNow) inside the given assessment period's
+// half-year, so eligibility checks (which are evaluated against the real current date) see a
+// consistent, currently-open period unless a test explicitly overrides AssessmentPeriod to
+// something stale or future. Tests that need a specific "now" pass it via nowOverride in
+// helpers below; baseCommand itself only sets the fields common to every case.
 func baseCommand(overrides func(*SubmitHealthCheckCommand)) SubmitHealthCheckCommand {
 	cmd := SubmitHealthCheckCommand{
 		TeamID:           "team-1",
@@ -111,7 +110,7 @@ func baseCommand(overrides func(*SubmitHealthCheckCommand)) SubmitHealthCheckCom
 	return cmd
 }
 
-func TestSubmitHealthCheck_BlocksSameDayDuplicateIndividualSubmission(t *testing.T) {
+func TestSubmitHealthCheck_BlocksH1DuplicateIndividualSubmission(t *testing.T) {
 	repo := &fakeHealthCheckRepository{}
 	handler := NewSubmitHealthCheckHandler(repo)
 
@@ -127,8 +126,37 @@ func TestSubmitHealthCheck_BlocksSameDayDuplicateIndividualSubmission(t *testing
 	if cooldownErr.LastSubmittedPeriod != "H1 2026" {
 		t.Errorf("unexpected LastSubmittedPeriod: %+v", cooldownErr)
 	}
-	if cooldownErr.NextEligible.Format("2006-01-02") != "2026-07-01" {
-		t.Errorf("unexpected NextEligible: %+v", cooldownErr)
+	if cooldownErr.NextEligiblePeriod != "H2 2026" {
+		t.Errorf("unexpected NextEligiblePeriod: %+v", cooldownErr)
+	}
+}
+
+func TestSubmitHealthCheck_BlocksH2DuplicateIndividualSubmission(t *testing.T) {
+	repo := &fakeHealthCheckRepository{}
+	handler := NewSubmitHealthCheckHandler(repo)
+
+	h2 := func(c *SubmitHealthCheckCommand) {
+		c.Date = "2026-11-15T10:00:00Z"
+		c.AssessmentPeriod = "2026 H2"
+	}
+
+	if _, err := handler.Handle(baseCommand(h2)); err != nil {
+		t.Fatalf("first H2 submission should succeed, got error: %v", err)
+	}
+
+	_, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
+		h2(c)
+		c.ID = "session-2"
+	}))
+	var cooldownErr *healthcheck.SubmissionCooldownError
+	if !errors.As(err, &cooldownErr) {
+		t.Fatalf("expected SubmissionCooldownError, got: %v", err)
+	}
+	if cooldownErr.LastSubmittedPeriod != "H2 2026" {
+		t.Errorf("unexpected LastSubmittedPeriod: %+v", cooldownErr)
+	}
+	if cooldownErr.NextEligiblePeriod != "H1 2027" {
+		t.Errorf("unexpected NextEligiblePeriod: %+v", cooldownErr)
 	}
 }
 
@@ -149,58 +177,122 @@ func TestSubmitHealthCheck_BlocksDuplicatePostWorkshopSubmission(t *testing.T) {
 	}))
 	var cooldownErr *healthcheck.SubmissionCooldownError
 	if !errors.As(err, &cooldownErr) {
-		t.Fatalf("expected SubmissionCooldownError for same team within six months, got: %v", err)
+		t.Fatalf("expected SubmissionCooldownError for the same team/period, got: %v", err)
 	}
 }
 
-// TestSubmitHealthCheck_EligibilityBoundary covers the combined eligibility rule: a
-// submission is blocked only while it is both (a) within the six-month cooldown AND (b)
-// still in the same calendar half-year as the last submission. Crossing into a new
-// half-year period always opens eligibility, even well short of six months.
-func TestSubmitHealthCheck_EligibilityBoundary(t *testing.T) {
-	cases := []struct {
-		name     string
-		from     string
-		to       string
-		eligible bool
-	}{
-		{"same day resubmission is blocked", "2026-01-15T10:00:00Z", "2026-01-15T23:00:00Z", false},
-		{"later the same half-year is blocked (duplicate-period prevention)", "2026-01-15T10:00:00Z", "2026-06-30T10:00:00Z", false},
-		{"the moment the next half-year starts is eligible", "2026-01-15T10:00:00Z", "2026-07-01T00:00:00Z", true},
-		{"exactly six months elapsed is eligible", "2026-01-15T10:00:00Z", "2026-07-15T10:00:00Z", true},
-		{"six months elapsed across a year boundary is eligible", "2026-09-01T00:00:00Z", "2027-03-01T00:00:00Z", true},
+// TestSubmitHealthCheck_H1ThenH2SameYear covers submitting H1, then later (while the
+// calendar has moved into H2) submitting H2 of the same year -- both must succeed as
+// distinct, independently tracked periods.
+func TestSubmitHealthCheck_H1ThenH2SameYear(t *testing.T) {
+	repo := &fakeHealthCheckRepository{}
+	handler := NewSubmitHealthCheckHandler(repo)
 
-		// Acceptance-criteria scenario: an H2 submission in November must not force a wait
-		// until the six-month mark in May -- H1 of the following year opens January 1.
-		{"a November H2 submission does not block the following January (H1)", "2026-11-15T00:00:00Z", "2027-01-01T00:00:00Z", true},
-		{"the day before the following January is still blocked (still H2)", "2026-11-15T00:00:00Z", "2026-12-31T00:00:00Z", false},
-		{"well under six months but crossing into H1 is eligible", "2025-11-20T00:00:00Z", "2026-05-19T00:00:00Z", true},
-		{"under six months and still the same half-year (H2) is blocked", "2025-11-20T00:00:00Z", "2025-12-31T00:00:00Z", false},
+	if _, err := handler.Handle(baseCommand(nil)); err != nil {
+		t.Fatalf("H1 submission should succeed, got error: %v", err)
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			repo := &fakeHealthCheckRepository{}
-			handler := NewSubmitHealthCheckHandler(repo)
+	_, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
+		c.ID = "session-2"
+		c.Date = "2026-11-15T10:00:00Z"
+		c.AssessmentPeriod = "2026 H2"
+	}))
+	if err != nil {
+		t.Errorf("H2 submission of the same year should succeed after H1, got error: %v", err)
+	}
+}
 
-			if _, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) { c.Date = tc.from })); err != nil {
-				t.Fatalf("first submission at %q should succeed, got error: %v", tc.from, err)
-			}
+// TestSubmitHealthCheck_H2WhileStillH1IsBlockedAsFuture covers the case where H1 was already
+// submitted and the caller then attempts H2 of the same year while the calendar has not yet
+// reached H2 -- this must be blocked as a future period, not treated as a duplicate.
+func TestSubmitHealthCheck_H2WhileStillH1IsBlockedAsFuture(t *testing.T) {
+	repo := &fakeHealthCheckRepository{}
+	handler := NewSubmitHealthCheckHandler(repo)
 
-			_, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
-				c.ID = "session-2"
-				c.Date = tc.to
-			}))
-			if tc.eligible && err != nil {
-				t.Errorf("expected submission at %s to be eligible after %s, got error: %v", tc.to, tc.from, err)
-			}
-			if !tc.eligible {
-				var cooldownErr *healthcheck.SubmissionCooldownError
-				if !errors.As(err, &cooldownErr) {
-					t.Fatalf("expected submission at %s to be blocked relative to %s, got: %v", tc.to, tc.from, err)
-				}
-			}
-		})
+	if _, err := handler.Handle(baseCommand(nil)); err != nil {
+		t.Fatalf("H1 submission should succeed, got error: %v", err)
+	}
+
+	_, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
+		c.ID = "session-2"
+		c.Date = "2026-03-01T10:00:00Z" // still H1 by calendar
+		c.AssessmentPeriod = "2026 H2"
+	}))
+	var notOpenErr *healthcheck.PeriodNotOpenError
+	if !errors.As(err, &notOpenErr) {
+		t.Fatalf("expected PeriodNotOpenError (future), got: %v", err)
+	}
+	if notOpenErr.Reason != healthcheck.PeriodReasonFuture {
+		t.Errorf("expected future_period reason, got: %v", notOpenErr.Reason)
+	}
+}
+
+// TestSubmitHealthCheck_CurrentH2AllowsUnsubmittedH1Catchup covers the case where the
+// calendar is currently in H2 and H1 of the same year was never submitted -- it must still
+// be allowed as a catch-up submission.
+func TestSubmitHealthCheck_CurrentH2AllowsUnsubmittedH1Catchup(t *testing.T) {
+	repo := &fakeHealthCheckRepository{}
+	handler := NewSubmitHealthCheckHandler(repo)
+
+	_, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
+		c.Date = "2026-11-15T10:00:00Z" // calendar is in H2
+		c.AssessmentPeriod = "2026 H1"  // catching up on a missed H1 submission
+	}))
+	if err != nil {
+		t.Errorf("an unsubmitted H1 catch-up during H2 should be allowed, got error: %v", err)
+	}
+}
+
+// TestSubmitHealthCheck_H2ThenNextYearH1BlockedUntilNewYear covers submitting H2, then
+// attempting H1 of the following year before the new year has actually begun -- blocked as
+// future; once the calendar reaches January, the same submission must succeed.
+func TestSubmitHealthCheck_H2ThenNextYearH1BlockedUntilNewYear(t *testing.T) {
+	repo := &fakeHealthCheckRepository{}
+	handler := NewSubmitHealthCheckHandler(repo)
+
+	if _, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
+		c.Date = "2026-11-15T10:00:00Z"
+		c.AssessmentPeriod = "2026 H2"
+	})); err != nil {
+		t.Fatalf("H2 submission should succeed, got error: %v", err)
+	}
+
+	_, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
+		c.ID = "session-2"
+		c.Date = "2026-12-31T10:00:00Z" // still 2026 -- the new year has not begun
+		c.AssessmentPeriod = "2027 H1"
+	}))
+	var notOpenErr *healthcheck.PeriodNotOpenError
+	if !errors.As(err, &notOpenErr) || notOpenErr.Reason != healthcheck.PeriodReasonFuture {
+		t.Fatalf("expected a future_period rejection before the new year begins, got: %v", err)
+	}
+
+	_, err = handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
+		c.ID = "session-3"
+		c.Date = "2027-01-01T00:00:00Z" // the new year has begun
+		c.AssessmentPeriod = "2027 H1"
+	}))
+	if err != nil {
+		t.Errorf("H1 of the following year should be allowed once the new year begins, got error: %v", err)
+	}
+}
+
+// TestSubmitHealthCheck_RejectsStalePreviousYearPeriod covers a candidate period from an
+// earlier year than the current one -- blocked as past, even though it was never submitted.
+func TestSubmitHealthCheck_RejectsStalePreviousYearPeriod(t *testing.T) {
+	repo := &fakeHealthCheckRepository{}
+	handler := NewSubmitHealthCheckHandler(repo)
+
+	_, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
+		c.Date = "2026-03-01T10:00:00Z"
+		c.AssessmentPeriod = "2025 H2"
+	}))
+	var notOpenErr *healthcheck.PeriodNotOpenError
+	if !errors.As(err, &notOpenErr) {
+		t.Fatalf("expected PeriodNotOpenError (past), got: %v", err)
+	}
+	if notOpenErr.Reason != healthcheck.PeriodReasonPast {
+		t.Errorf("expected past_period reason, got: %v", notOpenErr.Reason)
 	}
 }
 
@@ -229,7 +321,7 @@ func TestSubmitHealthCheck_SeparatesIndividualAndPostWorkshopRecords(t *testing.
 		t.Fatalf("individual submission should succeed, got error: %v", err)
 	}
 
-	// Same team, same user, same day -- but a different survey type -- must be allowed.
+	// Same team, same user, same period -- but a different survey type -- must be allowed.
 	_, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
 		c.ID = "session-2"
 		c.SurveyType = healthcheck.SurveyTypePostWorkshop
@@ -248,7 +340,7 @@ func TestSubmitHealthCheck_MatchesPostWorkshopByTeamNotUser(t *testing.T) {
 		t.Fatalf("first post-workshop submission should succeed, got error: %v", err)
 	}
 
-	// A different team on the same day must not be blocked.
+	// A different team for the same period must not be blocked.
 	_, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
 		postWorkshop(c)
 		c.ID = "session-2"
@@ -259,7 +351,7 @@ func TestSubmitHealthCheck_MatchesPostWorkshopByTeamNotUser(t *testing.T) {
 	}
 }
 
-func TestSubmitHealthCheck_IgnoresIncompleteDraftsForCooldownCheck(t *testing.T) {
+func TestSubmitHealthCheck_IgnoresIncompleteDraftsForDuplicateCheck(t *testing.T) {
 	repo := &fakeHealthCheckRepository{}
 	handler := NewSubmitHealthCheckHandler(repo)
 
@@ -274,55 +366,41 @@ func TestSubmitHealthCheck_IgnoresIncompleteDraftsForCooldownCheck(t *testing.T)
 	}
 }
 
-func TestSubmitHealthCheck_MissingOrInvalidDateSkipsCooldownCheck(t *testing.T) {
-	// A date that can't be parsed can't be compared against the cooldown window, so the
-	// six-month rule must not apply -- even for what would otherwise look like an exact
-	// same-day repeat of the same user/team/survey-type submission.
-	for _, date := range []string{"not-a-date", "2026/01/15"} {
-		t.Run("date="+date, func(t *testing.T) {
-			repo := &fakeHealthCheckRepository{}
-			handler := NewSubmitHealthCheckHandler(repo)
-
-			if _, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
-				c.Date = date
-			})); err != nil {
-				t.Fatalf("first submission with date %q should succeed, got: %v", date, err)
-			}
-
-			_, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
-				c.ID = "session-2"
-				c.Date = date
-			}))
-			if err != nil {
-				t.Errorf("submission with unparseable date %q should not fail the cooldown check, got: %v", date, err)
-			}
-		})
-	}
-}
-
-func TestSubmitHealthCheck_CooldownCheckUsesMostRecentSubmission(t *testing.T) {
+// TestSubmitHealthCheck_TeamMemberAndTeamLeadBothEnforced verifies the same eligibility rule
+// applies regardless of which role's user ID submits -- the backend has no separate code path
+// per role, only per survey type and scope.
+func TestSubmitHealthCheck_TeamMemberAndTeamLeadBothEnforced(t *testing.T) {
 	repo := &fakeHealthCheckRepository{}
 	handler := NewSubmitHealthCheckHandler(repo)
 
-	// User submits in January, then again in July (exactly six months later -- eligible).
-	if _, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) { c.Date = "2026-01-15T10:00:00Z" })); err != nil {
-		t.Fatalf("January submission should succeed, got error: %v", err)
+	teamMember := func(c *SubmitHealthCheckCommand) { c.UserID = "member-1" }
+	if _, err := handler.Handle(baseCommand(teamMember)); err != nil {
+		t.Fatalf("Team Member's Individual Survey submission should succeed, got error: %v", err)
 	}
-	if _, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
-		c.ID = "session-2"
-		c.Date = "2026-07-15T10:00:00Z"
-	})); err != nil {
-		t.Fatalf("July submission should succeed, got error: %v", err)
-	}
-
-	// The most recent submission is now July, so a September attempt (less than six months
-	// after July) must be blocked even though it is more than six months after January.
 	_, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
-		c.ID = "session-3"
-		c.Date = "2026-09-01T10:00:00Z"
+		teamMember(c)
+		c.ID = "session-2"
 	}))
 	var cooldownErr *healthcheck.SubmissionCooldownError
 	if !errors.As(err, &cooldownErr) {
-		t.Fatalf("expected September submission to be blocked by the most recent (July) submission, got: %v", err)
+		t.Fatalf("Team Member's duplicate Individual Survey submission should be blocked, got: %v", err)
+	}
+
+	teamLead := func(c *SubmitHealthCheckCommand) {
+		c.UserID = "lead-1"
+		c.SurveyType = healthcheck.SurveyTypePostWorkshop
+	}
+	if _, err := handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
+		teamLead(c)
+		c.ID = "session-3"
+	})); err != nil {
+		t.Fatalf("Team Lead's Post-Workshop Survey submission should succeed, got error: %v", err)
+	}
+	_, err = handler.Handle(baseCommand(func(c *SubmitHealthCheckCommand) {
+		teamLead(c)
+		c.ID = "session-4"
+	}))
+	if !errors.As(err, &cooldownErr) {
+		t.Fatalf("Team Lead's duplicate Post-Workshop Survey submission should be blocked, got: %v", err)
 	}
 }

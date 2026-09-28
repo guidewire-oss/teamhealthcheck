@@ -75,27 +75,37 @@ type HealthCheckSessionsResponse struct {
 
 // ErrorResponse represents an error response
 type ErrorResponse struct {
-	Error   string `json:"error"`
+	Error string `json:"error"`
+	// Message is a human-readable description; for a rejected submission it is exactly the
+	// message shown to the user (see healthcheck.SubmissionCooldownError.Error() /
+	// healthcheck.PeriodNotOpenError.Error()).
 	Message string `json:"message,omitempty"`
-	Code    string `json:"code,omitempty"`
-	// SubmittedPeriod and NextEligibleDate are populated for submission-cooldown (409)
-	// errors. SubmittedPeriod is a user-facing label, e.g. "H1 2026" -- always a half-year
-	// label, never a quarter. NextEligibleDate is an ISO "YYYY-MM-DD" date, exactly
-	// healthcheck.EligibilityCooldownMonths calendar months after the blocking submission,
-	// so the frontend can render both without re-parsing the error message.
-	SubmittedPeriod  string `json:"submittedPeriod,omitempty"`
-	NextEligibleDate string `json:"nextEligibleDate,omitempty"`
+	// Code is a machine-readable reason, one of healthcheck.PeriodEligibilityReason's values
+	// ("duplicate", "future_period", "past_period") when the rejection is period-related.
+	Code string `json:"code,omitempty"`
+	// SubmittedPeriod and NextEligiblePeriod are populated for a duplicate-submission (409)
+	// error. Both are user-facing H1/H2 labels, e.g. "H1 2026" -- never a quarter and never
+	// a day-level date. The survey experience never exposes exact submission or eligibility
+	// dates to the client, only the half-year period they fall in.
+	SubmittedPeriod    string `json:"submittedPeriod,omitempty"`
+	NextEligiblePeriod string `json:"nextEligiblePeriod,omitempty"`
 }
 
-// SurveyEligibilityResponse represents the result of a pre-submission cooldown check: the
-// caller's scope (user for Individual Survey, team for Post-Workshop Survey) is ineligible
-// if it has a completed submission of the same survey type within the last
-// healthcheck.EligibilityCooldownMonths calendar months.
+// SurveyEligibilityResponse represents the result of a pre-submission eligibility check: the
+// caller's scope (user for Individual Survey, team for Post-Workshop Survey) is ineligible to
+// submit the requested assessment period right now, either because it already has a
+// completed submission for that exact period ("duplicate"), or because the period is not
+// currently open ("future_period" / "past_period") -- see healthcheck.CheckPeriodEligibility.
 type SurveyEligibilityResponse struct {
 	Eligible bool `json:"eligible"`
-	// SubmittedPeriod is the user-facing H1/H2 label of the blocking submission's period,
-	// populated when Eligible is false.
+	// Reason is one of healthcheck.PeriodEligibilityReason's values, populated when Eligible
+	// is false.
+	Reason string `json:"reason,omitempty"`
+	// SubmittedPeriod is the user-facing H1/H2 label of the already-submitted period,
+	// populated only when Reason is "duplicate".
 	SubmittedPeriod string `json:"submittedPeriod,omitempty"`
-	// NextEligibleDate is an ISO "YYYY-MM-DD" date, populated when Eligible is false.
-	NextEligibleDate string `json:"nextEligibleDate,omitempty"`
+	// NextEligiblePeriod is the user-facing H1/H2 label (e.g. "H2 2026") the caller next
+	// becomes eligible for, populated only when Reason is "duplicate". Never a day-level
+	// date.
+	NextEligiblePeriod string `json:"nextEligiblePeriod,omitempty"`
 }

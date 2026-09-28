@@ -3,7 +3,6 @@ package healthcheck
 import (
 	"context"
 	"fmt"
-	"time"
 )
 
 // Survey type constants
@@ -53,8 +52,8 @@ type TeamSubmissionStatus struct {
 	PostWorkshopExists bool   `json:"postWorkshopExists"`
 }
 
-// LatestSubmissionQuery looks up the most recent completed submission of a survey type,
-// scoped by survey type:
+// LatestSubmissionQuery scopes a lookup of a caller's submitted assessment periods for a
+// given survey type:
 //   - individual:    scoped to UserID only (a different user's submission never blocks).
 //   - post_workshop: scoped to TeamID only (one workshop consensus per team).
 type LatestSubmissionQuery struct {
@@ -65,20 +64,22 @@ type LatestSubmissionQuery struct {
 
 // SubmissionCooldownError indicates a survey submission was rejected because the caller's
 // scope (the user, for Individual Survey; the team, for Post-Workshop Survey) already has a
-// completed submission of the same survey type, and neither the EligibilityCooldownMonths
-// cooldown has elapsed nor has the calendar moved into a new half-year period since that
-// submission (see NextEligibleDate).
+// completed submission for this exact survey type and assessment period -- one submission
+// per (scope, survey type, year, half-year) is allowed. See CheckPeriodEligibility.
 type SubmissionCooldownError struct {
 	SurveyType          string
-	LastSubmittedPeriod string // user-facing H1/H2 label of the blocking submission's period
-	LastSubmissionDate  time.Time
-	NextEligible        time.Time
+	LastSubmittedPeriod string // user-facing H1/H2 label of the duplicated period
+	// NextEligiblePeriod is the user-facing H1/H2 label (e.g. "H2 2026") the caller next
+	// becomes eligible for, computed dynamically from every period already on record for
+	// this scope (see NextEligiblePeriod). The survey experience never exposes day-level
+	// dates, so this label is what error messages and API responses surface.
+	NextEligiblePeriod string
 }
 
 func (e *SubmissionCooldownError) Error() string {
 	return fmt.Sprintf(
-		"You have already submitted the %s for %s. Your next submission will be available on %s.",
-		SurveyTypeLabel(e.SurveyType), e.LastSubmittedPeriod, e.NextEligible.Format("Jan 2, 2006"),
+		"You have already submitted the %s for %s. Your next eligible survey period is %s.",
+		SurveyTypeLabel(e.SurveyType), e.LastSubmittedPeriod, e.NextEligiblePeriod,
 	)
 }
 
@@ -90,15 +91,42 @@ func SurveyTypeLabel(surveyType string) string {
 	return "Individual Survey"
 }
 
-// NewSubmissionCooldownError builds a SubmissionCooldownError for the given survey type from
-// the blocking prior submission's assessment period (rendered as a safe H1/H2 label, never a
-// quarter number) and its actual submission date.
-func NewSubmissionCooldownError(surveyType string, lastSubmittedPeriod string, lastSubmissionDate time.Time) *SubmissionCooldownError {
+// NewSubmissionCooldownError builds a SubmissionCooldownError for a duplicate submission of
+// duplicatedPeriod, given every period already submitted for this scope and survey type
+// (submittedPeriods -- the persisted source of truth, not submitted dates).
+func NewSubmissionCooldownError(surveyType string, duplicatedPeriod string, submittedPeriods []string) *SubmissionCooldownError {
 	return &SubmissionCooldownError{
 		SurveyType:          surveyType,
-		LastSubmittedPeriod: FormatPeriodForDisplay(lastSubmittedPeriod),
-		LastSubmissionDate:  lastSubmissionDate,
-		NextEligible:        NextEligibleDate(lastSubmissionDate),
+		LastSubmittedPeriod: FormatPeriodForDisplay(duplicatedPeriod),
+		NextEligiblePeriod:  NextEligiblePeriod(submittedPeriods),
+	}
+}
+
+// PeriodNotOpenError indicates a survey submission was rejected because the requested
+// assessment period is not currently open for a brand-new submission -- it is either a
+// future half-year that has not started yet, or a stale period from an earlier year. Unlike
+// SubmissionCooldownError, this is never about a duplicate: see CheckPeriodEligibility.
+type PeriodNotOpenError struct {
+	SurveyType string
+	Period     string // user-facing H1/H2 label of the rejected period
+	// Reason is either PeriodReasonFuture or PeriodReasonPast.
+	Reason PeriodEligibilityReason
+}
+
+func (e *PeriodNotOpenError) Error() string {
+	if e.Reason == PeriodReasonPast {
+		return fmt.Sprintf("%s for %s is no longer open for new submissions.", SurveyTypeLabel(e.SurveyType), e.Period)
+	}
+	return fmt.Sprintf("%s for %s is not yet available.", SurveyTypeLabel(e.SurveyType), e.Period)
+}
+
+// NewPeriodNotOpenError builds a PeriodNotOpenError for period (rendered as a safe H1/H2
+// label, never a quarter number).
+func NewPeriodNotOpenError(surveyType string, period string, reason PeriodEligibilityReason) *PeriodNotOpenError {
+	return &PeriodNotOpenError{
+		SurveyType: surveyType,
+		Period:     FormatPeriodForDisplay(period),
+		Reason:     reason,
 	}
 }
 
@@ -128,8 +156,9 @@ type Repository interface {
 	// FindDistinctAssessmentPeriods returns all unique assessment periods from submitted sessions
 	FindDistinctAssessmentPeriods(ctx context.Context) ([]string, error)
 
-	// FindLatestSubmission returns the most recent completed submission (by date) matching
-	// the given survey type and scope, or nil if none exists. Used to enforce the
-	// EligibilityCooldownMonths rolling-window submission restriction.
-	FindLatestSubmission(ctx context.Context, query LatestSubmissionQuery) (*HealthCheckSession, error)
+	// FindSubmittedPeriods returns the assessment-period labels of every completed submission
+	// matching the given survey type and scope (TeamID for post_workshop, UserID for
+	// individual). This is the persisted source of truth for period-level eligibility and
+	// duplicate checks -- see CheckPeriodEligibility.
+	FindSubmittedPeriods(ctx context.Context, query LatestSubmissionQuery) ([]string, error)
 }

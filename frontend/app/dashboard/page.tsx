@@ -10,7 +10,7 @@ import * as XLSX from 'xlsx';
 import { AlertCircle } from 'lucide-react';
 import { getTeamSubmissionStatus, getAssessmentPeriods, checkSurveyEligibility, TeamSubmissionStatus } from '@/lib/api/health-checks';
 import { API_BASE_URL } from '@/lib/api/client';
-import { getAssessmentPeriod, getSelectablePeriods, parseAssessmentPeriod, toCadence, formatPeriodLabel, formatEligibleDate } from '@/lib/assessment-period';
+import { getAssessmentPeriod, getSelectablePeriods, parseAssessmentPeriod, toCadence, formatPeriodLabel, formatMonthYear } from '@/lib/assessment-period';
 import { getTeamInfoCached } from '@/lib/api/teams';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line, ResponsiveContainer } from 'recharts';
 import OnboardingModal from '@/components/OnboardingModal';
@@ -81,7 +81,7 @@ export default function DashboardPage() {
   const [duplicateInfo, setDuplicateInfo] = useState<{
     surveyType: 'individual' | 'post_workshop';
     submittedPeriod: string;
-    nextEligibleDate: string;
+    nextEligiblePeriod: string;
   } | null>(null);
   const [submissionStatus, setSubmissionStatus] = useState<TeamSubmissionStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -362,7 +362,7 @@ export default function DashboardPage() {
         setDuplicateInfo({
           surveyType,
           submittedPeriod: result.submittedPeriod || takeSurveyPeriod,
-          nextEligibleDate: result.nextEligibleDate || '',
+          nextEligiblePeriod: result.nextEligiblePeriod || '',
         });
         return;
       }
@@ -491,7 +491,7 @@ export default function DashboardPage() {
       r.responses.map(resp => ({
         Member: r.userName,
         'Survey Type': r.surveyType === 'post_workshop' ? 'Post-Workshop' : 'Individual',
-        Date: new Date(r.date).toLocaleDateString(),
+        Date: formatMonthYear(r.date),
         Dimension: resp.dimensionName,
         Score: resp.score,
         'Score Label': resp.score === 3 ? 'Green' : resp.score === 2 ? 'Yellow' : 'Red',
@@ -1029,7 +1029,7 @@ export default function DashboardPage() {
                                             {response.userName}
                                           </div>
                                           <div className="text-xs text-gray-400">
-                                            {new Date(response.date).toLocaleDateString()}
+                                            {formatMonthYear(response.date)}
                                           </div>
                                         </td>
                                         {matrixDims.map((dim) => {
@@ -1221,7 +1221,7 @@ export default function DashboardPage() {
                                           )}
                                         </div>
                                         <p className="text-xs text-gray-400">
-                                          {new Date(response.date).toLocaleDateString()}
+                                          {formatMonthYear(response.date)}
                                         </p>
                                       </div>
 
@@ -1700,8 +1700,8 @@ export default function DashboardPage() {
                 for <span className="font-semibold">{duplicateInfo.submittedPeriod}</span>.
               </p>
               <p className="text-base text-gray-700 leading-relaxed mb-8">
-                Your next submission will be available on{' '}
-                <span className="font-semibold">{formatEligibleDate(duplicateInfo.nextEligibleDate)}</span>.
+                Your next survey is scheduled for{' '}
+                <span className="font-semibold">{duplicateInfo.nextEligiblePeriod}</span>.
               </p>
             </div>
             <div className="flex justify-end">
