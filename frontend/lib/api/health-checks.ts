@@ -146,7 +146,12 @@ export async function getTeamSubmissionStatus(
 
 export interface SurveyEligibility {
   eligible: boolean;
-  // Populated when eligible is false: the user-facing H1/H2 label of the blocking
+  // Populated when eligible is false: one of "duplicate", "future_period", "past_period", or
+  // "invalid_period" (see backend healthcheck.PeriodEligibilityReason). Callers must branch on
+  // this rather than assuming every ineligible result is a duplicate -- submittedPeriod and
+  // nextEligiblePeriod are only meaningful when reason is "duplicate".
+  reason?: string;
+  // Populated only when reason is "duplicate": the user-facing H1/H2 label of the blocking
   // submission's period, and the H1/H2 label the caller becomes eligible in. Never a
   // day-level date -- the survey experience is based on month/year (period) values only.
   submittedPeriod?: string;

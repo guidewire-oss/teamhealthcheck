@@ -5,15 +5,16 @@
  *  - Automatic period selection based on the current date.
  *  - Rendering the bordered "Select assessment period" panel inside the blue Current Period card.
  *  - Opening/using the dropdown and selecting a previous period (e.g. H1 2026).
- *  - Clicking "Take Survey" opens the period-selection modal instead of navigating immediately.
- *  - Confirming the modal checks the six-month submission cooldown before navigating.
- *  - Cancel/close dismisses the modal without navigating.
- *  - A submission still within the six-month cooldown shows the amber info modal instead
- *    of opening the survey.
+ *  - The dropdown never offers a period from a previous year.
+ *  - Clicking "Take Survey" checks eligibility and, in one click, either opens the survey
+ *    directly or shows the blocked-period info box -- there is no separate confirmation
+ *    modal/dropdown step in between.
+ *  - A duplicate submission shows the "already submitted" info modal; a non-duplicate
+ *    ineligible reason shows a distinct "not available" message instead.
  *  - No Post-Workshop Survey button or functionality is rendered for Team Members.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import MemberHomePage from '../page';
 
@@ -118,47 +119,56 @@ describe('Member Home: Take Survey flow', () => {
     expect(screen.getByTestId('assessment-period-select')).toHaveValue('2026 H1');
   });
 
-  it('does not show the period-selection modal on initial load', async () => {
+  it('does not offer a period from a previous year in the dropdown, even though it is within the cadence lookback window', async () => {
     render(<MemberHomePage />);
 
-    await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
-    expect(screen.queryByTestId('period-selection-modal')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('assessment-period-select')).toHaveValue('2026 H2'));
+
+    const options = Array.from(
+      screen.getByTestId('assessment-period-select').querySelectorAll('option')
+    ).map((o) => (o as HTMLOptionElement).value);
+
+    expect(options).toContain('2026 H2');
+    expect(options).toContain('2026 H1');
+    // The backend only ever considers the current year's periods open (see
+    // healthcheck.CurrentlyOpenPeriods) -- a prior-year period would always be rejected as
+    // "past_period", so it must never be offered as a selectable option here.
+    expect(options).not.toContain('2025 H2');
+    expect(options).not.toContain('2025 H1');
+    expect(options).not.toContain('2024 H2');
   });
 
-  it('opens the period-selection modal (not the survey) when "Take Survey" is clicked', async () => {
-    const user = userEvent.setup({ delay: null });
+  it('does not show any blocking modal on initial load', async () => {
     render(<MemberHomePage />);
 
     await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
-    await user.click(screen.getByTestId('take-survey-btn'));
-
-    const modal = screen.getByTestId('period-selection-modal');
-    expect(modal).toBeInTheDocument();
-    expect(within(modal).getByText('Select assessment period')).toBeInTheDocument();
-    expect(screen.getByTestId('period-selection-confirm-button')).toHaveTextContent('Take Survey');
+    expect(screen.queryByTestId('duplicate-submission-modal')).not.toBeInTheDocument();
     expect(push).not.toHaveBeenCalled();
   });
 
-  it('auto-selects the current-date period as the modal dropdown default', async () => {
+  it('clicking "Take Survey" once navigates straight to the survey when eligible -- no intermediate modal', async () => {
     const user = userEvent.setup({ delay: null });
     render(<MemberHomePage />);
 
     await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
     await user.click(screen.getByTestId('take-survey-btn'));
 
-    await waitFor(() => expect(screen.getByTestId('take-survey-period-select')).toHaveValue('2026 H2'));
+    await waitFor(() => expect(push).toHaveBeenCalledWith('/survey?period=2026%20H2'));
+    expect(checkSurveyEligibility).toHaveBeenCalledWith({
+      surveyType: 'individual',
+      assessmentPeriod: '2026 H2',
+      userId: 'user-1',
+    });
+    expect(screen.queryByTestId('duplicate-submission-modal')).not.toBeInTheDocument();
   });
 
-  it('passes the selected (overridden) period into the survey via the query param on confirm', async () => {
+  it('passes the selected (overridden) period into the survey when the dropdown was changed before clicking "Take Survey"', async () => {
     const user = userEvent.setup({ delay: null });
     render(<MemberHomePage />);
 
-    await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('assessment-period-select')).toHaveValue('2026 H2'));
+    await user.selectOptions(screen.getByTestId('assessment-period-select'), '2026 H1');
     await user.click(screen.getByTestId('take-survey-btn'));
-
-    await waitFor(() => expect(screen.getByTestId('take-survey-period-select')).toHaveValue('2026 H2'));
-    await user.selectOptions(screen.getByTestId('take-survey-period-select'), '2026 H1');
-    await user.click(screen.getByTestId('period-selection-confirm-button'));
 
     await waitFor(() => expect(push).toHaveBeenCalledWith('/survey?period=2026%20H1'));
     expect(checkSurveyEligibility).toHaveBeenCalledWith({
@@ -168,50 +178,29 @@ describe('Member Home: Take Survey flow', () => {
     });
   });
 
-  it('passes the auto-detected period into the survey when the dropdown is left unchanged (default behavior)', async () => {
+  it('disables the button and shows "Checking..." while the eligibility check is in flight', async () => {
+    let resolveCheck: (value: { eligible: boolean }) => void;
+    checkSurveyEligibility.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveCheck = resolve; })
+    );
     const user = userEvent.setup({ delay: null });
     render(<MemberHomePage />);
 
     await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
     await user.click(screen.getByTestId('take-survey-btn'));
-    await waitFor(() => expect(screen.getByTestId('take-survey-period-select')).toHaveValue('2026 H2'));
-    await user.click(screen.getByTestId('period-selection-confirm-button'));
 
+    expect(screen.getByTestId('take-survey-btn')).toBeDisabled();
+    expect(screen.getByTestId('take-survey-btn')).toHaveTextContent('Checking...');
+
+    resolveCheck!({ eligible: true });
     await waitFor(() => expect(push).toHaveBeenCalledWith('/survey?period=2026%20H2'));
   });
 
-  it('closes the modal without navigating when Cancel is clicked', async () => {
-    const user = userEvent.setup({ delay: null });
-    render(<MemberHomePage />);
-
-    await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
-    await user.click(screen.getByTestId('take-survey-btn'));
-    expect(screen.getByTestId('period-selection-modal')).toBeInTheDocument();
-
-    await user.click(screen.getByTestId('period-selection-cancel-button'));
-
-    expect(screen.queryByTestId('period-selection-modal')).not.toBeInTheDocument();
-    expect(push).not.toHaveBeenCalled();
-  });
-
-  it('closes the modal without navigating when the close (X) icon is clicked', async () => {
-    const user = userEvent.setup({ delay: null });
-    render(<MemberHomePage />);
-
-    await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
-    await user.click(screen.getByTestId('take-survey-btn'));
-    expect(screen.getByTestId('period-selection-modal')).toBeInTheDocument();
-
-    await user.click(screen.getByTestId('period-selection-close-button'));
-
-    expect(screen.queryByTestId('period-selection-modal')).not.toBeInTheDocument();
-    expect(push).not.toHaveBeenCalled();
-  });
-
-  describe('six-month submission cooldown', () => {
-    it('shows an amber "already submitted" info modal instead of opening the survey when still within the cooldown', async () => {
+  describe('duplicate-submission and period-not-open handling', () => {
+    it('shows an amber "already submitted" info modal instead of opening the survey for a duplicate', async () => {
       checkSurveyEligibility.mockResolvedValue({
         eligible: false,
+        reason: 'duplicate',
         submittedPeriod: 'H1 2026',
         nextEligiblePeriod: 'H2 2026',
       });
@@ -220,10 +209,8 @@ describe('Member Home: Take Survey flow', () => {
 
       await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
       await user.click(screen.getByTestId('take-survey-btn'));
-      await user.click(screen.getByTestId('period-selection-confirm-button'));
 
       await waitFor(() => expect(screen.getByTestId('duplicate-submission-modal')).toBeInTheDocument());
-      expect(screen.queryByTestId('period-selection-modal')).not.toBeInTheDocument();
       expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Individual Survey');
       expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('H1 2026');
       expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('H2 2026');
@@ -234,6 +221,7 @@ describe('Member Home: Take Survey flow', () => {
     it('shows "Your next survey is scheduled for H1 <next year>" when the last submission was H2 (year rollover)', async () => {
       checkSurveyEligibility.mockResolvedValue({
         eligible: false,
+        reason: 'duplicate',
         submittedPeriod: 'H2 2026',
         nextEligiblePeriod: 'H1 2027',
       });
@@ -242,7 +230,6 @@ describe('Member Home: Take Survey flow', () => {
 
       await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
       await user.click(screen.getByTestId('take-survey-btn'));
-      await user.click(screen.getByTestId('period-selection-confirm-button'));
 
       await waitFor(() => expect(screen.getByTestId('duplicate-submission-modal')).toBeInTheDocument());
       expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Individual Survey');
@@ -251,22 +238,25 @@ describe('Member Home: Take Survey flow', () => {
       expect(screen.getByTestId('duplicate-submission-message').textContent).not.toMatch(/Q[1-4]/);
     });
 
-    it('opens the survey normally when eligible', async () => {
-      checkSurveyEligibility.mockResolvedValue({ eligible: true });
+    it('shows a distinct "not available" message, never "already submitted", when ineligible for a non-duplicate reason', async () => {
+      checkSurveyEligibility.mockResolvedValue({ eligible: false, reason: 'past_period' });
       const user = userEvent.setup({ delay: null });
       render(<MemberHomePage />);
 
       await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
       await user.click(screen.getByTestId('take-survey-btn'));
-      await user.click(screen.getByTestId('period-selection-confirm-button'));
 
-      await waitFor(() => expect(push).toHaveBeenCalledWith('/survey?period=2026%20H2'));
-      expect(screen.queryByTestId('duplicate-submission-modal')).not.toBeInTheDocument();
+      await waitFor(() => expect(screen.getByTestId('duplicate-submission-modal')).toBeInTheDocument());
+      expect(screen.getByTestId('duplicate-submission-modal')).toHaveTextContent('Period Not Available');
+      expect(screen.getByTestId('duplicate-submission-message')).not.toHaveTextContent('already submitted');
+      expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('not open for submission');
+      expect(push).not.toHaveBeenCalled();
     });
 
     it('closes the info modal via the Close button without navigating', async () => {
       checkSurveyEligibility.mockResolvedValue({
         eligible: false,
+        reason: 'duplicate',
         submittedPeriod: 'H1 2025',
         nextEligiblePeriod: 'H2 2025',
       });
@@ -275,7 +265,6 @@ describe('Member Home: Take Survey flow', () => {
 
       await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
       await user.click(screen.getByTestId('take-survey-btn'));
-      await user.click(screen.getByTestId('period-selection-confirm-button'));
       await waitFor(() => expect(screen.getByTestId('duplicate-submission-modal')).toBeInTheDocument());
 
       await user.click(screen.getByTestId('duplicate-submission-close-button'));
@@ -291,7 +280,6 @@ describe('Member Home: Take Survey flow', () => {
 
       await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
       await user.click(screen.getByTestId('take-survey-btn'));
-      await user.click(screen.getByTestId('period-selection-confirm-button'));
 
       await waitFor(() => expect(checkSurveyEligibility).toHaveBeenCalled());
       const call = checkSurveyEligibility.mock.calls[0][0];
@@ -306,7 +294,6 @@ describe('Member Home: Take Survey flow', () => {
 
       await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
       await user.click(screen.getByTestId('take-survey-btn'));
-      await user.click(screen.getByTestId('period-selection-confirm-button'));
 
       await waitFor(() => expect(push).toHaveBeenCalledWith('/survey?period=2026%20H2'));
       expect(screen.queryByTestId('duplicate-submission-modal')).not.toBeInTheDocument();
@@ -328,7 +315,6 @@ describe('Member Home: Take Survey flow', () => {
 
       await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
       await user.click(screen.getByTestId('take-survey-btn'));
-      await user.click(screen.getByTestId('period-selection-confirm-button'));
 
       await waitFor(() => expect(checkSurveyEligibility).toHaveBeenCalled());
       for (const call of checkSurveyEligibility.mock.calls) {

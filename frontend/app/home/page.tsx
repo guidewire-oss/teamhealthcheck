@@ -6,7 +6,7 @@ import { getCurrentUser, logout, authenticatedFetch } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { API_BASE_URL } from '@/lib/api/client';
 import { getOrgConfig, getHierarchyLevel } from '@/lib/org-config';
-import { getAssessmentPeriod, getSelectablePeriods, toCadence, formatPeriodLabel, formatMonthYear } from '@/lib/assessment-period';
+import { getAssessmentPeriod, getSelectablePeriods, parseAssessmentPeriod, toCadence, formatPeriodLabel, formatMonthYear } from '@/lib/assessment-period';
 import { LogOut, Building2, ChevronDown, ClipboardList, TrendingUp, Calendar, Clock, CalendarClock, X, AlertCircle } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts';
 import { getTeamInfoCached, TeamInfo } from '@/lib/api/teams';
@@ -89,14 +89,14 @@ export default function MemberHomePage() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [assessmentPeriod, setAssessmentPeriod] = useState<string>('');
   const [autoAssessmentPeriod, setAutoAssessmentPeriod] = useState<string>('');
-  // Whether the assessment-period confirmation modal is open (shown before the Individual
-  // Survey is opened, so the Team Member can confirm/change the period first).
-  const [showSurveyModal, setShowSurveyModal] = useState(false);
-  // True while the pre-open six-month cooldown eligibility check is in flight.
+  // True while the pre-open eligibility check is in flight.
   const [checkingEligibility, setCheckingEligibility] = useState(false);
-  // Set when the eligibility check finds the user still within the six-month cooldown;
-  // renders an info modal instead of opening the survey.
+  // Set when the eligibility check finds the selected period ineligible; renders an info modal
+  // instead of opening the survey. `reason` distinguishes an actual duplicate submission from
+  // a period that simply isn't open right now (e.g. from a previous year) -- these must never
+  // share the "you already submitted this" wording, since only "duplicate" means that.
   const [blockedInfo, setBlockedInfo] = useState<{
+    reason: 'duplicate' | 'not_open';
     submittedPeriod: string;
     nextEligiblePeriod: string;
   } | null>(null);
@@ -195,23 +195,28 @@ export default function MemberHomePage() {
 
   const periodOptions = useMemo(() => {
     if (!team) return [];
-    const options = getSelectablePeriods(toCadence(team.cadence));
+    // getSelectablePeriods walks back several years of history for the dropdown, but the
+    // backend only ever considers the current year's periods open for a new submission
+    // (see healthcheck.CurrentlyOpenPeriods) -- anything from an earlier year is rejected as
+    // "past_period" regardless of whether it was ever submitted. Offering those older periods
+    // here just sets the Team Member up to pick something that can never succeed, so they are
+    // filtered out before being shown.
+    const currentYear = new Date().getFullYear();
+    const options = getSelectablePeriods(toCadence(team.cadence)).filter((p) => {
+      const parsed = parseAssessmentPeriod(p);
+      return parsed ? parsed.year >= currentYear : true;
+    });
     return options.includes(assessmentPeriod) ? options : [assessmentPeriod, ...options];
   }, [team, assessmentPeriod]);
 
-  // Opens the assessment-period confirmation modal instead of navigating straight to the
-  // survey; the actual navigation (or the "already submitted" info modal) happens from
-  // handleConfirmTakeSurvey once the Team Member confirms the period.
-  const handleTakeSurvey = () => {
-    setShowSurveyModal(true);
-  };
-
-  // Called from the period-confirmation modal's "Take Survey" button. Checks the six-month
-  // submission cooldown (scoped to this Team Member's own submissions) before opening the
-  // survey. If the eligibility check itself fails (e.g. network error), fail open and let
-  // the authoritative server-side check at submit time (409 Conflict) be the backstop.
-  const handleConfirmTakeSurvey = async () => {
-    if (!user) return;
+  // Checks eligibility for the currently selected period (the "Select assessment period"
+  // dropdown above, scoped to this Team Member's own submissions) and, in one click, either
+  // opens the survey directly or shows the blocked-period info box -- there is no separate
+  // confirmation step/modal in between. If the eligibility check itself fails (e.g. network
+  // error), fail open and let the authoritative server-side check at submit time (409
+  // Conflict) be the backstop.
+  const handleTakeSurvey = async () => {
+    if (!user || checkingEligibility) return;
 
     const query = assessmentPeriod ? `?period=${encodeURIComponent(assessmentPeriod)}` : '';
 
@@ -224,18 +229,28 @@ export default function MemberHomePage() {
       });
 
       if (!result.eligible) {
-        setShowSurveyModal(false);
-        setBlockedInfo({
-          submittedPeriod: result.submittedPeriod || assessmentPeriod,
-          nextEligiblePeriod: result.nextEligiblePeriod || '',
-        });
+        // Only a "duplicate" reason means the Team Member already submitted this period --
+        // any other reason (e.g. the period isn't open) must not reuse that wording, since
+        // result.submittedPeriod is empty in that case and would otherwise be papered over
+        // with the period they just picked, falsely implying they'd already submitted it.
+        if (result.reason === 'duplicate') {
+          setBlockedInfo({
+            reason: 'duplicate',
+            submittedPeriod: result.submittedPeriod || assessmentPeriod,
+            nextEligiblePeriod: result.nextEligiblePeriod || '',
+          });
+        } else {
+          setBlockedInfo({
+            reason: 'not_open',
+            submittedPeriod: assessmentPeriod,
+            nextEligiblePeriod: result.nextEligiblePeriod || '',
+          });
+        }
         return;
       }
 
-      setShowSurveyModal(false);
       router.push(`/survey${query}`);
     } catch {
-      setShowSurveyModal(false);
       router.push(`/survey${query}`);
     } finally {
       setCheckingEligibility(false);
@@ -379,10 +394,11 @@ export default function MemberHomePage() {
             <button
               data-testid="take-survey-btn"
               onClick={handleTakeSurvey}
-              className="bg-white text-blue-600 px-6 py-3 rounded-lg font-semibold hover:bg-blue-50 transition-colors flex items-center space-x-2 self-start flex-shrink-0"
+              disabled={checkingEligibility}
+              className="bg-white text-blue-600 px-6 py-3 rounded-lg font-semibold hover:bg-blue-50 transition-colors flex items-center space-x-2 self-start flex-shrink-0 disabled:opacity-70 disabled:cursor-not-allowed"
             >
               <ClipboardList className="h-5 w-5" />
-              <span>Take Survey</span>
+              <span>{checkingEligibility ? 'Checking...' : 'Take Survey'}</span>
             </button>
           </div>
         </div>
@@ -451,10 +467,11 @@ export default function MemberHomePage() {
             <p className="text-gray-500 mb-6">Complete your first survey to start tracking your team&apos;s health.</p>
             <button
               onClick={handleTakeSurvey}
-              className="bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors inline-flex items-center space-x-2"
+              disabled={checkingEligibility}
+              className="bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors inline-flex items-center space-x-2 disabled:opacity-70 disabled:cursor-not-allowed"
             >
               <ClipboardList className="h-5 w-5" />
-              <span>Get Started</span>
+              <span>{checkingEligibility ? 'Checking...' : 'Get Started'}</span>
             </button>
           </div>
         ) : (
@@ -576,70 +593,6 @@ export default function MemberHomePage() {
           }}
         />
       )}
-      {showSurveyModal && (
-        <div
-          data-testid="period-selection-modal"
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="period-selection-modal-title"
-            className="bg-white text-gray-900 rounded-2xl shadow-2xl border-2 border-blue-200 w-full sm:w-[600px] max-w-full p-6 sm:p-8"
-          >
-            <div className="flex justify-between items-start mb-6">
-              <h3 id="period-selection-modal-title" className="text-xl font-semibold text-gray-900">
-                Select assessment period
-              </h3>
-              <button
-                data-testid="period-selection-close-button"
-                onClick={() => setShowSurveyModal(false)}
-                aria-label="Close"
-                className="text-gray-400 hover:text-gray-600 rounded-full p-1 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <label htmlFor="take-survey-period-select" className="block text-sm font-semibold text-gray-700 mb-2">
-              Assessment period
-            </label>
-            <div className="relative mb-8">
-              <select
-                id="take-survey-period-select"
-                data-testid="take-survey-period-select"
-                aria-label="Assessment period"
-                value={assessmentPeriod}
-                onChange={(e) => setAssessmentPeriod(e.target.value)}
-                className="w-full appearance-none pl-4 pr-10 py-3 text-base font-medium bg-white text-gray-900 border-2 border-gray-300 rounded-lg shadow-sm transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer"
-              >
-                {periodOptions.map((p) => (
-                  <option key={p} value={p}>
-                    {formatPeriodLabel(p)}{p === autoAssessmentPeriod ? ' (current)' : ''}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="w-5 h-5 text-gray-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-            </div>
-            <div className="flex flex-col-reverse sm:flex-row justify-end gap-3">
-              <button
-                data-testid="period-selection-cancel-button"
-                onClick={() => setShowSurveyModal(false)}
-                className="px-5 py-3 text-base font-medium whitespace-nowrap rounded-lg bg-gray-100 text-gray-700 transition-colors duration-150 hover:bg-gray-200 active:bg-gray-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2"
-              >
-                Cancel
-              </button>
-              <button
-                data-testid="period-selection-confirm-button"
-                onClick={handleConfirmTakeSurvey}
-                disabled={checkingEligibility}
-                className="px-6 py-3 text-base font-semibold whitespace-nowrap rounded-lg shadow-sm transition-colors duration-150 bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500 disabled:opacity-70 disabled:cursor-not-allowed"
-              >
-                {checkingEligibility ? 'Checking...' : 'Take Survey'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {blockedInfo && (
         <div
           data-testid="duplicate-submission-modal"
@@ -657,7 +610,7 @@ export default function MemberHomePage() {
                   <AlertCircle className="w-5 h-5 text-amber-600" />
                 </div>
                 <h3 id="duplicate-submission-modal-title" className="text-xl font-semibold text-gray-900">
-                  Already Submitted
+                  {blockedInfo.reason === 'duplicate' ? 'Already Submitted' : 'Period Not Available'}
                 </h3>
               </div>
               <button
@@ -670,15 +623,24 @@ export default function MemberHomePage() {
               </button>
             </div>
             <div data-testid="duplicate-submission-message">
-              <p className="text-base text-gray-700 leading-relaxed mb-2">
-                You have already submitted the{' '}
-                <span className="font-semibold">Individual Survey</span>{' '}
-                for <span className="font-semibold">{blockedInfo.submittedPeriod}</span>.
-              </p>
-              <p className="text-base text-gray-700 leading-relaxed mb-8">
-                Your next survey is scheduled for{' '}
-                <span className="font-semibold">{blockedInfo.nextEligiblePeriod}</span>.
-              </p>
+              {blockedInfo.reason === 'duplicate' ? (
+                <>
+                  <p className="text-base text-gray-700 leading-relaxed mb-2">
+                    You have already submitted the{' '}
+                    <span className="font-semibold">Individual Survey</span>{' '}
+                    for <span className="font-semibold">{blockedInfo.submittedPeriod}</span>.
+                  </p>
+                  <p className="text-base text-gray-700 leading-relaxed mb-8">
+                    Your next survey is scheduled for{' '}
+                    <span className="font-semibold">{blockedInfo.nextEligiblePeriod}</span>.
+                  </p>
+                </>
+              ) : (
+                <p className="text-base text-gray-700 leading-relaxed mb-8">
+                  <span className="font-semibold">{blockedInfo.submittedPeriod}</span> is not open for
+                  submission right now. Please choose a different assessment period.
+                </p>
+              )}
             </div>
             <div className="flex justify-end">
               <button
