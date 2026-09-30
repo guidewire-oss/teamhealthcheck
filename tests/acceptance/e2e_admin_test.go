@@ -232,48 +232,42 @@ var _ = Describe("E2E: Admin Dashboard Management", Label("e2e", "admin"), func(
 			})
 		})
 
-		Context("when admin reorders hierarchy levels", func() {
-			It("should update the position in database", func() {
-				// This test verifies move up/down buttons
-				By("Finding enabled move up button")
-
-				// Wait for hierarchy list to load fully
+		Context("when admin views hierarchy levels in the UI", func() {
+			It("should display levels in the same order as their stored position, with no reorder controls", func() {
+				// Reordering was removed: levels stay in creation order.
+				// Wait for hierarchy list to load fully.
 				time.Sleep(1 * time.Second)
 
-				// Find enabled move up buttons (not first item, which is disabled)
-				// The Nth(1) gets the second move-up button which should be enabled
-				moveUpButton := page.Locator("[data-testid='move-up-btn']:not([disabled])").Nth(0)
-				visible, _ := moveUpButton.IsVisible()
-				if !visible {
-					// Try alternative selector
-					moveUpButton = page.Locator("button[aria-label='Move level up']:not([disabled])").Nth(0)
-					visible, _ = moveUpButton.IsVisible()
+				By("Verifying no move up/down controls are rendered")
+				moveUpCount, err := page.Locator("[data-testid='move-up-btn']").Count()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(moveUpCount).To(Equal(0))
+
+				moveDownCount, err := page.Locator("[data-testid='move-down-btn']").Count()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(moveDownCount).To(Equal(0))
+
+				By("Verifying displayed level order matches stored position order")
+				var dbNames []string
+				rows, err := db.Query("SELECT name FROM hierarchy_levels ORDER BY position")
+				Expect(err).NotTo(HaveOccurred())
+				defer rows.Close()
+				for rows.Next() {
+					var name string
+					Expect(rows.Scan(&name)).To(Succeed())
+					dbNames = append(dbNames, name)
+				}
+				Expect(len(dbNames)).To(BeNumerically(">", 0))
+
+				rowTexts, err := page.Locator("[data-testid='hierarchy-level-row']").AllTextContents()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(rowTexts)).To(Equal(len(dbNames)))
+
+				for i, name := range dbNames {
+					Expect(rowTexts[i]).To(ContainSubstring(name))
 				}
 
-				if visible {
-					By("Clicking move up button on a level")
-					err := moveUpButton.Click()
-					Expect(err).NotTo(HaveOccurred())
-					time.Sleep(500 * time.Millisecond)
-
-					By("Verifying position changed in database")
-					// Check that positions are sequential and valid
-					var positions []int
-					rows, err := db.Query("SELECT position FROM hierarchy_levels ORDER BY position")
-					Expect(err).NotTo(HaveOccurred())
-					defer rows.Close()
-
-					for rows.Next() {
-						var pos int
-						rows.Scan(&pos)
-						positions = append(positions, pos)
-					}
-
-					Expect(len(positions)).To(BeNumerically(">", 0))
-					GinkgoWriter.Printf("✅ Admin reordered hierarchy levels (positions: %v)\n", positions)
-				} else {
-					Skip("No enabled move buttons visible - hierarchy may have fixed positions")
-				}
+				GinkgoWriter.Printf("✅ Hierarchy levels displayed in stored position order: %v\n", dbNames)
 			})
 		})
 

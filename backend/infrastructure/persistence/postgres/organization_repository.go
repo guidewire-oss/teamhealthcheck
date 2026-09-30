@@ -3,11 +3,54 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/organization"
+	"github.com/lib/pq"
 )
+
+// sqlExecer is satisfied by both *sql.DB and *sql.Tx, letting helper methods
+// run either standalone or as part of a caller-managed transaction.
+type sqlExecer interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+}
+
+// execerFor resolves the executer to use for a repository call: the given
+// transaction when one is provided, otherwise the repository's own pooled
+// connection.
+func (r *OrganizationRepository) execerFor(tx interface{}) (sqlExecer, error) {
+	if tx == nil {
+		return r.db, nil
+	}
+	sqlTx, ok := tx.(*sql.Tx)
+	if !ok {
+		return nil, fmt.Errorf("invalid transaction type")
+	}
+	return sqlTx, nil
+}
+
+// classifyHierarchyLevelWriteError maps a Postgres unique-constraint
+// violation on hierarchy_levels to a typed domain sentinel so handlers can
+// respond with a precise, user-facing conflict message instead of a generic
+// 500. Non-constraint errors are wrapped with the given context message.
+func classifyHierarchyLevelWriteError(err error, id, name string, opDescription string) error {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && pqErr.Code.Name() == "unique_violation" {
+		switch pqErr.Constraint {
+		case "hierarchy_levels_name_key":
+			return fmt.Errorf("%w: %s", organization.ErrDuplicateHierarchyLevelName, name)
+		case "hierarchy_levels_pkey":
+			return fmt.Errorf("%w: %s", organization.ErrDuplicateHierarchyLevelID, id)
+		default:
+			// Unknown unique constraint (e.g. position) - still a conflict, but
+			// not one with a clean user-facing name/id message.
+			return fmt.Errorf("%w: %s", organization.ErrDuplicateHierarchyLevelID, id)
+		}
+	}
+	return fmt.Errorf("%s: %w", opDescription, err)
+}
 
 // OrganizationRepository implements the organization.Repository interface
 type OrganizationRepository struct {
@@ -71,7 +114,7 @@ func (r *OrganizationRepository) Save(ctx context.Context, config *organization.
 // FindHierarchyLevels retrieves all hierarchy levels
 func (r *OrganizationRepository) FindHierarchyLevels(ctx context.Context) ([]*organization.HierarchyLevel, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, name, position, color,
+		SELECT id, name, position,
 		       can_view_all_teams, can_edit_teams, can_manage_users,
 		       can_take_survey, can_view_analytics,
 		       can_configure_system, can_view_reports, can_export_data,
@@ -88,7 +131,6 @@ func (r *OrganizationRepository) FindHierarchyLevels(ctx context.Context) ([]*or
 
 	for rows.Next() {
 		var level organization.HierarchyLevel
-		var color sql.NullString
 		var canConfigureSystem, canViewReports, canExportData sql.NullBool
 		var createdAt, updatedAt sql.NullTime
 
@@ -96,7 +138,6 @@ func (r *OrganizationRepository) FindHierarchyLevels(ctx context.Context) ([]*or
 			&level.ID,
 			&level.Name,
 			&level.Position,
-			&color,
 			&level.Permissions.CanViewAllTeams,
 			&level.Permissions.CanEditTeams,
 			&level.Permissions.CanManageUsers,
@@ -113,9 +154,6 @@ func (r *OrganizationRepository) FindHierarchyLevels(ctx context.Context) ([]*or
 		}
 
 		// Handle NULL fields
-		if color.Valid {
-			level.Color = color.String
-		}
 		if canConfigureSystem.Valid {
 			level.Permissions.CanConfigureSystem = canConfigureSystem.Bool
 		}
@@ -150,12 +188,11 @@ func (r *OrganizationRepository) FindHierarchyLevels(ctx context.Context) ([]*or
 // FindHierarchyLevelByID retrieves a specific hierarchy level by ID
 func (r *OrganizationRepository) FindHierarchyLevelByID(ctx context.Context, id string) (*organization.HierarchyLevel, error) {
 	var level organization.HierarchyLevel
-	var color sql.NullString
 	var canConfigureSystem, canViewReports, canExportData sql.NullBool
 	var createdAt, updatedAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, name, position, color,
+		SELECT id, name, position,
 		       can_view_all_teams, can_edit_teams, can_manage_users,
 		       can_take_survey, can_view_analytics,
 		       can_configure_system, can_view_reports, can_export_data,
@@ -166,7 +203,6 @@ func (r *OrganizationRepository) FindHierarchyLevelByID(ctx context.Context, id 
 		&level.ID,
 		&level.Name,
 		&level.Position,
-		&color,
 		&level.Permissions.CanViewAllTeams,
 		&level.Permissions.CanEditTeams,
 		&level.Permissions.CanManageUsers,
@@ -180,16 +216,13 @@ func (r *OrganizationRepository) FindHierarchyLevelByID(ctx context.Context, id 
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("hierarchy level not found: %s", id)
+		return nil, fmt.Errorf("%w: %s", organization.ErrHierarchyLevelNotFound, id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to find hierarchy level: %w", err)
 	}
 
 	// Handle NULL fields
-	if color.Valid {
-		level.Color = color.String
-	}
 	if canConfigureSystem.Valid {
 		level.Permissions.CanConfigureSystem = canConfigureSystem.Bool
 	}
@@ -211,11 +244,6 @@ func (r *OrganizationRepository) FindHierarchyLevelByID(ctx context.Context, id 
 
 // SaveHierarchyLevel persists a new hierarchy level
 func (r *OrganizationRepository) SaveHierarchyLevel(ctx context.Context, level *organization.HierarchyLevel) error {
-	var color sql.NullString
-	if level.Color != "" {
-		color = sql.NullString{String: level.Color, Valid: true}
-	}
-
 	// Set timestamps
 	now := time.Now()
 	if level.CreatedAt.IsZero() {
@@ -225,17 +253,16 @@ func (r *OrganizationRepository) SaveHierarchyLevel(ctx context.Context, level *
 
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO hierarchy_levels (
-			id, name, position, color,
+			id, name, position,
 			can_view_all_teams, can_edit_teams, can_manage_users,
 			can_take_survey, can_view_analytics,
 			can_configure_system, can_view_reports, can_export_data,
 			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`,
 		level.ID,
 		level.Name,
 		level.Position,
-		color,
 		level.Permissions.CanViewAllTeams,
 		level.Permissions.CanEditTeams,
 		level.Permissions.CanManageUsers,
@@ -249,7 +276,7 @@ func (r *OrganizationRepository) SaveHierarchyLevel(ctx context.Context, level *
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to save hierarchy level: %w", err)
+		return classifyHierarchyLevelWriteError(err, level.ID, level.Name, "failed to save hierarchy level")
 	}
 
 	return nil
@@ -257,11 +284,6 @@ func (r *OrganizationRepository) SaveHierarchyLevel(ctx context.Context, level *
 
 // UpdateHierarchyLevel updates an existing hierarchy level
 func (r *OrganizationRepository) UpdateHierarchyLevel(ctx context.Context, level *organization.HierarchyLevel) error {
-	var color sql.NullString
-	if level.Color != "" {
-		color = sql.NullString{String: level.Color, Valid: true}
-	}
-
 	// Update timestamp
 	level.UpdatedAt = time.Now()
 
@@ -269,21 +291,19 @@ func (r *OrganizationRepository) UpdateHierarchyLevel(ctx context.Context, level
 		UPDATE hierarchy_levels SET
 			name = $1,
 			position = $2,
-			color = $3,
-			can_view_all_teams = $4,
-			can_edit_teams = $5,
-			can_manage_users = $6,
-			can_take_survey = $7,
-			can_view_analytics = $8,
-			can_configure_system = $9,
-			can_view_reports = $10,
-			can_export_data = $11,
-			updated_at = $12
-		WHERE id = $13
+			can_view_all_teams = $3,
+			can_edit_teams = $4,
+			can_manage_users = $5,
+			can_take_survey = $6,
+			can_view_analytics = $7,
+			can_configure_system = $8,
+			can_view_reports = $9,
+			can_export_data = $10,
+			updated_at = $11
+		WHERE id = $12
 	`,
 		level.Name,
 		level.Position,
-		color,
 		level.Permissions.CanViewAllTeams,
 		level.Permissions.CanEditTeams,
 		level.Permissions.CanManageUsers,
@@ -297,7 +317,7 @@ func (r *OrganizationRepository) UpdateHierarchyLevel(ctx context.Context, level
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to update hierarchy level: %w", err)
+		return classifyHierarchyLevelWriteError(err, level.ID, level.Name, "failed to update hierarchy level")
 	}
 
 	rowsAffected, err := result.RowsAffected()
@@ -305,15 +325,22 @@ func (r *OrganizationRepository) UpdateHierarchyLevel(ctx context.Context, level
 		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
-		return fmt.Errorf("hierarchy level not found: %s", level.ID)
+		return fmt.Errorf("%w: %s", organization.ErrHierarchyLevelNotFound, level.ID)
 	}
 
 	return nil
 }
 
-// DeleteHierarchyLevel removes a hierarchy level
-func (r *OrganizationRepository) DeleteHierarchyLevel(ctx context.Context, id string) error {
-	result, err := r.db.ExecContext(ctx, "DELETE FROM hierarchy_levels WHERE id = $1", id)
+// DeleteHierarchyLevel removes a hierarchy level. When tx is non-nil, the
+// delete runs as part of the caller-managed transaction (e.g. so the
+// following position compaction is atomic with the delete).
+func (r *OrganizationRepository) DeleteHierarchyLevel(ctx context.Context, tx interface{}, id string) error {
+	exec, err := r.execerFor(tx)
+	if err != nil {
+		return err
+	}
+
+	result, err := exec.ExecContext(ctx, "DELETE FROM hierarchy_levels WHERE id = $1", id)
 	if err != nil {
 		return fmt.Errorf("failed to delete hierarchy level: %w", err)
 	}
@@ -324,7 +351,43 @@ func (r *OrganizationRepository) DeleteHierarchyLevel(ctx context.Context, id st
 	}
 
 	if rowsAffected == 0 {
-		return fmt.Errorf("hierarchy level not found: %s", id)
+		return fmt.Errorf("%w: %s", organization.ErrHierarchyLevelNotFound, id)
+	}
+
+	return nil
+}
+
+// CompactHierarchyPositions renumbers all hierarchy levels to consecutive
+// positions (1..N) in their current position order, removing any gaps left
+// by a deleted level. It runs as two passes through a large, disjoint
+// offset so the table's UNIQUE(position) constraint is never violated by an
+// intermediate state within the same transaction.
+func (r *OrganizationRepository) CompactHierarchyPositions(ctx context.Context, tx interface{}) error {
+	exec, err := r.execerFor(tx)
+	if err != nil {
+		return err
+	}
+
+	const offset = 1000000
+
+	if _, err := exec.ExecContext(ctx, `
+		UPDATE hierarchy_levels hl
+		SET position = sub.rn + $1, updated_at = NOW()
+		FROM (
+			SELECT id, ROW_NUMBER() OVER (ORDER BY position) AS rn
+			FROM hierarchy_levels
+		) sub
+		WHERE hl.id = sub.id
+	`, offset); err != nil {
+		return fmt.Errorf("failed to stage hierarchy position compaction: %w", err)
+	}
+
+	if _, err := exec.ExecContext(ctx, `
+		UPDATE hierarchy_levels
+		SET position = position - $1
+		WHERE position >= $1
+	`, offset); err != nil {
+		return fmt.Errorf("failed to finalize hierarchy position compaction: %w", err)
 	}
 
 	return nil
@@ -347,68 +410,6 @@ func (r *OrganizationRepository) GetMaxHierarchyPosition(ctx context.Context) (i
 	}
 
 	return int(maxPosition.Int64), nil
-}
-
-// UpdateHierarchyPosition updates a hierarchy level's position
-func (r *OrganizationRepository) UpdateHierarchyPosition(ctx context.Context, tx interface{}, id string, newPosition int) error {
-	var err error
-
-	if tx != nil {
-		// Use provided transaction
-		sqlTx, ok := tx.(*sql.Tx)
-		if !ok {
-			return fmt.Errorf("invalid transaction type")
-		}
-		_, err = sqlTx.ExecContext(ctx, `
-			UPDATE hierarchy_levels
-			SET position = $1, updated_at = $2
-			WHERE id = $3
-		`, newPosition, time.Now(), id)
-	} else {
-		// Use regular connection
-		_, err = r.db.ExecContext(ctx, `
-			UPDATE hierarchy_levels
-			SET position = $1, updated_at = $2
-			WHERE id = $3
-		`, newPosition, time.Now(), id)
-	}
-
-	if err != nil {
-		return fmt.Errorf("failed to update hierarchy position: %w", err)
-	}
-
-	return nil
-}
-
-// ShiftHierarchyPositions shifts positions in a range
-func (r *OrganizationRepository) ShiftHierarchyPositions(ctx context.Context, tx interface{}, start, end int, delta int) error {
-	var err error
-
-	if tx != nil {
-		// Use provided transaction
-		sqlTx, ok := tx.(*sql.Tx)
-		if !ok {
-			return fmt.Errorf("invalid transaction type")
-		}
-		_, err = sqlTx.ExecContext(ctx, `
-			UPDATE hierarchy_levels
-			SET position = position + $1, updated_at = $2
-			WHERE position >= $3 AND position <= $4
-		`, delta, time.Now(), start, end)
-	} else {
-		// Use regular connection
-		_, err = r.db.ExecContext(ctx, `
-			UPDATE hierarchy_levels
-			SET position = position + $1, updated_at = $2
-			WHERE position >= $3 AND position <= $4
-		`, delta, time.Now(), start, end)
-	}
-
-	if err != nil {
-		return fmt.Errorf("failed to shift hierarchy positions: %w", err)
-	}
-
-	return nil
 }
 
 // CountUsersAtLevel counts users at a specific hierarchy level
@@ -796,11 +797,6 @@ func (r *OrganizationRepository) UpdateRetentionSettings(ctx context.Context, mo
 
 // saveHierarchyLevelTx saves a hierarchy level within a transaction
 func (r *OrganizationRepository) saveHierarchyLevelTx(ctx context.Context, tx *sql.Tx, level *organization.HierarchyLevel) error {
-	var color sql.NullString
-	if level.Color != "" {
-		color = sql.NullString{String: level.Color, Valid: true}
-	}
-
 	// Set timestamps
 	now := time.Now()
 	if level.CreatedAt.IsZero() {
@@ -810,16 +806,15 @@ func (r *OrganizationRepository) saveHierarchyLevelTx(ctx context.Context, tx *s
 
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO hierarchy_levels (
-			id, name, position, color,
+			id, name, position,
 			can_view_all_teams, can_edit_teams, can_manage_users,
 			can_take_survey, can_view_analytics,
 			can_configure_system, can_view_reports, can_export_data,
 			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			position = EXCLUDED.position,
-			color = EXCLUDED.color,
 			can_view_all_teams = EXCLUDED.can_view_all_teams,
 			can_edit_teams = EXCLUDED.can_edit_teams,
 			can_manage_users = EXCLUDED.can_manage_users,
@@ -833,7 +828,6 @@ func (r *OrganizationRepository) saveHierarchyLevelTx(ctx context.Context, tx *s
 		level.ID,
 		level.Name,
 		level.Position,
-		color,
 		level.Permissions.CanViewAllTeams,
 		level.Permissions.CanEditTeams,
 		level.Permissions.CanManageUsers,
@@ -847,7 +841,7 @@ func (r *OrganizationRepository) saveHierarchyLevelTx(ctx context.Context, tx *s
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to save hierarchy level: %w", err)
+		return classifyHierarchyLevelWriteError(err, level.ID, level.Name, "failed to save hierarchy level")
 	}
 
 	return nil

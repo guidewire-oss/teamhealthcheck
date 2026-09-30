@@ -141,6 +141,256 @@ var _ = Describe("Admin API", func() {
 			Expect(response.ID).To(Equal("test-level-1"))
 			Expect(response.Name).To(Equal("Test Level"))
 		})
+
+		It("should create a level successfully with no color field, and ignore any color sent by the client", func() {
+			// Note: the level's own id/name intentionally avoid the word
+			// "color" so the response-body assertion below can't produce a
+			// false positive from the ID itself.
+			reqBody := map[string]interface{}{
+				"id":   "test-level-no-swatch",
+				"name": "Test Level No Swatch",
+				// A client attempting to send a "color" field must be
+				// silently ignored: the feature no longer exists.
+				"color": "#FF0000",
+				"permissions": map[string]bool{
+					"canViewAllTeams":  true,
+					"canEditTeams":     false,
+					"canManageUsers":   false,
+					"canTakeSurvey":    true,
+					"canViewAnalytics": false,
+				},
+			}
+			body, _ := json.Marshal(reqBody)
+			req := httptest.NewRequest("POST", "/api/v1/admin/hierarchy-levels", bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusCreated))
+			Expect(w.Body.String()).NotTo(ContainSubstring("color"))
+
+			var raw map[string]interface{}
+			Expect(json.Unmarshal(w.Body.Bytes(), &raw)).To(Succeed())
+			Expect(raw).NotTo(HaveKey("color"))
+		})
+
+		It("should assign position on the server and ignore any position sent by the client", func() {
+			before := httptest.NewRequest("GET", "/api/v1/admin/hierarchy-levels", nil)
+			before.Header.Set("Authorization", "Bearer "+adminToken)
+			beforeW := httptest.NewRecorder()
+			router.ServeHTTP(beforeW, before)
+			var beforeList dto.HierarchyLevelsResponse
+			Expect(json.Unmarshal(beforeW.Body.Bytes(), &beforeList)).To(Succeed())
+			maxPositionBefore := 0
+			for _, lvl := range beforeList.Levels {
+				if lvl.Position > maxPositionBefore {
+					maxPositionBefore = lvl.Position
+				}
+			}
+
+			// A client attempting to smuggle a "position" field must be
+			// ignored: the server always appends after the current max.
+			reqBody := map[string]interface{}{
+				"id":       "test-level-position",
+				"name":     "Test Level Position",
+				"position": 999,
+			}
+			body, _ := json.Marshal(reqBody)
+			req := httptest.NewRequest("POST", "/api/v1/admin/hierarchy-levels", bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusCreated))
+			var response dto.HierarchyLevelDTO
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.Position).To(Equal(maxPositionBefore + 1))
+		})
+
+		It("should generate a valid, non-empty, ASCII id for a Unicode display name", func() {
+			reqBody := dto.CreateHierarchyLevelRequest{
+				Name: "Café Manager",
+			}
+			body, _ := json.Marshal(reqBody)
+			req := httptest.NewRequest("POST", "/api/v1/admin/hierarchy-levels", bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusCreated))
+			var response dto.HierarchyLevelDTO
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.ID).NotTo(BeEmpty())
+			Expect(response.ID).To(MatchRegexp(`^[a-z0-9-]+$`))
+			Expect(response.Name).To(Equal("Café Manager"))
+
+			db.Exec("DELETE FROM hierarchy_levels WHERE id = $1", response.ID)
+		})
+
+		It("should fall back to a generic id for a name with no ASCII letters or digits", func() {
+			reqBody := dto.CreateHierarchyLevelRequest{
+				Name: "経理部",
+			}
+			body, _ := json.Marshal(reqBody)
+			req := httptest.NewRequest("POST", "/api/v1/admin/hierarchy-levels", bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusCreated))
+			var response dto.HierarchyLevelDTO
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.ID).NotTo(BeEmpty())
+			Expect(response.ID).To(MatchRegexp(`^[a-z0-9-]+$`))
+			Expect(response.Name).To(Equal("経理部"))
+
+			db.Exec("DELETE FROM hierarchy_levels WHERE id = $1", response.ID)
+		})
+
+		It("should never collide or overwrite for names that differ only in punctuation", func() {
+			createLevel := func(name string) dto.HierarchyLevelDTO {
+				reqBody := dto.CreateHierarchyLevelRequest{Name: name}
+				body, _ := json.Marshal(reqBody)
+				req := httptest.NewRequest("POST", "/api/v1/admin/hierarchy-levels", bytes.NewBuffer(body))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer "+adminToken)
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				Expect(w.Code).To(Equal(http.StatusCreated))
+				var response dto.HierarchyLevelDTO
+				Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+				return response
+			}
+
+			first := createLevel("Team Lead!")
+			second := createLevel("Team Lead?")
+
+			Expect(first.ID).NotTo(Equal(second.ID))
+			Expect(first.Name).To(Equal("Team Lead!"))
+			Expect(second.Name).To(Equal("Team Lead?"))
+
+			db.Exec("DELETE FROM hierarchy_levels WHERE id = $1", first.ID)
+			db.Exec("DELETE FROM hierarchy_levels WHERE id = $1", second.ID)
+		})
+
+		It("should reject a duplicate name with a clear 409 conflict instead of a generic 500", func() {
+			first := dto.CreateHierarchyLevelRequest{ID: "test-dup-1", Name: "Duplicate Level"}
+			body, _ := json.Marshal(first)
+			req := httptest.NewRequest("POST", "/api/v1/admin/hierarchy-levels", bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusCreated))
+
+			second := dto.CreateHierarchyLevelRequest{ID: "test-dup-2", Name: "Duplicate Level"}
+			body2, _ := json.Marshal(second)
+			req2 := httptest.NewRequest("POST", "/api/v1/admin/hierarchy-levels", bytes.NewBuffer(body2))
+			req2.Header.Set("Content-Type", "application/json")
+			req2.Header.Set("Authorization", "Bearer "+adminToken)
+			w2 := httptest.NewRecorder()
+			router.ServeHTTP(w2, req2)
+
+			Expect(w2.Code).To(Equal(http.StatusConflict))
+			var errResp dto.ErrorResponse
+			Expect(json.Unmarshal(w2.Body.Bytes(), &errResp)).To(Succeed())
+			Expect(errResp.Message).To(ContainSubstring("Duplicate Level"))
+		})
+	})
+
+	Describe("PUT /api/v1/admin/hierarchy-levels/:id", func() {
+		It("should preserve the level id when renaming", func() {
+			createReq := dto.CreateHierarchyLevelRequest{ID: "test-rename-1", Name: "Old Name"}
+			body, _ := json.Marshal(createReq)
+			req := httptest.NewRequest("POST", "/api/v1/admin/hierarchy-levels", bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusCreated))
+
+			updateReq := dto.UpdateHierarchyLevelRequest{Name: "New Name"}
+			updateBody, _ := json.Marshal(updateReq)
+			putReq := httptest.NewRequest("PUT", "/api/v1/admin/hierarchy-levels/test-rename-1", bytes.NewBuffer(updateBody))
+			putReq.Header.Set("Content-Type", "application/json")
+			putReq.Header.Set("Authorization", "Bearer "+adminToken)
+			putW := httptest.NewRecorder()
+			router.ServeHTTP(putW, putReq)
+
+			Expect(putW.Code).To(Equal(http.StatusOK))
+			var response dto.HierarchyLevelDTO
+			Expect(json.Unmarshal(putW.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.ID).To(Equal("test-rename-1"))
+			Expect(response.Name).To(Equal("New Name"))
+		})
+
+		It("should update successfully and ignore any color sent by the client", func() {
+			createReq := dto.CreateHierarchyLevelRequest{ID: "test-color-update", Name: "Color Update Level"}
+			body, _ := json.Marshal(createReq)
+			req := httptest.NewRequest("POST", "/api/v1/admin/hierarchy-levels", bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusCreated))
+
+			updateReq := map[string]interface{}{
+				"name":  "Color Update Level Renamed",
+				"color": "#123ABC",
+			}
+			updateBody, _ := json.Marshal(updateReq)
+			putReq := httptest.NewRequest("PUT", "/api/v1/admin/hierarchy-levels/test-color-update", bytes.NewBuffer(updateBody))
+			putReq.Header.Set("Content-Type", "application/json")
+			putReq.Header.Set("Authorization", "Bearer "+adminToken)
+			putW := httptest.NewRecorder()
+			router.ServeHTTP(putW, putReq)
+
+			Expect(putW.Code).To(Equal(http.StatusOK))
+			var raw map[string]interface{}
+			Expect(json.Unmarshal(putW.Body.Bytes(), &raw)).To(Succeed())
+			Expect(raw).NotTo(HaveKey("color"))
+			Expect(raw["name"]).To(Equal("Color Update Level Renamed"))
+		})
+	})
+
+	Describe("DELETE /api/v1/admin/hierarchy-levels/:id", func() {
+		It("should compact remaining positions to contiguous 1..N after a delete", func() {
+			createLevel := func(id string) {
+				reqBody := dto.CreateHierarchyLevelRequest{ID: id, Name: "Compact " + id}
+				body, _ := json.Marshal(reqBody)
+				req := httptest.NewRequest("POST", "/api/v1/admin/hierarchy-levels", bytes.NewBuffer(body))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer "+adminToken)
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				Expect(w.Code).To(Equal(http.StatusCreated))
+			}
+			createLevel("test-compact-1")
+			createLevel("test-compact-2")
+			createLevel("test-compact-3")
+
+			delReq := httptest.NewRequest("DELETE", "/api/v1/admin/hierarchy-levels/test-compact-2", nil)
+			delReq.Header.Set("Authorization", "Bearer "+adminToken)
+			delW := httptest.NewRecorder()
+			router.ServeHTTP(delW, delReq)
+			Expect(delW.Code).To(Equal(http.StatusOK))
+
+			listReq := httptest.NewRequest("GET", "/api/v1/admin/hierarchy-levels", nil)
+			listReq.Header.Set("Authorization", "Bearer "+adminToken)
+			listW := httptest.NewRecorder()
+			router.ServeHTTP(listW, listReq)
+			var list dto.HierarchyLevelsResponse
+			Expect(json.Unmarshal(listW.Body.Bytes(), &list)).To(Succeed())
+
+			// Positions must be exactly 1..N with no gaps after the delete.
+			for i, lvl := range list.Levels {
+				Expect(lvl.Position).To(Equal(i + 1))
+			}
+		})
 	})
 
 	Describe("GET /api/v1/admin/users", func() {

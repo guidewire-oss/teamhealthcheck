@@ -1,12 +1,11 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Save, X, ChevronUp, ChevronDown, Shield, Eye, Users, FileText, Download, Settings } from 'lucide-react';
+import { Plus, Edit2, Trash2, Save, AlertCircle, Eye, Users, FileText, type LucideIcon } from 'lucide-react';
 import {
   listHierarchyLevels,
   createHierarchyLevel,
   updateHierarchyLevel,
-  updateHierarchyPosition,
   deleteHierarchyLevel,
   clearAdminCacheKeys,
   type HierarchyLevel,
@@ -19,18 +18,40 @@ interface LocalPermissions {
   canViewAllTeams: boolean;
   canEditTeams: boolean;
   canManageUsers: boolean;
-  canConfigureSystem: boolean;
-  canViewReports: boolean;
-  canExportData: boolean;
   canTakeSurvey: boolean;
   canViewAnalytics: boolean;
 }
 
 interface EditFormData {
   name: string;
-  color: string;
   permissions: LocalPermissions;
 }
+
+const EMPTY_PERMISSIONS: LocalPermissions = {
+  canViewAllTeams: false,
+  canEditTeams: false,
+  canManageUsers: false,
+  canTakeSurvey: false,
+  canViewAnalytics: false,
+};
+
+const permissionLabels: Record<keyof LocalPermissions, string> = {
+  canViewAllTeams: 'View All Teams',
+  canEditTeams: 'Edit Teams',
+  canManageUsers: 'Manage Users',
+  canTakeSurvey: 'Take Survey',
+  canViewAnalytics: 'View Analytics',
+};
+
+const permissionIcons: Record<keyof LocalPermissions, LucideIcon> = {
+  canViewAllTeams: Eye,
+  canEditTeams: Users,
+  canManageUsers: Users,
+  canTakeSurvey: FileText,
+  canViewAnalytics: FileText,
+};
+
+const PERMISSION_KEYS = Object.keys(permissionLabels) as (keyof LocalPermissions)[];
 
 export default function HierarchyConfig() {
   const [levels, setLevels] = useState<HierarchyLevel[]>([]);
@@ -39,23 +60,9 @@ export default function HierarchyConfig() {
   const [editingLevel, setEditingLevel] = useState<string | null>(null);
   const [editFormData, setEditFormData] = useState<EditFormData | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
-  const [newLevel, setNewLevel] = useState<{
-    name: string;
-    color: string;
-    permissions: LocalPermissions;
-  }>({
+  const [newLevel, setNewLevel] = useState<{ name: string; permissions: LocalPermissions }>({
     name: '',
-    color: '#6366F1',
-    permissions: {
-      canViewAllTeams: false,
-      canEditTeams: false,
-      canManageUsers: false,
-      canConfigureSystem: false,
-      canViewReports: false,
-      canExportData: false,
-      canTakeSurvey: false,
-      canViewAnalytics: false,
-    }
+    permissions: { ...EMPTY_PERMISSIONS },
   });
 
   useEffect(() => {
@@ -90,10 +97,6 @@ export default function HierarchyConfig() {
     canManageUsers: backend.canManageUsers,
     canTakeSurvey: backend.canTakeSurvey,
     canViewAnalytics: backend.canViewAnalytics,
-    // Frontend-only permissions (not in backend yet)
-    canConfigureSystem: false,
-    canViewReports: false,
-    canExportData: false,
   });
 
   const handleAddLevel = async () => {
@@ -105,7 +108,6 @@ export default function HierarchyConfig() {
 
       const request: CreateHierarchyLevelRequest = {
         name: newLevel.name.trim(),
-        position: levels.length + 1,
         permissions: mapToBackendPermissions(newLevel.permissions),
       };
 
@@ -114,20 +116,7 @@ export default function HierarchyConfig() {
       await loadHierarchyLevels();
 
       setShowAddForm(false);
-      setNewLevel({
-        name: '',
-        color: '#6366F1',
-        permissions: {
-          canViewAllTeams: false,
-          canEditTeams: false,
-          canManageUsers: false,
-          canConfigureSystem: false,
-          canViewReports: false,
-          canExportData: false,
-          canTakeSurvey: false,
-          canViewAnalytics: false,
-        }
-      });
+      setNewLevel({ name: '', permissions: { ...EMPTY_PERMISSIONS } });
     } catch (err) {
       console.error('Failed to create hierarchy level:', err);
       setError(err instanceof Error ? err.message : 'Failed to create hierarchy level');
@@ -182,80 +171,31 @@ export default function HierarchyConfig() {
     }
   };
 
-  const moveLevel = async (index: number, direction: 'up' | 'down') => {
-    const level = levels[index];
-    let newPosition = level.position;
-
-    if (direction === 'up' && index > 0) {
-      newPosition = levels[index - 1].position;
-    } else if (direction === 'down' && index < levels.length - 1) {
-      newPosition = levels[index + 1].position;
-    } else {
-      return; // Can't move
-    }
-
-    try {
-      setLoading(true);
-      setError(null);
-
-      await updateHierarchyPosition(level.id, { position: newPosition });
-      clearAdminCacheKeys('hierarchy-levels');
-      await loadHierarchyLevels();
-    } catch (err) {
-      console.error('Failed to reorder hierarchy level:', err);
-      setError(err instanceof Error ? err.message : 'Failed to reorder hierarchy level');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const startEdit = (level: HierarchyLevel) => {
+    setError(null);
     setEditingLevel(level.id);
     setEditFormData({
       name: level.name,
-      color: '#6366F1', // Backend doesn't support color yet
       permissions: mapFromBackendPermissions(level.permissions),
     });
   };
 
-  const PermissionIcon = ({ permission, label }: { permission: keyof LocalPermissions, label: string }) => {
-    const icons: Record<keyof LocalPermissions, typeof Shield> = {
-      canViewAllTeams: Eye,
-      canEditTeams: Users,
-      canManageUsers: Users,
-      canConfigureSystem: Settings,
-      canViewReports: FileText,
-      canExportData: Download,
-      canTakeSurvey: FileText,
-      canViewAnalytics: FileText,
-    };
-    const Icon = icons[permission] || Shield;
-
-    return (
-      <div className="flex items-center gap-2 text-sm">
-        <Icon className="w-4 h-4" />
-        <span>{label}</span>
-      </div>
-    );
+  const cancelAdd = () => {
+    setShowAddForm(false);
+    setNewLevel({ name: '', permissions: { ...EMPTY_PERMISSIONS } });
   };
 
-  const permissionLabels: Record<keyof LocalPermissions, string> = {
-    canViewAllTeams: 'View All Teams',
-    canEditTeams: 'Edit Teams',
-    canManageUsers: 'Manage Users',
-    canConfigureSystem: 'Configure System',
-    canViewReports: 'View Reports',
-    canExportData: 'Export Data',
-    canTakeSurvey: 'Take Survey',
-    canViewAnalytics: 'View Analytics',
+  const cancelEdit = () => {
+    setEditingLevel(null);
+    setEditFormData(null);
   };
 
   if (loading && levels.length === 0) {
     return (
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading hierarchy levels...</p>
+          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600 mx-auto"></div>
+          <p className="mt-4 text-sm text-gray-500">Loading hierarchy levels...</p>
         </div>
       </div>
     );
@@ -264,287 +204,283 @@ export default function HierarchyConfig() {
   return (
     <div className="space-y-6">
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <div className="flex items-center gap-2 text-red-800">
-            <X className="w-5 h-5" />
-            <span className="font-medium">Error: {error}</span>
+        <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 shrink-0" />
+          <div>
+            <p className="font-medium text-red-900">Error</p>
+            <p className="text-sm text-red-700">{error}</p>
           </div>
         </div>
       )}
 
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Hierarchy Configuration</h2>
-          <p className="text-gray-500 mt-1">Define organizational levels and permissions</p>
+          <h2 className="text-xl font-semibold text-gray-900">Hierarchy Configuration</h2>
+          <p className="text-sm text-gray-500 mt-0.5">Define organizational levels and permissions</p>
         </div>
         <button
           data-testid="add-level-btn"
-          onClick={() => setShowAddForm(true)}
+          onClick={() => {
+            setError(null);
+            setShowAddForm(true);
+          }}
           disabled={loading}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <Plus className="w-5 h-5" />
+          <Plus className="w-4 h-4" />
           Add Level
         </button>
       </div>
 
-      {showAddForm && (
-        <div className="bg-white p-6 rounded-xl shadow-sm border" data-testid="create-level-form">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Add New Hierarchy Level</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Level Name</label>
-              <input
-                data-testid="level-name-input"
-                type="text"
-                value={newLevel.name}
-                onChange={(e) => setNewLevel({ ...newLevel, name: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                placeholder="e.g., Senior Director"
-                disabled={loading}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Color</label>
-              <div className="flex gap-2">
-                <input
-                  type="color"
-                  value={newLevel.color}
-                  onChange={(e) => setNewLevel({ ...newLevel, color: e.target.value })}
-                  className="w-20 h-10 border border-gray-300 rounded cursor-pointer"
-                  disabled={loading}
-                />
-                <input
-                  type="text"
-                  value={newLevel.color}
-                  onChange={(e) => setNewLevel({ ...newLevel, color: e.target.value })}
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg"
-                  disabled={loading}
-                />
-              </div>
-            </div>
+      {levels.length === 0 ? (
+        <div className="text-center py-8 text-gray-500" data-testid="hierarchy-empty-state">
+          No hierarchy levels yet. Click &ldquo;Add Level&rdquo; to create one.
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl shadow-sm border overflow-hidden" data-testid="hierarchy-list">
+          <div className="hidden sm:flex items-center gap-4 px-6 py-3 bg-gray-50 text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <div className="w-10 shrink-0">#</div>
+            <div className="w-48 shrink-0">Level</div>
+            <div className="flex-1">Permissions</div>
+            <div className="w-20 shrink-0 text-right">Actions</div>
           </div>
 
-          <div className="mt-4">
-            <label className="block text-sm font-medium text-gray-700 mb-2">Permissions</label>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-              {(Object.entries(permissionLabels) as [keyof LocalPermissions, string][]).map(([key, label]) => (
-                <label key={key} className="flex items-center gap-2">
-                  <input
-                    data-testid={`permission-${key}`}
-                    type="checkbox"
-                    checked={newLevel.permissions[key]}
-                    onChange={(e) => setNewLevel({
-                      ...newLevel,
-                      permissions: {
-                        ...newLevel.permissions,
-                        [key]: e.target.checked
-                      }
-                    })}
-                    className="w-4 h-4 text-indigo-600 rounded"
-                    disabled={loading}
-                  />
-                  <span className="text-sm">{label}</span>
-                </label>
-              ))}
-            </div>
-          </div>
+          <div className="divide-y divide-gray-100">
+            {levels.map((level) => {
+              const perms = mapFromBackendPermissions(level.permissions);
+              const enabledKeys = PERMISSION_KEYS.filter((key) => perms[key]);
 
-          <div className="flex gap-4 mt-6">
-            <button
-              data-testid="save-level-btn"
-              onClick={handleAddLevel}
-              disabled={loading || !newLevel.name.trim()}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Save className="w-4 h-4" />
-              {loading ? 'Saving...' : 'Save Level'}
-            </button>
-            <button
-              onClick={() => {
-                setShowAddForm(false);
-                setNewLevel({
-                  name: '',
-                  color: '#6366F1',
-                  permissions: {
-                    canViewAllTeams: false,
-                    canEditTeams: false,
-                    canManageUsers: false,
-                    canConfigureSystem: false,
-                    canViewReports: false,
-                    canExportData: false,
-                    canTakeSurvey: false,
-                    canViewAnalytics: false,
-                  }
-                });
-              }}
-              disabled={loading}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <X className="w-4 h-4" />
-              Cancel
-            </button>
+              return (
+                <div
+                  key={level.id}
+                  data-testid="hierarchy-level-row"
+                  className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-4 sm:px-6 py-3 hover:bg-gray-50 transition-colors"
+                >
+                  <div className="flex items-center gap-3 sm:w-48 shrink-0 min-w-0">
+                    <span
+                      className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-gray-100 text-gray-600 text-xs font-semibold shrink-0"
+                      aria-label={`Position ${level.position}`}
+                    >
+                      {String(level.position).padStart(2, '0')}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="font-medium text-gray-900 truncate">{level.name}</p>
+                      <p className="text-xs text-gray-500 sm:hidden">
+                        {enabledKeys.length} permission{enabledKeys.length === 1 ? '' : 's'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 min-w-0 flex flex-wrap gap-1.5 pl-10 sm:pl-0">
+                    {enabledKeys.length > 0 ? (
+                      enabledKeys.map((key) => {
+                        const Icon = permissionIcons[key];
+                        return (
+                          <span
+                            key={key}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs"
+                          >
+                            <Icon className="w-3 h-3" />
+                            {permissionLabels[key]}
+                          </span>
+                        );
+                      })
+                    ) : (
+                      <span className="text-xs text-gray-400 italic">No permissions</span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1 shrink-0 self-end sm:self-center sm:ml-4">
+                    <button
+                      data-testid="edit-level-btn"
+                      onClick={() => startEdit(level)}
+                      disabled={loading}
+                      title="Edit level"
+                      aria-label={`Edit ${level.name}`}
+                      className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      data-testid="delete-level-btn"
+                      onClick={() => handleDeleteLevel(level.id)}
+                      disabled={loading}
+                      title="Delete level"
+                      aria-label={`Delete ${level.name}`}
+                      className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
 
-      <div className="space-y-4" data-testid="hierarchy-list">
-        {levels.map((level, index) => (
-          <div key={level.id} className="bg-white p-6 rounded-xl shadow-sm border" data-testid="hierarchy-level-row">
-            {editingLevel === level.id ? (
-              <div className="space-y-4" data-testid="edit-level-form">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Level Name</label>
-                    <input
-                      data-testid="edit-level-name-input"
-                      type="text"
-                      value={editFormData?.name || ''}
-                      onChange={(e) => setEditFormData(prev => prev ? { ...prev, name: e.target.value } : null)}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                      disabled={loading}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Color</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="color"
-                        value={editFormData?.color || '#6366F1'}
-                        onChange={(e) => setEditFormData(prev => prev ? { ...prev, color: e.target.value } : null)}
-                        className="w-20 h-10 border border-gray-300 rounded cursor-pointer"
-                        disabled={loading}
-                      />
-                      <input
-                        type="text"
-                        value={editFormData?.color || '#6366F1'}
-                        onChange={(e) => setEditFormData(prev => prev ? { ...prev, color: e.target.value } : null)}
-                        className="flex-1 px-4 py-2 border border-gray-300 rounded-lg"
-                        disabled={loading}
-                      />
-                    </div>
-                  </div>
-                </div>
+      {showAddForm && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+          data-testid="create-level-form"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="add-level-modal-title"
+        >
+          <div className="bg-white rounded-lg p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <h3 id="add-level-modal-title" className="text-lg font-semibold text-gray-900 mb-4">
+              Add New Hierarchy Level
+            </h3>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Permissions</label>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                    {(Object.entries(permissionLabels) as [keyof LocalPermissions, string][]).map(([key, label]) => (
-                      <label key={key} className="flex items-center gap-2">
-                        <input
-                          data-testid={`edit-permission-${key}`}
-                          type="checkbox"
-                          checked={editFormData?.permissions[key] || false}
-                          onChange={(e) => setEditFormData(prev => prev ? {
-                            ...prev,
-                            permissions: { ...prev.permissions, [key]: e.target.checked }
-                          } : null)}
-                          className="w-4 h-4 text-indigo-600 rounded"
-                          disabled={loading}
-                        />
-                        <span className="text-sm">{label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex gap-4">
-                  <button
-                    data-testid="save-edit-btn"
-                    onClick={() => handleUpdateLevel(level.id)}
-                    disabled={loading || !editFormData?.name.trim()}
-                    className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Save className="w-4 h-4" />
-                    {loading ? 'Saving...' : 'Save Changes'}
-                  </button>
-                  <button
-                    onClick={() => {
-                      setEditingLevel(null);
-                      setEditFormData(null);
-                    }}
-                    disabled={loading}
-                    className="flex items-center gap-2 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <X className="w-4 h-4" />
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex justify-between items-start">
-                <div className="flex-1">
-                  <div className="flex items-center gap-4 mb-2">
-                    <div
-                      className="w-4 h-4 rounded bg-indigo-600"
-                    />
-                    <h3 className="text-lg font-semibold text-gray-900">
-                      Position {level.position}: {level.name}
-                    </h3>
-                  </div>
-
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-4">
-                    {(Object.entries(mapFromBackendPermissions(level.permissions)) as [keyof LocalPermissions, boolean][])
-                      .filter(([_, enabled]) => enabled)
-                      .map(([key]) => (
-                        <PermissionIcon
-                          key={key}
-                          permission={key}
-                          label={permissionLabels[key]}
-                        />
-                      ))}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    data-testid="move-up-btn"
-                    onClick={() => moveLevel(index, 'up')}
-                    disabled={index === 0 || loading}
-                    aria-label="Move level up"
-                    className={`p-2 rounded-lg transition-colors ${
-                      index === 0 || loading
-                        ? 'text-gray-300 cursor-not-allowed'
-                        : 'text-gray-600 hover:bg-gray-100'
-                    }`}
-                  >
-                    <ChevronUp className="w-5 h-5" />
-                  </button>
-                  <button
-                    data-testid="move-down-btn"
-                    onClick={() => moveLevel(index, 'down')}
-                    disabled={index === levels.length - 1 || loading}
-                    aria-label="Move level down"
-                    className={`p-2 rounded-lg transition-colors ${
-                      index === levels.length - 1 || loading
-                        ? 'text-gray-300 cursor-not-allowed'
-                        : 'text-gray-600 hover:bg-gray-100'
-                    }`}
-                  >
-                    <ChevronDown className="w-5 h-5" />
-                  </button>
-                  <button
-                    data-testid="edit-level-btn"
-                    onClick={() => startEdit(level)}
-                    disabled={loading}
-                    className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Edit2 className="w-5 h-5" />
-                  </button>
-                  <button
-                    data-testid="delete-level-btn"
-                    onClick={() => handleDeleteLevel(level.id)}
-                    disabled={loading}
-                    className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Trash2 className="w-5 h-5" />
-                  </button>
-                </div>
+            {error && (
+              <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-red-600 mt-0.5 shrink-0" />
+                <p className="text-sm text-red-700">{error}</p>
               </div>
             )}
+
+            <div>
+              <label htmlFor="new-level-name" className="block text-sm font-medium text-gray-700 mb-1">
+                Level Name
+              </label>
+              <input
+                id="new-level-name"
+                data-testid="level-name-input"
+                type="text"
+                value={newLevel.name}
+                onChange={(e) => setNewLevel({ ...newLevel, name: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                placeholder="e.g., Senior Director"
+                disabled={loading}
+                autoFocus
+              />
+            </div>
+
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Permissions</label>
+              <div className="grid grid-cols-2 gap-3">
+                {PERMISSION_KEYS.map((key) => (
+                  <label key={key} className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      data-testid={`permission-${key}`}
+                      type="checkbox"
+                      checked={newLevel.permissions[key]}
+                      onChange={(e) =>
+                        setNewLevel({
+                          ...newLevel,
+                          permissions: { ...newLevel.permissions, [key]: e.target.checked },
+                        })
+                      }
+                      className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
+                      disabled={loading}
+                    />
+                    <span className="text-sm text-gray-700">{permissionLabels[key]}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-4 mt-6 justify-end">
+              <button
+                onClick={cancelAdd}
+                disabled={loading}
+                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                data-testid="save-level-btn"
+                onClick={handleAddLevel}
+                disabled={loading || !newLevel.name.trim()}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Save className="w-4 h-4" />
+                {loading ? 'Saving...' : 'Save Level'}
+              </button>
+            </div>
           </div>
-        ))}
-      </div>
+        </div>
+      )}
+
+      {editingLevel && editFormData && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+          data-testid="edit-level-form"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-level-modal-title"
+        >
+          <div className="bg-white rounded-lg p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <h3 id="edit-level-modal-title" className="text-lg font-semibold text-gray-900 mb-4">
+              Edit Hierarchy Level
+            </h3>
+
+            {error && (
+              <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-red-600 mt-0.5 shrink-0" />
+                <p className="text-sm text-red-700">{error}</p>
+              </div>
+            )}
+
+            <div>
+              <label htmlFor="edit-level-name" className="block text-sm font-medium text-gray-700 mb-1">
+                Level Name
+              </label>
+              <input
+                id="edit-level-name"
+                data-testid="edit-level-name-input"
+                type="text"
+                value={editFormData.name}
+                onChange={(e) => setEditFormData(prev => prev ? { ...prev, name: e.target.value } : null)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                disabled={loading}
+                autoFocus
+              />
+            </div>
+
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Permissions</label>
+              <div className="grid grid-cols-2 gap-3">
+                {PERMISSION_KEYS.map((key) => (
+                  <label key={key} className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      data-testid={`edit-permission-${key}`}
+                      type="checkbox"
+                      checked={editFormData.permissions[key]}
+                      onChange={(e) => setEditFormData(prev => prev ? {
+                        ...prev,
+                        permissions: { ...prev.permissions, [key]: e.target.checked }
+                      } : null)}
+                      className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
+                      disabled={loading}
+                    />
+                    <span className="text-sm text-gray-700">{permissionLabels[key]}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-4 mt-6 justify-end">
+              <button
+                onClick={cancelEdit}
+                disabled={loading}
+                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                data-testid="save-edit-btn"
+                onClick={() => handleUpdateLevel(editingLevel)}
+                disabled={loading || !editFormData.name.trim()}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Save className="w-4 h-4" />
+                {loading ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

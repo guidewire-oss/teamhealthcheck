@@ -41,10 +41,6 @@ func (h *AdminHandler) UpdateHierarchyLevel(c *gin.Context) {
 	h.HierarchyHandler.UpdateHierarchyLevel(c)
 }
 
-func (h *AdminHandler) UpdateHierarchyPosition(c *gin.Context) {
-	h.HierarchyHandler.UpdateHierarchyPosition(c)
-}
-
 func (h *AdminHandler) DeleteHierarchyLevel(c *gin.Context) {
 	h.HierarchyHandler.DeleteHierarchyLevel(c)
 }
