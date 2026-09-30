@@ -1,6 +1,6 @@
 # GitHub Actions Documentation
 
-This document describes the GitHub Actions workflows used in the Team360 project for CI/CD, security scanning, and automated dependency management.
+This document describes the GitHub Actions workflows used in the Team Health Check project for CI/CD, security scanning, and automated dependency management.
 
 ## Quick Reference
 

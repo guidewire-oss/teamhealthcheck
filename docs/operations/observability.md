@@ -1,6 +1,7 @@
-# Team360 Observability Guide
 
-Team360 provides comprehensive observability through **metrics**, **distributed tracing**, and **structured logging**. The system is designed to be backend-agnostic, allowing you to use your preferred observability platform.
+# Team Health Check Observability Guide
+
+Team Health Check provides comprehensive observability through **metrics**, **distributed tracing**, and **structured logging**. The system is designed to be backend-agnostic, allowing you to use your preferred observability platform.
 
 ## Table of Contents
 
@@ -25,7 +26,7 @@ Team360 provides comprehensive observability through **metrics**, **distributed 
 
 ## Architecture Overview
 
-Team360 uses **OpenTelemetry (OTel)** as the telemetry standard, providing vendor-agnostic instrumentation:
+Team Health Check uses **OpenTelemetry (OTel)** as the telemetry standard, providing vendor-agnostic instrumentation:
 
 ```
 ┌─────────────────┐      ┌──────────────────┐      ┌─────────────────────┐
@@ -87,7 +88,7 @@ make run-with-otel
 
 ## Metrics
 
-Team360 exposes 40+ metrics organized into six categories. All metrics use the `teams360_` prefix when exported through Prometheus.
+Team Health Check exposes 40+ metrics organized into six categories. All metrics use the `teams360_` prefix when exported through Prometheus.
 
 ### User Engagement Metrics
 
@@ -183,7 +184,7 @@ groups:
 
 ### Survey/Health Check Metrics
 
-These are the **core product metrics** for Team360, tracking health check survey participation and quality. These metrics directly measure whether the product is delivering value.
+These are the **core product metrics** for Team Health Check, tracking health check survey participation and quality. These metrics directly measure whether the product is delivering value.
 
 | Metric Name | Type | Description | Labels |
 |-------------|------|-------------|--------|
@@ -216,7 +217,7 @@ These are the **core product metrics** for Team360, tracking health check survey
 
 #### Understanding the Health Score Scale
 
-Team360 uses a 3-point scale based on Spotify's model:
+Team Health Check uses a 3-point scale based on Spotify's model:
 
 | Score | Color | Meaning | Action |
 |-------|-------|---------|--------|
@@ -758,7 +759,7 @@ groups:
 
 ## Distributed Tracing
 
-Team360 implements distributed tracing using OpenTelemetry with named tracers for different domains:
+Team Health Check implements distributed tracing using OpenTelemetry with named tracers for different domains:
 
 ### Tracer Names
 
@@ -787,7 +788,7 @@ span.SetAttributes(
 
 ### Trace Context Propagation
 
-Team360 uses W3C TraceContext for distributed tracing across services:
+Team Health Check uses W3C TraceContext for distributed tracing across services:
 
 ```go
 // Propagators configured in telemetry initialization
@@ -815,7 +816,7 @@ func maskUsername(username string) string {
 
 ## Structured Logging
 
-Team360 uses **zerolog** for high-performance structured logging with automatic trace correlation.
+Team Health Check uses **zerolog** for high-performance structured logging with automatic trace correlation.
 
 ### Log Levels
 
@@ -898,7 +899,7 @@ logger.Init(logger.Config{
 
 ## Grafana Dashboard
 
-Team360 ships with a pre-configured Grafana dashboard (`Team360 Product Analytics`) containing 18 panels organized into three sections.
+Team Health Check ships with a pre-configured Grafana dashboard (`Team Health Check Product Analytics`) containing 18 panels organized into three sections.
 
 ### User Engagement Overview
 
@@ -1125,7 +1126,7 @@ sampler := trace.ParentBased(
 
 ### Metric Cardinality
 
-High-cardinality labels can cause storage issues. Team360 limits cardinality by:
+High-cardinality labels can cause storage issues. Team Health Check limits cardinality by:
 - Not including `user_id` on high-volume metrics
 - Using `team_id` selectively (11 teams max by default)
 - Aggregating paths/endpoints rather than full URLs

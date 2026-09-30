@@ -1,6 +1,6 @@
 # Docker Deployment Guide
 
-This guide explains how to deploy Team360 using Docker containers.
+This guide explains how to deploy Team Health Check using Docker containers.
 
 ## Quick Start
 
@@ -10,9 +10,13 @@ This guide explains how to deploy Team360 using Docker containers.
 - Access to a PostgreSQL 14+ database
 - (Optional) GitHub Container Registry access for pre-built images
 
+Team Health Check ships as a single unified image (Go API + statically
+exported Next.js frontend + generated docs, all served from one port) —
+there are no separate `teams360-api`/`teams360-frontend` images.
+
 ### Production Deployment
 
-Team360 containers require an external PostgreSQL database. The database is NOT included in the container images to follow security best practices.
+Team Health Check containers require an external PostgreSQL database. The database is NOT included in the container images to follow security best practices.
 
 #### 1. Create Environment File
 
@@ -24,57 +28,64 @@ cp .env.example .env
 nano .env
 ```
 
+`.env.example` is written primarily for `docker-compose` (its `API_PORT` maps
+to the container's `PORT` via compose variable substitution — see
+[Local Setup](../getting-started/local-setup.md#2-configure-environment-variables)).
+A plain `docker run --env-file .env` injects the file's variables unchanged,
+so `API_PORT` has no effect here — if you need a non-default port, set `PORT`
+in `.env` instead.
+
 Required environment variables:
 
 ```bash
 # Database connection (REQUIRED)
 DATABASE_URL=postgres://user:password@host:5432/teams360?sslmode=require
 
-# Optional configuration
-API_PORT=8080
-FRONTEND_PORT=3000
+# Optional configuration — the Go binary reads PORT directly (default 8080);
+# there is no separate frontend process/port in the unified image, so
+# FRONTEND_PORT and NEXT_PUBLIC_API_URL (a Next.js build-time variable) do
+# not apply here.
+PORT=8080
 GIN_MODE=release
-NEXT_PUBLIC_API_URL=https://api.yourdomain.com
 ```
 
 #### 2. Pull and Run
 
 ```bash
-# Using pre-built images from GHCR
-docker compose up -d
+# Using the pre-built image from GHCR
+docker pull ghcr.io/guidewire-oss/teams360:latest
+docker run -d --name teams360 -p 8080:8080 --env-file .env \
+  ghcr.io/guidewire-oss/teams360:latest
 
 # Or build locally
-docker compose up -d --build
+docker build -t teams360:local .
+docker run -d --name teams360 -p 8080:8080 --env-file .env teams360:local
 ```
 
 #### 3. Verify Deployment
 
 ```bash
-# Check service health
-docker compose ps
+# Check container status
+docker ps --filter name=teams360
 
 # View logs
-docker compose logs -f
+docker logs -f teams360
 ```
 
 ---
 
 ## Local Development
 
-For local development with a PostgreSQL container included:
+For local development, run the frontend and backend as native processes (not
+in Docker) so you get hot reload; the Makefile starts PostgreSQL in a
+container for you:
 
 ```bash
-# Start with development database
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
-
-# Or use the Makefile
-make docker-dev
+make db-start   # PostgreSQL 16 container on port 5432
+make run        # Backend (go run) + frontend (next dev) together
 ```
 
-This starts:
-- PostgreSQL 17 on port 5432
-- Backend API on port 8080
-- Frontend on port 3000
+See [Local Setup](../getting-started/local-setup.md) for details.
 
 ---
 
@@ -90,11 +101,9 @@ This starts:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `API_PORT` | Backend API port | `8080` |
-| `FRONTEND_PORT` | Frontend port | `3000` |
+| `PORT` | Port the server listens on | `8080` |
 | `GIN_MODE` | Gin framework mode | `release` |
-| `NEXT_PUBLIC_API_URL` | API URL for frontend | `http://localhost:8080` |
-| `VERSION` | Image version tag | `latest` |
+| `WEB_DIR` | Directory the server serves static frontend/docs assets from | `./web` |
 
 ---
 
@@ -102,7 +111,7 @@ This starts:
 
 ### Supported Databases
 
-Team360 requires PostgreSQL 14 or higher. Tested with:
+Team Health Check requires PostgreSQL 14 or higher. Tested with:
 - PostgreSQL 14, 15, 16, 17
 - Amazon RDS for PostgreSQL
 - Google Cloud SQL for PostgreSQL
@@ -140,20 +149,15 @@ DATABASE_URL=postgres://postgres:[password]@db.abcdefghijklmnop.supabase.co:5432
 
 ---
 
-## Container Images
+## Container Image
 
-### Pre-built Images
+### Pre-built Image
 
-Images are available from GitHub Container Registry:
+The single unified image is available from GitHub Container Registry:
 
 ```bash
-# Backend API
-docker pull ghcr.io/anthropics/teams360-api:latest
-docker pull ghcr.io/anthropics/teams360-api:v1.0.0
-
-# Frontend
-docker pull ghcr.io/anthropics/teams360-frontend:latest
-docker pull ghcr.io/anthropics/teams360-frontend:v1.0.0
+docker pull ghcr.io/guidewire-oss/teams360:latest
+docker pull ghcr.io/guidewire-oss/teams360:v1.0.0
 ```
 
 ### Image Tags
@@ -168,11 +172,11 @@ docker pull ghcr.io/anthropics/teams360-frontend:v1.0.0
 
 ### Verifying Image Signatures
 
-All images are signed with Sigstore. Verify with:
+The image is signed with Sigstore. Verify with:
 
 ```bash
-cosign verify ghcr.io/anthropics/teams360-api:v1.0.0 \
-  --certificate-identity-regexp="https://github.com/anthropics/teams360" \
+cosign verify ghcr.io/guidewire-oss/teams360:v1.0.0 \
+  --certificate-identity-regexp="https://github.com/guidewire-oss/teams360" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 ```
 
@@ -180,29 +184,17 @@ cosign verify ghcr.io/anthropics/teams360-api:v1.0.0 \
 
 ## Building Locally
 
-### Build Both Images
+The image is built from the repository root using the single `Dockerfile`
+(there is no separate `backend/Dockerfile` or `frontend/Dockerfile`):
 
 ```bash
-docker compose build
-```
-
-### Build Individually
-
-```bash
-# Backend
-docker build -t teams360-api:local ./backend
-
-# Frontend
-docker build -t teams360-frontend:local ./frontend \
-  --build-arg NEXT_PUBLIC_API_URL=http://localhost:8080
+docker build -t teams360:local .
 ```
 
 ### Multi-Architecture Builds
 
 ```bash
-# Build for multiple platforms
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -t teams360-api:local ./backend
+docker buildx build --platform linux/amd64,linux/arm64 -t teams360:local .
 ```
 
 ---
@@ -222,7 +214,7 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 ```yaml
 # docker-compose.prod.yml
 services:
-  api:
+  teams360:
     deploy:
       resources:
         limits:
@@ -240,21 +232,22 @@ services:
 
 ### Health Checks
 
-Both containers include health checks:
+The image has a built-in `HEALTHCHECK`:
 
-- **Backend**: `GET /health` returns 200 OK
-- **Frontend**: `GET /` returns 200 OK
+- `GET /health` returns `{"status":"healthy"}`
 
 Monitor with:
 ```bash
-docker inspect --format='{{.State.Health.Status}}' teams360-api
+docker inspect --format='{{.State.Health.Status}}' teams360
 ```
 
 ---
 
 ## Kubernetes Deployment
 
-For Kubernetes deployment, use the provided Helm chart or create your own manifests:
+For Kubernetes deployment, use the KubeVela + CloudNativePG setup documented
+in the root `CLAUDE.md` (`kubevela/` directory and `Makefile.kubevela`), or
+create your own manifests. There is no Helm chart in this repository.
 
 ```yaml
 # Example Kubernetes Secret for database
@@ -272,14 +265,14 @@ stringData:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: teams360-api
+  name: teams360
 spec:
   replicas: 3
   template:
     spec:
       containers:
-        - name: api
-          image: ghcr.io/anthropics/teams360-api:v1.0.0
+        - name: teams360
+          image: ghcr.io/guidewire-oss/teams360:v1.0.0
           envFrom:
             - secretRef:
                 name: teams360-db-credentials
@@ -303,7 +296,7 @@ spec:
 
 ```bash
 # Check logs
-docker compose logs api
+docker logs teams360
 
 # Common issues:
 # - DATABASE_URL not set
@@ -315,17 +308,17 @@ docker compose logs api
 
 ```bash
 # Test connectivity from container
-docker compose exec api wget -qO- http://localhost:8080/health
+docker exec teams360 wget -qO- http://localhost:8080/health
 
-# Check database is reachable
-docker compose exec api nc -zv <db-host> 5432
+# Check the configured database host resolves from the container
+docker exec teams360 getent hosts <db-host>
 ```
 
 ### Health Check Failing
 
 ```bash
 # Check health status
-docker inspect teams360-api | jq '.[0].State.Health'
+docker inspect teams360 | jq '.[0].State.Health'
 
 # Manual health check
 curl http://localhost:8080/health
@@ -346,22 +339,17 @@ chown -R 1001:1001 /path/to/volume
 ### Rolling Update
 
 ```bash
-# Pull new images
-docker compose pull
+# Pull the new image
+docker pull ghcr.io/guidewire-oss/teams360:latest
 
-# Restart with zero downtime (if using replicas)
-docker compose up -d --no-deps api
-docker compose up -d --no-deps frontend
+# Recreate the container
+docker stop teams360 && docker rm teams360
+docker run -d --name teams360 -p 8080:8080 --env-file .env \
+  ghcr.io/guidewire-oss/teams360:latest
 ```
 
 ### Database Migrations
 
-Migrations run automatically on startup. For manual control:
-
-```bash
-# Run migrations only
-docker compose exec api /team360-api migrate
-
-# Check migration status
-docker compose exec api /team360-api migrate status
-```
+Migrations run automatically on startup via `golang-migrate` — there is no
+separate manual migration command in the image; restarting the container
+against an older database applies any pending migrations.

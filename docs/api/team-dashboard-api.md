@@ -1,3 +1,4 @@
+
 # Team Lead Dashboard API Documentation
 
 ## Overview
@@ -7,7 +8,7 @@ The Team Lead Dashboard API provides endpoints for team leads to view aggregated
 All endpoints are prefixed with `/api/v1/teams/:teamId/dashboard`
 
 ## Authentication
-All endpoints require authentication (to be implemented). Currently, no authentication is enforced.
+All endpoints require a valid JWT access token (`JWTAuthMiddleware`) **and** team membership or supervision (`TeamMembershipMiddleware`, keyed on the `:teamId` path param) — see `SetupTeamDashboardRoutes` in `backend/interfaces/api/v1/team_dashboard_routes.go`. A request without a valid token, or from a user who isn't on the team's roster or supervisor chain, is rejected before reaching the handler.
 
 ## Endpoints
 

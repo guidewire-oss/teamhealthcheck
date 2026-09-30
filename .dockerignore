@@ -8,6 +8,6 @@ frontend/out
 backend/bin
 tests
 helm
-docs
 *.md
 !frontend/README.md
+!docs/**/*.md

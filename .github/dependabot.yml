@@ -103,6 +103,20 @@ updates:
         update-types: ["version-update:semver-prerelease"]
 
   # -----------------------------------------------------------------------------
+  # Documentation (pip)
+  # -----------------------------------------------------------------------------
+  - package-ecosystem: "pip"
+    directory: "/docs"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+    commit-message:
+      prefix: "deps(docs)"
+    labels:
+      - "dependencies"
+      - "documentation"
+
+  # -----------------------------------------------------------------------------
   # Docker
   # -----------------------------------------------------------------------------
   - package-ecosystem: "docker"
