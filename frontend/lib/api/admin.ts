@@ -201,36 +201,6 @@ export interface DimensionsListResponse {
 }
 
 // ============================================================================
-// NOTIFICATION SETTINGS TYPES
-// ============================================================================
-
-export interface NotificationSettings {
-  emailEnabled: boolean;
-  slackEnabled: boolean;
-  notifyOnSubmission: boolean;
-  notifyManagers: boolean;
-  reminderDaysBefore: number;
-  reminderRecipients: string[];
-  smtpConfigured: boolean;
-}
-
-export interface UpdateNotificationSettingsRequest {
-  emailEnabled?: boolean;
-  slackEnabled?: boolean;
-  notifyOnSubmission?: boolean;
-}
-
-export interface RetentionPolicy {
-  keepSessionsMonths: number;
-  archiveEnabled: boolean;
-  anonymizeAfterDays: number;
-}
-
-export interface UpdateRetentionPolicyRequest {
-  keepSessionsMonths: number;
-}
-
-// ============================================================================
 // HIERARCHY LEVEL API METHODS
 // ============================================================================
 
@@ -558,20 +528,6 @@ export async function updateDimension(
   );
 }
 
-/**
- * Deletes a health dimension
- *
- * @param dimensionId - Dimension ID
- */
-export async function deleteDimension(dimensionId: string): Promise<void> {
-  await createApiClient<void>(
-    `${API_BASE_URL}/api/v1/admin/settings/dimensions/${dimensionId}`,
-    {
-      method: 'DELETE',
-    }
-  );
-}
-
 // ============================================================================
 // BRANDING SETTINGS API METHODS
 // ============================================================================
@@ -598,67 +554,6 @@ export async function updateBrandingSettings(
 ): Promise<BrandingSettings> {
   return createApiClient<BrandingSettings>(
     `${API_BASE_URL}/api/v1/admin/settings/branding`,
-    {
-      method: 'PUT',
-      body: JSON.stringify(request),
-    }
-  );
-}
-
-// ============================================================================
-// NOTIFICATION SETTINGS API METHODS
-// ============================================================================
-
-/**
- * Fetches notification settings
- *
- * @returns Current notification settings
- */
-export async function getNotificationSettings(): Promise<NotificationSettings> {
-  return createApiClient<NotificationSettings>(
-    `${API_BASE_URL}/api/v1/admin/settings/notifications`
-  );
-}
-
-/**
- * Updates notification settings
- *
- * @param request - Fields to update
- * @returns Updated notification settings
- */
-export async function updateNotificationSettings(
-  request: UpdateNotificationSettingsRequest
-): Promise<NotificationSettings> {
-  return createApiClient<NotificationSettings>(
-    `${API_BASE_URL}/api/v1/admin/settings/notifications`,
-    {
-      method: 'PUT',
-      body: JSON.stringify(request),
-    }
-  );
-}
-
-// ============================================================================
-// RETENTION POLICY API METHODS
-// ============================================================================
-
-/**
- * Fetches retention policy settings
- */
-export async function getRetentionPolicy(): Promise<RetentionPolicy> {
-  return createApiClient<RetentionPolicy>(
-    `${API_BASE_URL}/api/v1/admin/settings/retention`
-  );
-}
-
-/**
- * Updates retention policy settings
- */
-export async function updateRetentionPolicy(
-  request: UpdateRetentionPolicyRequest
-): Promise<RetentionPolicy> {
-  return createApiClient<RetentionPolicy>(
-    `${API_BASE_URL}/api/v1/admin/settings/retention`,
     {
       method: 'PUT',
       body: JSON.stringify(request),

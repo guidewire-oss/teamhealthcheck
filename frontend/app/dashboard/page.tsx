@@ -4,14 +4,16 @@ import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { getCurrentUser, logout, authenticatedFetch } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
-import { getOrgConfig, getHierarchyLevel, getUserPermissions } from '@/lib/org-config';
-import { LogOut, Building2, ChevronDown, BarChart3, LineChart as LineChartIcon, Users as UsersIcon, Activity, ClipboardList, TrendingUp, TrendingDown, Minus, LayoutGrid, List, Info, CheckCircle, Download, ListTodo } from 'lucide-react';
+import { getHierarchyLevel, getUserPermissions } from '@/lib/org-config';
+import { LogOut, ChevronDown, BarChart3, LineChart as LineChartIcon, Users as UsersIcon, Activity, ClipboardList, TrendingUp, TrendingDown, Minus, LayoutGrid, List, Info, CheckCircle, Download, ListTodo } from 'lucide-react';
+import BrandMark from '@/components/BrandMark';
 import * as XLSX from 'xlsx';
 import { AlertCircle } from 'lucide-react';
 import { getTeamSubmissionStatus, getAssessmentPeriods, TeamSubmissionStatus } from '@/lib/api/health-checks';
 import { API_BASE_URL } from '@/lib/api/client';
 import { getAssessmentPeriod, toCadence } from '@/lib/assessment-period';
 import { getTeamInfoCached } from '@/lib/api/teams';
+import { formatScore } from '@/lib/format';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line, ResponsiveContainer } from 'recharts';
 import OnboardingModal from '@/components/OnboardingModal';
 import ActionItemsTab from '@/components/ActionItemsTab';
@@ -360,7 +362,6 @@ export default function DashboardPage() {
 
   if (!user) return null;
 
-  const config = getOrgConfig();
   const userLevel = getHierarchyLevel(user.hierarchyLevelId || '');
   const userPermissions = getUserPermissions(user);
 
@@ -475,34 +476,28 @@ export default function DashboardPage() {
       {/* Header */}
       <div className="bg-white shadow-sm border-b">
         <div className="container mx-auto px-4 py-4">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-4">
-              {brandingLogo ? (
-                <img src={brandingLogo} alt="Company logo" className="w-8 h-8 object-contain rounded" />
-              ) : (
-                <Building2 className="w-8 h-8 text-indigo-600" />
-              )}
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900">Team Lead Dashboard</h1>
-                <div className="flex items-center gap-2">
-                  <p className="text-gray-500">{brandingName || config.companyName} Health Metrics</p>
-                  {teamOptions.length > 1 && (
-                    <select
-                      data-testid="team-selector"
-                      value={teamId}
-                      onChange={(e) => handleTeamChange(e.target.value)}
-                      className="ml-2 px-2 py-1 text-sm border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                    >
-                      {teamOptions.map((t) => (
-                        <option key={t.id} value={t.id}>{t.name}</option>
-                      ))}
-                    </select>
-                  )}
-                </div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-start">
+            <div className="min-w-0">
+              <BrandMark logoUrl={brandingLogo} companyName={brandingName} size="header" className="mb-2" />
+              <h1 className="text-2xl font-bold text-gray-900">Team Lead Dashboard</h1>
+              <div className="flex flex-wrap items-center gap-2 mt-1">
+                <p className="text-gray-500">Health Metrics</p>
+                {teamOptions.length > 1 && (
+                  <select
+                    data-testid="team-selector"
+                    value={teamId}
+                    onChange={(e) => handleTeamChange(e.target.value)}
+                    className="ml-2 px-2 py-1 text-sm border border-gray-300 rounded-lg text-gray-700 focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  >
+                    {teamOptions.map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                )}
               </div>
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 flex-wrap">
               {/* Take Survey Button */}
               <button
                 onClick={() => router.push(teamId ? `/survey?team=${teamId}` : '/survey')}
@@ -713,7 +708,6 @@ export default function DashboardPage() {
                         <RadarChart data={healthSummary}>
                           <PolarGrid />
                           <PolarAngleAxis dataKey="dimension" />
-                          <PolarRadiusAxis domain={[0, 3]} />
                           <Radar
                             name="Health Score"
                             dataKey="averageScore"
@@ -721,7 +715,11 @@ export default function DashboardPage() {
                             fill="#6366f1"
                             fillOpacity={0.6}
                           />
-                          <Tooltip />
+                          <PolarRadiusAxis domain={[0, 3]} tick={{ fill: '#334155', fontSize: 12, fontWeight: 600 }} />
+                          <Tooltip
+                            formatter={(value: number, name: string) => [formatScore(Number(value)), name]}
+                            itemStyle={{ color: '#000000' }}
+                          />
                           <Legend />
                         </RadarChart>
                       </ResponsiveContainer>

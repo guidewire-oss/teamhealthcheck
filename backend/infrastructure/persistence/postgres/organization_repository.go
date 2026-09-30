@@ -466,7 +466,7 @@ func (r *OrganizationRepository) FindDimensions(ctx context.Context) ([]*organiz
 		SELECT id, name, description, good_description, bad_description, is_active, weight,
 		       created_at, updated_at
 		FROM health_dimensions
-		ORDER BY id
+		ORDER BY display_order, id
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query health dimensions: %w", err)
@@ -604,8 +604,8 @@ func (r *OrganizationRepository) SaveDimension(ctx context.Context, dim *organiz
 	dim.UpdatedAt = now
 
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO health_dimensions (id, name, description, good_description, bad_description, is_active, weight, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO health_dimensions (id, name, description, good_description, bad_description, is_active, weight, display_order, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, (SELECT COALESCE(MAX(display_order), 0) + 1 FROM health_dimensions), $8, $9)
 	`,
 		dim.ID,
 		dim.Name,

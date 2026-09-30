@@ -3,10 +3,9 @@
 import { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getCurrentUser, logout } from '@/lib/auth';
-import { HEALTH_DIMENSIONS } from '@/lib/data';
-import { HealthCheckResponse } from '@/lib/types';
+import { HealthCheckResponse, HealthDimension } from '@/lib/types';
 import { getAssessmentPeriod, toCadence } from '@/lib/assessment-period';
-import { submitHealthCheck, formatDateForAPI, HealthCheckAPIError } from '@/lib/api/health-checks';
+import { submitHealthCheck, getHealthDimensions, formatDateForAPI, HealthCheckAPIError } from '@/lib/api/health-checks';
 import { getTeamInfoCached, TeamInfo, TeamsAPIError } from '@/lib/api/teams';
 import { TrendingUp, TrendingDown, Minus, ChevronLeft, ChevronRight, Save, LogOut, CheckCircle, BarChart3, Loader2, AlertCircle, Info, X } from 'lucide-react';
 
@@ -46,6 +45,9 @@ function SurveyPageContent() {
   const [team, setTeam] = useState<TeamInfo | null>(null);
   const [teamLoading, setTeamLoading] = useState(true);
   const [teamError, setTeamError] = useState<string | null>(null);
+  const [dimensions, setDimensions] = useState<HealthDimension[]>([]);
+  const [dimensionsLoading, setDimensionsLoading] = useState(true);
+  const [dimensionsError, setDimensionsError] = useState<string | null>(null);
   const [currentDimension, setCurrentDimension] = useState(0); // Start at first health dimension
   const [responses, setResponses] = useState<HealthCheckResponse[]>([]);
   const [submitted, setSubmitted] = useState(false);
@@ -112,6 +114,22 @@ function SurveyPageContent() {
       }
     }
   }, [router, preferredTeamId]);
+
+  useEffect(() => {
+    getHealthDimensions()
+      .then((dims) => {
+        setDimensions(dims);
+        if (dims.length === 0) {
+          setDimensionsError('No active health dimensions are configured. Please contact your administrator.');
+        }
+        setDimensionsLoading(false);
+      })
+      .catch((err) => {
+        console.error('Failed to fetch health dimensions:', err);
+        setDimensionsError(err instanceof HealthCheckAPIError ? err.message : 'Failed to load health dimensions');
+        setDimensionsLoading(false);
+      });
+  }, []);
 
   const handleTeamSwitch = (newTeamId: string) => {
     if (!user || !team) return;
@@ -225,7 +243,7 @@ function SurveyPageContent() {
   }, [user, currentDimension]);
 
   const handleScoreSelect = (score: 1 | 2 | 3) => {
-    const dimension = HEALTH_DIMENSIONS[currentDimension];
+    const dimension = dimensions[currentDimension];
     const existingIndex = responses.findIndex(r => r.dimensionId === dimension.id);
 
     if (existingIndex >= 0) {
@@ -246,7 +264,7 @@ function SurveyPageContent() {
   };
 
   const handleTrendSelect = (trend: 'improving' | 'stable' | 'declining') => {
-    const dimension = HEALTH_DIMENSIONS[currentDimension];
+    const dimension = dimensions[currentDimension];
     const existingIndex = responses.findIndex(r => r.dimensionId === dimension.id);
 
     if (existingIndex >= 0) {
@@ -260,7 +278,7 @@ function SurveyPageContent() {
   };
 
   const handleCommentChange = (comment: string) => {
-    const dimension = HEALTH_DIMENSIONS[currentDimension];
+    const dimension = dimensions[currentDimension];
     const existingIndex = responses.findIndex(r => r.dimensionId === dimension.id);
     
     if (existingIndex >= 0) {
@@ -271,7 +289,7 @@ function SurveyPageContent() {
   };
 
   const getCurrentResponse = () => {
-    const dimension = HEALTH_DIMENSIONS[currentDimension];
+    const dimension = dimensions[currentDimension];
     return responses.find(r => r.dimensionId === dimension.id);
   };
 
@@ -284,14 +302,14 @@ function SurveyPageContent() {
       return;
     }
 
-    if ((!isTeamMember || isPostWorkshop) && !currentResponse?.trend) {
+    if (isPostWorkshop && !currentResponse?.trend) {
       setValidationError('Please select a trend (Improving, Stable, or Declining) before continuing.');
       return;
     }
 
     // Clear validation error and proceed
     setValidationError(null);
-    if (currentDimension < HEALTH_DIMENSIONS.length - 1) {
+    if (currentDimension < dimensions.length - 1) {
       setCurrentDimension(currentDimension + 1);
     }
   };
@@ -308,15 +326,15 @@ function SurveyPageContent() {
     if (!user || !team || submitting) return;
 
     // Validate all responses are complete
-    if (responses.length !== HEALTH_DIMENSIONS.length) {
+    if (responses.length !== dimensions.length) {
       setValidationError('Please fill out all health check dimensions before submitting.');
       return;
     }
 
-    // Validate each response has both score and trend (trend only required for non-team-members)
-    const incompleteResponses = responses.filter(r => !r.score || ((!isTeamMember || isPostWorkshop) && !r.trend));
+    // Validate each response has both score and trend (trend only required for post-workshop surveys)
+    const incompleteResponses = responses.filter(r => !r.score || (isPostWorkshop && !r.trend));
     if (incompleteResponses.length > 0) {
-      setValidationError((!isTeamMember || isPostWorkshop)
+      setValidationError(isPostWorkshop
         ? 'Please select both a score and trend for all dimensions before submitting.'
         : 'Please select a score for all dimensions before submitting.'
       );
@@ -377,8 +395,8 @@ function SurveyPageContent() {
 
   if (!user) return null;
 
-  // Show loading state while fetching team info
-  if (teamLoading) {
+  // Show loading state while fetching team info and health dimensions
+  if (teamLoading || dimensionsLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-xl p-12 max-w-md w-full text-center">
@@ -390,14 +408,14 @@ function SurveyPageContent() {
     );
   }
 
-  // Show error state if team fetch failed
-  if (teamError || !team) {
+  // Show error state if team or health dimensions fetch failed
+  if (teamError || !team || dimensionsError || dimensions.length === 0) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-red-50 to-orange-100 flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-xl p-12 max-w-md w-full text-center">
           <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-6" />
           <h1 className="text-2xl font-bold text-gray-900 mb-4">Unable to Load Team</h1>
-          <p className="text-gray-600 mb-6">{teamError || 'No team assigned to your account. Please contact your administrator.'}</p>
+          <p className="text-gray-600 mb-6">{teamError || dimensionsError || 'No team assigned to your account. Please contact your administrator.'}</p>
           <button
             onClick={handleLogout}
             className="bg-gray-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-gray-700 transition-colors"
@@ -430,13 +448,13 @@ function SurveyPageContent() {
     );
   }
 
-  const totalQuestions = HEALTH_DIMENSIONS.length; // Total health dimensions
+  const totalQuestions = dimensions.length; // Total health dimensions
   const currentQuestionNumber = currentDimension + 1; // +1 for display (1-indexed)
   const progress = (currentQuestionNumber / totalQuestions) * 100;
-  const isLastDimension = currentDimension === HEALTH_DIMENSIONS.length - 1;
-  const canSubmit = responses.length === HEALTH_DIMENSIONS.length;
+  const isLastDimension = currentDimension === dimensions.length - 1;
+  const canSubmit = responses.length === dimensions.length;
 
-  const dimension = HEALTH_DIMENSIONS[currentDimension];
+  const dimension = dimensions[currentDimension];
   const currentResponse = getCurrentResponse();
 
   const isTeamLead = user.hierarchyLevelId === 'level-4';
@@ -626,7 +644,7 @@ function SurveyPageContent() {
 
             {currentResponse?.score && (
               <div className="mb-8 p-6 bg-gray-50 rounded-xl">
-                {(!isTeamMember || isPostWorkshop) && (
+                {isPostWorkshop && (
                   <>
                     <h3 className="font-semibold text-gray-900 mb-4">Trend</h3>
                     <div className="flex gap-4">
@@ -673,7 +691,7 @@ function SurveyPageContent() {
                   </>
                 )}
 
-                <div className={!isTeamMember ? 'mt-4' : ''}>
+                <div className={isPostWorkshop ? 'mt-4' : ''}>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Comments (optional)
                   </label>
