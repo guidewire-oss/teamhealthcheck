@@ -3,7 +3,15 @@
 import { useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
-import { createActionItem, CreateActionItemPayload } from '@/lib/api/action-items';
+import {
+  createActionItem,
+  updateActionItem,
+  CreateActionItemPayload,
+  UpdateActionItemPayload,
+  ActionItem,
+  DirectManager,
+} from '@/lib/api/action-items';
+import { isoDateToDisplay, displayDateToIso } from '@/lib/date-format';
 
 interface TeamMember {
   id: string;
@@ -15,6 +23,8 @@ interface ActionItemModalProps {
   assessmentPeriod: string;
   defaultDimensionId?: string;
   teamMembers: TeamMember[];
+  directManager?: DirectManager | null;
+  editItem?: ActionItem;
   onSaved: () => void;
   onClose: () => void;
 }
@@ -24,16 +34,24 @@ export default function ActionItemModal({
   assessmentPeriod,
   defaultDimensionId,
   teamMembers,
+  directManager,
+  editItem,
   onSaved,
   onClose,
 }: ActionItemModalProps) {
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [dimensionId, setDimensionId] = useState(defaultDimensionId ?? '');
-  const [assignedTo, setAssignedTo] = useState('');
-  const [dueDate, setDueDate] = useState('');
+  const isEdit = !!editItem;
+  const [title, setTitle] = useState(editItem?.title ?? '');
+  const [description, setDescription] = useState(editItem?.description ?? '');
+  const [dimensionId, setDimensionId] = useState(editItem?.dimensionId ?? defaultDimensionId ?? '');
+  const [assignedTo, setAssignedTo] = useState(editItem?.assignedTo ?? '');
+  const [dueDateDisplay, setDueDateDisplay] = useState(isoDateToDisplay(editItem?.dueDate ?? null));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const assigneeOptions: TeamMember[] = [...teamMembers];
+  if (directManager && !assigneeOptions.some((m) => m.id === directManager.id)) {
+    assigneeOptions.push({ id: directManager.id, name: `${directManager.name} (your manager)` });
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,19 +59,40 @@ export default function ActionItemModal({
       setError('Title is required');
       return;
     }
+    let isoDueDate: string | undefined;
+    if (dueDateDisplay.trim()) {
+      const parsed = displayDateToIso(dueDateDisplay.trim());
+      if (!parsed) {
+        setError('Due date must be a valid date in dd/mm/yyyy format');
+        return;
+      }
+      isoDueDate = parsed;
+    }
     setSaving(true);
     setError(null);
     try {
-      const payload: CreateActionItemPayload = {
-        title: title.trim(),
-        description: description.trim(),
-        assessmentPeriod: assessmentPeriod || undefined,
-      };
-      if (dimensionId) payload.dimensionId = dimensionId;
-      if (assignedTo) payload.assignedTo = assignedTo;
-      if (dueDate) payload.dueDate = dueDate;
+      if (isEdit && editItem) {
+        const payload: UpdateActionItemPayload = {
+          title: title.trim(),
+          description: description.trim(),
+          dimensionId: dimensionId || undefined,
+          assignedTo: assignedTo || undefined,
+          dueDate: isoDueDate,
+          assessmentPeriod: assessmentPeriod || undefined,
+        };
+        await updateActionItem(teamId, editItem.id, payload);
+      } else {
+        const payload: CreateActionItemPayload = {
+          title: title.trim(),
+          description: description.trim(),
+          assessmentPeriod: assessmentPeriod || undefined,
+        };
+        if (dimensionId) payload.dimensionId = dimensionId;
+        if (assignedTo) payload.assignedTo = assignedTo;
+        if (isoDueDate) payload.dueDate = isoDueDate;
 
-      await createActionItem(teamId, payload);
+        await createActionItem(teamId, payload);
+      }
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save');
@@ -72,7 +111,7 @@ export default function ActionItemModal({
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b">
-          <h2 className="text-lg font-semibold text-gray-900">New Action Item</h2>
+          <h2 className="text-lg font-semibold text-gray-900">{isEdit ? 'Edit Action Item' : 'New Action Item'}</h2>
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-gray-600"
@@ -146,7 +185,7 @@ export default function ActionItemModal({
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="">— Unassigned —</option>
-                {teamMembers.map((m) => (
+                {assigneeOptions.map((m) => (
                   <option key={m.id} value={m.id}>{m.name}</option>
                 ))}
               </select>
@@ -154,12 +193,14 @@ export default function ActionItemModal({
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Due date
+                Due date <span className="text-gray-400 font-normal">(dd/mm/yyyy)</span>
               </label>
               <input
-                type="date"
-                value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
+                type="text"
+                inputMode="numeric"
+                placeholder="dd/mm/yyyy"
+                value={dueDateDisplay}
+                onChange={(e) => setDueDateDisplay(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 data-testid="action-item-due-date"
               />
@@ -183,7 +224,7 @@ export default function ActionItemModal({
             data-testid="action-item-save-btn"
           >
             {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-            Save action item
+            {isEdit ? 'Save changes' : 'Save action item'}
           </button>
         </div>
       </div>

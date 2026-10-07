@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -42,6 +43,19 @@ func (h *ActionItemHandler) ListActionItems(c *gin.Context) {
 	status := c.Query("status")
 	period := c.Query("period")
 
+	items, err := h.fetchActionItems(c.Request.Context(), teamID, status, period)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to fetch action items", Message: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, dto.ActionItemsResponse{ActionItems: items})
+}
+
+// fetchActionItems loads action items for a team, optionally filtered by
+// status and assessment period. Shared by the team board and the
+// manager/director/VP pod drill-down.
+func (h *ActionItemHandler) fetchActionItems(ctx context.Context, teamID, status, period string) ([]dto.ActionItemResponse, error) {
 	query := `
 		SELECT
 			ai.id, ai.team_id, ai.dimension_id,
@@ -71,10 +85,9 @@ func (h *ActionItemHandler) ListActionItems(c *gin.Context) {
 	}
 	query += " ORDER BY ai.created_at DESC"
 
-	rows, err := h.db.QueryContext(c.Request.Context(), query, args...)
+	rows, err := h.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to fetch action items", Message: err.Error()})
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -82,7 +95,15 @@ func (h *ActionItemHandler) ListActionItems(c *gin.Context) {
 	for rows.Next() {
 		var item dto.ActionItemResponse
 		var dimID, dimName, assignedTo, assigneeName sql.NullString
-		var dueDate, assessmentPeriod sql.NullString
+		var assessmentPeriod sql.NullString
+		// due_date is a DATE column; the pq driver hands it back as a
+		// time.Time, not a string. Scanning that directly into a
+		// sql.NullString would let database/sql's default conversion format
+		// it as RFC3339Nano (e.g. "2026-06-12T00:00:00Z"), which is why the
+		// API previously emitted a timestamp instead of a date-only value.
+		// Scanning into sql.NullTime and formatting explicitly with Go's
+		// date-only layout keeps the API contract at YYYY-MM-DD.
+		var dueDate sql.NullTime
 		var createdAt, updatedAt time.Time
 
 		if err := rows.Scan(
@@ -93,8 +114,7 @@ func (h *ActionItemHandler) ListActionItems(c *gin.Context) {
 			&dueDate, &assessmentPeriod,
 			&createdAt, &updatedAt,
 		); err != nil {
-			c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to scan action items", Message: err.Error()})
-			return
+			return nil, err
 		}
 		if dimID.Valid {
 			item.DimensionID = &dimID.String
@@ -109,7 +129,8 @@ func (h *ActionItemHandler) ListActionItems(c *gin.Context) {
 			item.AssigneeName = &assigneeName.String
 		}
 		if dueDate.Valid {
-			item.DueDate = &dueDate.String
+			formatted := dueDate.Time.Format("2006-01-02")
+			item.DueDate = &formatted
 		}
 		if assessmentPeriod.Valid {
 			item.AssessmentPeriod = &assessmentPeriod.String
@@ -120,11 +141,10 @@ func (h *ActionItemHandler) ListActionItems(c *gin.Context) {
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to read action items", Message: err.Error()})
-		return
+		return nil, err
 	}
 
-	c.JSON(http.StatusOK, dto.ActionItemsResponse{ActionItems: items})
+	return items, nil
 }
 
 // CreateActionItem handles POST /api/v1/teams/:teamId/action-items
@@ -162,16 +182,16 @@ func (h *ActionItemHandler) CreateActionItem(c *gin.Context) {
 		return
 	}
 
-	// Enforce that assignedTo (if set) is a member of this team.
+	// Enforce that assignedTo (if set) is a member of this team or the
+	// creator's direct manager.
 	if req.AssignedTo != nil {
-		var exists bool
-		if err := h.db.QueryRowContext(c.Request.Context(),
-			`SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id=$1 AND user_id=$2)`,
-			teamID, *req.AssignedTo).Scan(&exists); err != nil {
+		allowed, err := h.isAssigneeAllowed(c.Request.Context(), teamID, claims.UserID, *req.AssignedTo)
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to validate assignee", Message: err.Error()})
 			return
-		} else if !exists {
-			c.JSON(http.StatusBadRequest, dto.ErrorResponse{Error: "assignedTo user is not a member of this team"})
+		}
+		if !allowed {
+			c.JSON(http.StatusBadRequest, dto.ErrorResponse{Error: "assignedTo user is not a member of this team or the creator's direct manager"})
 			return
 		}
 	}
@@ -222,6 +242,12 @@ func (h *ActionItemHandler) UpdateActionItem(c *gin.Context) {
 	teamID := c.Param("teamId")
 	itemID := c.Param("id")
 
+	claims, ok := middleware.GetClaimsFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse{Error: "Unauthorized"})
+		return
+	}
+
 	var req dto.UpdateActionItemRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, dto.ErrorResponse{Error: "Invalid request", Message: err.Error()})
@@ -229,29 +255,65 @@ func (h *ActionItemHandler) UpdateActionItem(c *gin.Context) {
 	}
 
 	// Validate status if provided
-	if req.Status != nil {
-		switch *req.Status {
-		case "open", "in_progress", "done":
-		default:
-			c.JSON(http.StatusBadRequest, dto.ErrorResponse{Error: "Invalid status", Message: "status must be open, in_progress, or done"})
-			return
-		}
+	if req.Status != nil && !dto.ValidActionItemStatuses[*req.Status] {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{Error: "Invalid status", Message: "status must be open, on_hold, in_progress, or done"})
+		return
 	}
 	if !dto.ValidDueDate(req.DueDate) {
 		c.JSON(http.StatusBadRequest, dto.ErrorResponse{Error: "Invalid dueDate format, expected YYYY-MM-DD"})
 		return
 	}
 
-	// Enforce that assignedTo (if set) is a member of this team.
+	// Fetch the current row to enforce status-transition rules and
+	// creator-only edit authorization.
+	var currentStatus, createdBy string
+	if err := h.db.QueryRowContext(c.Request.Context(),
+		`SELECT status, created_by FROM action_items WHERE id = $1 AND team_id = $2`,
+		itemID, teamID).Scan(&currentStatus, &createdBy); err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, dto.ErrorResponse{Error: "Action item not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to load action item", Message: err.Error()})
+		return
+	}
+
+	// A status change is a workflow transition, permitted for anyone who can
+	// reach this endpoint (team members with access to the team's board).
+	// Only the allowed transitions may be applied.
+	if req.Status != nil && *req.Status != currentStatus {
+		if !dto.AllowedActionItemTransitions[currentStatus][*req.Status] {
+			c.JSON(http.StatusBadRequest, dto.ErrorResponse{Error: "Invalid status transition", Message: fmt.Sprintf("cannot move from %s to %s", currentStatus, *req.Status)})
+			return
+		}
+	}
+
+	// Any edit to the content fields (as opposed to a pure status
+	// transition) is restricted to the creator, and only while the item is
+	// not Done.
+	editsContent := req.DimensionID != nil || req.AssignedTo != nil || req.Title != nil ||
+		req.Description != nil || req.DueDate != nil || req.AssessmentPeriod != nil
+	if editsContent {
+		if claims.UserID != createdBy {
+			c.JSON(http.StatusForbidden, dto.ErrorResponse{Error: "Only the creator of this action item may edit it"})
+			return
+		}
+		if currentStatus == "done" {
+			c.JSON(http.StatusForbidden, dto.ErrorResponse{Error: "Done action items cannot be edited"})
+			return
+		}
+	}
+
+	// Enforce that assignedTo (if set) is a member of this team or the
+	// creator's direct manager.
 	if req.AssignedTo != nil {
-		var exists bool
-		if err := h.db.QueryRowContext(c.Request.Context(),
-			`SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id=$1 AND user_id=$2)`,
-			teamID, *req.AssignedTo).Scan(&exists); err != nil {
+		allowed, err := h.isAssigneeAllowed(c.Request.Context(), teamID, createdBy, *req.AssignedTo)
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to validate assignee", Message: err.Error()})
 			return
-		} else if !exists {
-			c.JSON(http.StatusBadRequest, dto.ErrorResponse{Error: "assignedTo user is not a member of this team"})
+		}
+		if !allowed {
+			c.JSON(http.StatusBadRequest, dto.ErrorResponse{Error: "assignedTo user is not a member of this team or the creator's direct manager"})
 			return
 		}
 	}
@@ -371,6 +433,82 @@ func (h *ActionItemHandler) GetTeamsActionSummary(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, dto.TeamsActionSummaryResponse{Teams: summaries})
+}
+
+// isAssigneeAllowed returns true if candidateID is either a member of teamID
+// or the direct manager (reports_to) of the action item's creator.
+func (h *ActionItemHandler) isAssigneeAllowed(ctx context.Context, teamID, creatorID, candidateID string) (bool, error) {
+	var allowed bool
+	err := h.db.QueryRowContext(ctx, `
+		SELECT
+			EXISTS(SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2)
+			OR EXISTS(SELECT 1 FROM users WHERE id = $3 AND reports_to = $2)
+	`, teamID, candidateID, creatorID).Scan(&allowed)
+	if err != nil {
+		return false, err
+	}
+	return allowed, nil
+}
+
+// GetDirectManager handles GET /api/v1/teams/:teamId/action-items/direct-manager
+// Returns the authenticated user's direct manager (reports_to), if any.
+func (h *ActionItemHandler) GetDirectManager(c *gin.Context) {
+	claims, ok := middleware.GetClaimsFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse{Error: "Unauthorized"})
+		return
+	}
+
+	var id, name sql.NullString
+	err := h.db.QueryRowContext(c.Request.Context(), `
+		SELECT m.id, m.full_name
+		FROM users u
+		JOIN users m ON m.id = u.reports_to
+		WHERE u.id = $1`, claims.UserID).Scan(&id, &name)
+	if err != nil && err != sql.ErrNoRows {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to resolve direct manager", Message: err.Error()})
+		return
+	}
+
+	resp := dto.DirectManagerResponse{}
+	if id.Valid {
+		resp.ID = &id.String
+		resp.Name = &name.String
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// GetPodActionItems handles GET /api/v1/managers/:managerId/teams/:teamId/action-items
+// Returns the full, read-only action board for a pod in the manager's hierarchy.
+func (h *ActionItemHandler) GetPodActionItems(c *gin.Context) {
+	managerID := c.Param("managerId")
+	teamID := c.Param("teamId")
+
+	claims, ok := middleware.GetClaimsFromContext(c)
+	if !ok || claims.UserID != managerID {
+		c.JSON(http.StatusForbidden, dto.ErrorResponse{Error: "Forbidden"})
+		return
+	}
+
+	var inScope bool
+	if err := h.db.QueryRowContext(c.Request.Context(),
+		`SELECT EXISTS(SELECT 1 FROM team_supervisors WHERE team_id = $1 AND user_id = $2)`,
+		teamID, managerID).Scan(&inScope); err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to validate pod access", Message: err.Error()})
+		return
+	}
+	if !inScope {
+		c.JSON(http.StatusForbidden, dto.ErrorResponse{Error: "Forbidden: team is not in your hierarchy"})
+		return
+	}
+
+	items, err := h.fetchActionItems(c.Request.Context(), teamID, "", "")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to fetch action items", Message: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, dto.ActionItemsResponse{ActionItems: items})
 }
 
 // nullableString converts a *string to a value suitable for sql nullable param

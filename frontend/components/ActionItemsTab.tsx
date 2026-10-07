@@ -1,9 +1,19 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Loader2, AlertCircle, CheckCircle, Clock, ArrowRight, Trash2 } from 'lucide-react';
-import { ActionItem, listActionItems, updateActionItem, deleteActionItem } from '@/lib/api/action-items';
+import { Plus, Loader2, AlertCircle, CheckCircle, Clock, ArrowRight, ArrowLeft, Trash2, PauseCircle, Pencil } from 'lucide-react';
+import {
+  ActionItem,
+  ActionItemStatus,
+  DirectManager,
+  listActionItems,
+  updateActionItem,
+  deleteActionItem,
+  getDirectManager,
+} from '@/lib/api/action-items';
 import ActionItemModal from './ActionItemModal';
+import ActionItemDescription from './ActionItemDescription';
+import ActionItemDueDate from './ActionItemDueDate';
 
 interface TeamMember {
   id: string;
@@ -16,15 +26,23 @@ interface ActionItemsTabProps {
   defaultDimensionId?: string; // worst-performing dimension to pre-fill
   teamMembers: TeamMember[];
   canEdit: boolean; // Team Lead and above
+  currentUserId?: string; // used to gate the creator-only edit icon
 }
 
-const COLUMNS: { status: ActionItem['status']; label: string; icon: React.ReactNode; bg: string; border: string }[] = [
+const COLUMNS: { status: ActionItemStatus; label: string; icon: React.ReactNode; bg: string; border: string }[] = [
   {
     status: 'open',
     label: 'Open',
     icon: <Clock className="w-4 h-4 text-gray-500" />,
     bg: 'bg-gray-50',
     border: 'border-gray-200',
+  },
+  {
+    status: 'on_hold',
+    label: 'On Hold',
+    icon: <PauseCircle className="w-4 h-4 text-rose-400" />,
+    bg: 'bg-rose-50',
+    border: 'border-rose-200',
   },
   {
     status: 'in_progress',
@@ -42,40 +60,21 @@ const COLUMNS: { status: ActionItem['status']; label: string; icon: React.ReactN
   },
 ];
 
-const NEXT_STATUS: Record<ActionItem['status'], ActionItem['status'] | null> = {
-  open: 'in_progress',
-  in_progress: 'done',
-  done: null,
-};
-
-const STATUS_BTN_LABEL: Record<ActionItem['status'], string | null> = {
-  open: 'Start',
-  in_progress: 'Mark done',
-  done: null,
-};
-
-function isOverdue(dueDate: string | null): boolean {
-  if (!dueDate) return false;
-  // Parse YYYY-MM-DD as a local date (not UTC) to avoid off-by-one in non-UTC time zones.
-  const [year, month, day] = dueDate.split('-').map(Number);
-  const due = new Date(year, month - 1, day);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return due < today;
-}
-
 export default function ActionItemsTab({
   teamId,
   assessmentPeriod,
   defaultDimensionId,
   teamMembers,
   canEdit,
+  currentUserId,
 }: ActionItemsTabProps) {
   const [items, setItems] = useState<ActionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [editingItem, setEditingItem] = useState<ActionItem | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [directManager, setDirectManager] = useState<DirectManager | null>(null);
 
   const loadItems = useCallback(async () => {
     try {
@@ -94,9 +93,12 @@ export default function ActionItemsTab({
     loadItems();
   }, [loadItems]);
 
-  const handleAdvance = async (item: ActionItem) => {
-    const next = NEXT_STATUS[item.status];
-    if (!next) return;
+  useEffect(() => {
+    if (!canEdit) return;
+    getDirectManager(teamId).then(setDirectManager).catch(() => setDirectManager(null));
+  }, [teamId, canEdit]);
+
+  const transition = async (item: ActionItem, next: ActionItemStatus) => {
     setUpdatingId(item.id);
     try {
       await updateActionItem(teamId, item.id, { status: next });
@@ -164,9 +166,8 @@ export default function ActionItemsTab({
         </div>
       )}
 
-      {items.length === 0 ? (
-        <div className="text-center py-16 text-gray-400" data-testid="action-items-empty">
-          <CheckCircle className="w-10 h-10 mx-auto mb-3 text-gray-200" />
+      {items.length === 0 && (
+        <div className="text-center py-4 text-gray-400" data-testid="action-items-empty">
           <p className="font-medium text-gray-500">No action items yet</p>
           {canEdit && (
             <p className="text-sm mt-1">
@@ -181,9 +182,9 @@ export default function ActionItemsTab({
             </p>
           )}
         </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {COLUMNS.map(({ status, label, icon, bg, border }) => {
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {COLUMNS.map(({ status, label, icon, bg, border }) => {
             const colItems = items.filter((i) => i.status === status);
             return (
               <div key={status} className={`rounded-xl border ${border} ${bg} flex flex-col`}>
@@ -204,49 +205,48 @@ export default function ActionItemsTab({
                   {colItems.map((item) => (
                     <div
                       key={item.id}
-                      className="bg-white rounded-lg border border-gray-200 p-3 shadow-sm"
+                      className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm"
                       data-testid="action-item-card"
                     >
-                      {/* Dimension badge */}
-                      {item.dimensionName && (
-                        <span className="inline-block mb-1.5 text-xs font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
-                          {item.dimensionName}
-                        </span>
-                      )}
+                      {/* Dimension badge + edit icon */}
+                      <div className="flex items-start justify-between gap-2">
+                        {item.dimensionName ? (
+                          <span className="inline-block mb-1.5 text-xs font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
+                            {item.dimensionName}
+                          </span>
+                        ) : <span />}
+                        {canEdit && currentUserId && item.createdBy === currentUserId && item.status !== 'done' && (
+                          <button
+                            onClick={() => setEditingItem(item)}
+                            className="text-gray-300 hover:text-indigo-500 flex-shrink-0"
+                            aria-label="Edit action item"
+                            data-testid={`edit-action-${item.id}`}
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
 
                       {/* Title */}
                       <p className="text-sm font-medium text-gray-900 leading-snug">{item.title}</p>
 
                       {/* Description */}
-                      {item.description && (
-                        <p className="text-xs text-gray-500 mt-1 line-clamp-2">{item.description}</p>
-                      )}
+                      {item.description && <ActionItemDescription description={item.description} />}
 
                       {/* Meta row */}
                       <div className="flex items-center gap-2 mt-2 flex-wrap">
                         {item.assigneeName && (
-                          <span className="text-xs text-gray-400">→ {item.assigneeName}</span>
+                          <span className="text-xs text-gray-400 break-words min-w-0">→ {item.assigneeName}</span>
                         )}
-                        {item.dueDate && (
-                          <span
-                            className={`text-xs font-medium ${
-                              isOverdue(item.dueDate) && item.status !== 'done'
-                                ? 'text-red-600'
-                                : 'text-gray-400'
-                            }`}
-                          >
-                            Due {(() => { const [y, m, d] = item.dueDate.split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); })()}
-                            {isOverdue(item.dueDate) && item.status !== 'done' && ' ⚠'}
-                          </span>
-                        )}
+                        <ActionItemDueDate dueDate={item.dueDate} status={item.status} />
                       </div>
 
                       {/* Actions */}
                       {canEdit && (
                         <div className="flex items-center gap-2 mt-2.5 pt-2 border-t border-gray-100">
-                          {STATUS_BTN_LABEL[item.status] && (
+                          {item.status === 'open' && (
                             <button
-                              onClick={() => handleAdvance(item)}
+                              onClick={() => transition(item, 'in_progress')}
                               disabled={updatingId === item.id}
                               className="flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
                               data-testid={`advance-action-${item.id}`}
@@ -255,13 +255,52 @@ export default function ActionItemsTab({
                                 ? <Loader2 className="w-3 h-3 animate-spin" />
                                 : <ArrowRight className="w-3 h-3" />
                               }
-                              {STATUS_BTN_LABEL[item.status]}
+                              Start
                             </button>
+                          )}
+                          {item.status === 'on_hold' && (
+                            <button
+                              onClick={() => transition(item, 'in_progress')}
+                              disabled={updatingId === item.id}
+                              className="flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                              data-testid={`advance-action-${item.id}`}
+                            >
+                              {updatingId === item.id
+                                ? <Loader2 className="w-3 h-3 animate-spin" />
+                                : <ArrowRight className="w-3 h-3" />
+                              }
+                              Resume
+                            </button>
+                          )}
+                          {item.status === 'in_progress' && (
+                            <>
+                              <button
+                                onClick={() => transition(item, 'on_hold')}
+                                disabled={updatingId === item.id}
+                                className="flex items-center gap-1 text-xs font-medium text-rose-500 hover:text-rose-700 disabled:opacity-50"
+                                data-testid={`hold-action-${item.id}`}
+                              >
+                                <ArrowLeft className="w-3 h-3" />
+                                Move to Hold
+                              </button>
+                              <button
+                                onClick={() => transition(item, 'done')}
+                                disabled={updatingId === item.id}
+                                className="ml-auto flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                                data-testid={`advance-action-${item.id}`}
+                              >
+                                {updatingId === item.id
+                                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                                  : <ArrowRight className="w-3 h-3" />
+                                }
+                                Mark Done
+                              </button>
+                            </>
                           )}
                           <button
                             onClick={() => handleDelete(item)}
                             disabled={updatingId === item.id}
-                            className="ml-auto text-gray-300 hover:text-red-400 disabled:opacity-50"
+                            className={item.status === 'in_progress' ? 'text-gray-300 hover:text-red-400 disabled:opacity-50' : 'ml-auto text-gray-300 hover:text-red-400 disabled:opacity-50'}
                             aria-label="Delete"
                             data-testid={`delete-action-${item.id}`}
                           >
@@ -275,8 +314,7 @@ export default function ActionItemsTab({
               </div>
             );
           })}
-        </div>
-      )}
+      </div>
 
       {/* Create modal */}
       {showModal && (
@@ -285,11 +323,28 @@ export default function ActionItemsTab({
           assessmentPeriod={assessmentPeriod}
           defaultDimensionId={defaultDimensionId}
           teamMembers={teamMembers}
+          directManager={directManager}
           onSaved={() => {
             setShowModal(false);
             loadItems();
           }}
           onClose={() => setShowModal(false)}
+        />
+      )}
+
+      {/* Edit modal */}
+      {editingItem && (
+        <ActionItemModal
+          teamId={teamId}
+          assessmentPeriod={assessmentPeriod}
+          teamMembers={teamMembers}
+          directManager={directManager}
+          editItem={editingItem}
+          onSaved={() => {
+            setEditingItem(null);
+            loadItems();
+          }}
+          onClose={() => setEditingItem(null)}
         />
       )}
     </div>
