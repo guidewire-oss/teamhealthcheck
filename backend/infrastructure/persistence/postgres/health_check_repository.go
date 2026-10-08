@@ -181,14 +181,29 @@ func (r *HealthCheckRepository) FindTeamHealthByManager(ctx context.Context, man
 				WHERE ts.user_id = $1
 				GROUP BY t.id, t.name
 			),
+			final_post_workshop_response AS (
+				SELECT DISTINCT ON (s.team_id, r.dimension_id)
+					s.team_id,
+					r.dimension_id,
+					r.trend
+				FROM health_check_sessions s
+				INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
+				INNER JOIN health_check_responses r ON r.session_id = s.id
+				WHERE ts.user_id = $1 AND s.survey_type = 'post_workshop'
+					AND s.completed = true AND s.assessment_period = $2
+				ORDER BY s.team_id, r.dimension_id, s.date DESC
+			),
 			team_dimensions AS (
 				SELECT
 					es.team_id,
 					r.dimension_id,
 					AVG(r.score) AS avg_score,
-					COUNT(r.dimension_id) AS response_count
+					COUNT(r.dimension_id) AS response_count,
+					MAX(fpwr.trend) AS trend
 				FROM effective_sessions es
 				INNER JOIN health_check_responses r ON es.id = r.session_id
+				LEFT JOIN final_post_workshop_response fpwr
+					ON fpwr.team_id = es.team_id AND fpwr.dimension_id = r.dimension_id
 				GROUP BY es.team_id, r.dimension_id
 			)
 			SELECT
@@ -199,7 +214,8 @@ func (r *HealthCheckRepository) FindTeamHealthByManager(ctx context.Context, man
 				o.post_workshop_status,
 				d.dimension_id,
 				d.avg_score,
-				d.response_count
+				d.response_count,
+				d.trend
 			FROM team_overall o
 			LEFT JOIN team_dimensions d ON o.team_id = d.team_id
 			ORDER BY o.overall_health ASC NULLS LAST, o.team_name, d.dimension_id
@@ -241,14 +257,29 @@ func (r *HealthCheckRepository) FindTeamHealthByManager(ctx context.Context, man
 				WHERE ts.user_id = $1
 				GROUP BY t.id, t.name
 			),
+			final_post_workshop_response AS (
+				SELECT DISTINCT ON (s.team_id, r.dimension_id)
+					s.team_id,
+					r.dimension_id,
+					r.trend
+				FROM health_check_sessions s
+				INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
+				INNER JOIN health_check_responses r ON r.session_id = s.id
+				WHERE ts.user_id = $1 AND s.survey_type = 'post_workshop'
+					AND s.completed = true
+				ORDER BY s.team_id, r.dimension_id, s.date DESC
+			),
 			team_dimensions AS (
 				SELECT
 					es.team_id,
 					r.dimension_id,
 					AVG(r.score) AS avg_score,
-					COUNT(r.dimension_id) AS response_count
+					COUNT(r.dimension_id) AS response_count,
+					MAX(fpwr.trend) AS trend
 				FROM effective_sessions es
 				INNER JOIN health_check_responses r ON es.id = r.session_id
+				LEFT JOIN final_post_workshop_response fpwr
+					ON fpwr.team_id = es.team_id AND fpwr.dimension_id = r.dimension_id
 				GROUP BY es.team_id, r.dimension_id
 			)
 			SELECT
@@ -259,7 +290,8 @@ func (r *HealthCheckRepository) FindTeamHealthByManager(ctx context.Context, man
 				o.post_workshop_status,
 				d.dimension_id,
 				d.avg_score,
-				d.response_count
+				d.response_count,
+				d.trend
 			FROM team_overall o
 			LEFT JOIN team_dimensions d ON o.team_id = d.team_id
 			ORDER BY o.overall_health ASC NULLS LAST, o.team_name, d.dimension_id
@@ -283,6 +315,7 @@ func (r *HealthCheckRepository) FindTeamHealthByManager(ctx context.Context, man
 		var dimensionID sql.NullString
 		var avgScore sql.NullFloat64
 		var responseCount sql.NullInt64
+		var trend sql.NullString
 
 		err := rows.Scan(
 			&teamID,
@@ -293,6 +326,7 @@ func (r *HealthCheckRepository) FindTeamHealthByManager(ctx context.Context, man
 			&dimensionID,
 			&avgScore,
 			&responseCount,
+			&trend,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan team health row: %w", err)
@@ -323,6 +357,7 @@ func (r *HealthCheckRepository) FindTeamHealthByManager(ctx context.Context, man
 				DimensionID:   dimensionID.String,
 				AvgScore:      avgScore.Float64,
 				ResponseCount: int(responseCount.Int64),
+				Trend:         trend.String,
 			})
 		}
 	}
@@ -332,6 +367,124 @@ func (r *HealthCheckRepository) FindTeamHealthByManager(ctx context.Context, man
 	}
 
 	// Convert map to ordered slice (order is already by overall_health ASC from query)
+	teams := make([]healthcheck.TeamHealthSummary, 0, len(teamOrder))
+	for _, id := range teamOrder {
+		teams = append(teams, *teamsMap[id])
+	}
+
+	return teams, nil
+}
+
+// FindMemberOverviewByManager aggregates raw individual member survey data by manager/team.
+func (r *HealthCheckRepository) FindMemberOverviewByManager(ctx context.Context, managerID string, teamID string, assessmentPeriod string) ([]healthcheck.TeamHealthSummary, error) {
+	query := `
+		WITH individual_sessions AS (
+			SELECT s.id, s.team_id
+			FROM health_check_sessions s
+			INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
+			WHERE ts.user_id = $1
+				AND s.completed = true
+				AND s.survey_type = 'individual'
+				AND ($2 = '' OR s.assessment_period = $2)
+				AND ($3 = '' OR s.team_id = $3)
+		),
+		team_overall AS (
+			SELECT
+				t.id AS team_id,
+				t.name AS team_name,
+				COUNT(DISTINCT es.id) AS submission_count,
+				AVG(r.score) AS overall_health
+			FROM teams t
+			INNER JOIN team_supervisors ts ON t.id = ts.team_id
+			LEFT JOIN individual_sessions es ON t.id = es.team_id
+			LEFT JOIN health_check_responses r ON es.id = r.session_id
+			WHERE ts.user_id = $1
+				AND ($3 = '' OR t.id = $3)
+			GROUP BY t.id, t.name
+		),
+		team_dimensions AS (
+			SELECT
+				es.team_id,
+				r.dimension_id,
+				AVG(r.score) AS avg_score,
+				COUNT(r.dimension_id) AS response_count
+			FROM individual_sessions es
+			INNER JOIN health_check_responses r ON es.id = r.session_id
+			GROUP BY es.team_id, r.dimension_id
+		)
+		SELECT
+			o.team_id,
+			o.team_name,
+			o.submission_count,
+			o.overall_health,
+			d.dimension_id,
+			d.avg_score,
+			d.response_count
+		FROM team_overall o
+		LEFT JOIN team_dimensions d ON o.team_id = d.team_id
+		ORDER BY o.team_name, d.dimension_id
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, managerID, assessmentPeriod, teamID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query member overview by manager: %w", err)
+	}
+	defer rows.Close()
+
+	teamsMap := make(map[string]*healthcheck.TeamHealthSummary)
+	teamOrder := []string{}
+
+	for rows.Next() {
+		var rowTeamID, teamName string
+		var submissionCount int
+		var overallHealth sql.NullFloat64
+		var dimensionID sql.NullString
+		var avgScore sql.NullFloat64
+		var responseCount sql.NullInt64
+
+		err := rows.Scan(
+			&rowTeamID,
+			&teamName,
+			&submissionCount,
+			&overallHealth,
+			&dimensionID,
+			&avgScore,
+			&responseCount,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan member overview row: %w", err)
+		}
+
+		team, exists := teamsMap[rowTeamID]
+		if !exists {
+			health := 0.0
+			if overallHealth.Valid {
+				health = overallHealth.Float64
+			}
+			team = &healthcheck.TeamHealthSummary{
+				TeamID:          rowTeamID,
+				TeamName:        teamName,
+				SubmissionCount: submissionCount,
+				OverallHealth:   health,
+				Dimensions:      []healthcheck.DimensionSummary{},
+			}
+			teamsMap[rowTeamID] = team
+			teamOrder = append(teamOrder, rowTeamID)
+		}
+
+		if dimensionID.Valid && avgScore.Valid {
+			team.Dimensions = append(team.Dimensions, healthcheck.DimensionSummary{
+				DimensionID:   dimensionID.String,
+				AvgScore:      avgScore.Float64,
+				ResponseCount: int(responseCount.Int64),
+			})
+		}
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
 	teams := make([]healthcheck.TeamHealthSummary, 0, len(teamOrder))
 	for _, id := range teamOrder {
 		teams = append(teams, *teamsMap[id])
@@ -538,6 +691,63 @@ func (r *HealthCheckRepository) FindDistinctAssessmentPeriods(ctx context.Contex
 	healthcheck.SortAssessmentPeriodsDescending(periods)
 
 	return periods, nil
+}
+
+// FindFinalPostWorkshopComments retrieves free-text comments from completed post_workshop
+// sessions for teams supervised by the given manager, scoped via team_supervisors and
+// optionally filtered by assessment period.
+func (r *HealthCheckRepository) FindFinalPostWorkshopComments(ctx context.Context, managerID string, assessmentPeriod string) ([]healthcheck.PostWorkshopComment, error) {
+	var query string
+	var rows *sql.Rows
+	var err error
+
+	if assessmentPeriod != "" {
+		query = `
+			SELECT s.team_id, s.id, r.dimension_id, r.comment, s.date
+			FROM health_check_sessions s
+			INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
+			INNER JOIN health_check_responses r ON r.session_id = s.id
+			WHERE ts.user_id = $1 AND s.survey_type = 'post_workshop' AND s.completed = true
+				AND s.assessment_period = $2
+				AND r.comment IS NOT NULL AND TRIM(r.comment) <> ''
+			ORDER BY s.team_id, s.date DESC, r.dimension_id
+		`
+		rows, err = r.db.QueryContext(ctx, query, managerID, assessmentPeriod)
+	} else {
+		query = `
+			SELECT s.team_id, s.id, r.dimension_id, r.comment, s.date
+			FROM health_check_sessions s
+			INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
+			INNER JOIN health_check_responses r ON r.session_id = s.id
+			WHERE ts.user_id = $1 AND s.survey_type = 'post_workshop' AND s.completed = true
+				AND r.comment IS NOT NULL AND TRIM(r.comment) <> ''
+			ORDER BY s.team_id, s.date DESC, r.dimension_id
+		`
+		rows, err = r.db.QueryContext(ctx, query, managerID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to query final post-workshop comments: %w", err)
+	}
+	defer rows.Close()
+
+	var comments []healthcheck.PostWorkshopComment
+	for rows.Next() {
+		var comment healthcheck.PostWorkshopComment
+		if err := rows.Scan(&comment.TeamID, &comment.SessionID, &comment.DimensionID, &comment.Comment, &comment.Date); err != nil {
+			return nil, fmt.Errorf("failed to scan post-workshop comment: %w", err)
+		}
+		comments = append(comments, comment)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	if comments == nil {
+		comments = []healthcheck.PostWorkshopComment{}
+	}
+
+	return comments, nil
 }
 
 // scanSessions is a helper function to scan query results into sessions

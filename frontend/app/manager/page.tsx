@@ -5,19 +5,22 @@ import { useRouter } from 'next/navigation';
 import { getCurrentUser, logout, authenticatedFetch, User } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { API_BASE_URL } from '@/lib/api/client';
-import { getAssessmentPeriods } from '@/lib/api/health-checks';
+import { getAssessmentPeriods, getManagerFinalPostWorkshopComments, getManagerMemberOverview } from '@/lib/api/health-checks';
+import type { PostWorkshopComment } from '@/lib/api-types';
 import { LogOut, Users, ChevronDown, AlertCircle, Activity, LineChart as LineChartIcon, CheckCircle, Clock, ClipboardList, TrendingUp, TrendingDown, Minus, LayoutGrid, Download, ListTodo } from 'lucide-react';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import OnboardingModal from '@/components/OnboardingModal';
 import { listManagerTeamsActionSummary, TeamActionSummary } from '@/lib/api/action-items';
 import * as XLSX from 'xlsx';
 import DocsLink from '@/components/DocsLink';
+import { getDimensionTrendDisplay } from '@/lib/dimension-trend';
 
 // Types matching backend API response
 interface DimensionSummary {
   dimensionId: string;
   avgScore: number;
   responseCount: number;
+  trend?: string;
 }
 
 interface TeamHealthSummary {
@@ -55,7 +58,7 @@ interface Subordinate {
   teamIds: string[];
 }
 
-type TabView = 'teams' | 'hierarchy' | 'summary' | 'comparison' | 'radar' | 'trends' | 'actions';
+type TabView = 'teams' | 'hierarchy' | 'summary' | 'comparison' | 'radar' | 'trends' | 'memberOverview' | 'actions';
 
 const LEVEL_STYLES: Record<string, { border: string; icon: string; label: string }> = {
   'level-1': { border: 'border-purple-500', icon: 'text-purple-600', label: 'VP' },
@@ -127,6 +130,10 @@ export default function ManagerPage() {
   const [selectedPeriod, setSelectedPeriod] = useState<string>('');
   const [assessmentPeriodOptions, setAssessmentPeriodOptions] = useState<string[]>([]);
   const [expandedTeam, setExpandedTeam] = useState<string | null>(null);
+  const [expandedTeamComments, setExpandedTeamComments] = useState<Set<string>>(new Set());
+  const [postWorkshopComments, setPostWorkshopComments] = useState<Record<string, PostWorkshopComment[]> | null>(null);
+  const [postWorkshopCommentsLoading, setPostWorkshopCommentsLoading] = useState(false);
+  const [postWorkshopCommentsError, setPostWorkshopCommentsError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabView>('teams');
   const [selectedTeamsForComparison, setSelectedTeamsForComparison] = useState<string[]>([]);
 
@@ -161,6 +168,12 @@ export default function ManagerPage() {
   const [brandingLogo, setBrandingLogo] = useState<string | null>(null);
   const [trendsView, setTrendsView] = useState<'overview' | 'dimensions'>('dimensions');
   const [selectedTrendTeam, setSelectedTrendTeam] = useState<string>(''); // '' = all teams averaged
+
+  // Member Overview tab state
+  const [selectedMemberOverviewTeam, setSelectedMemberOverviewTeam] = useState<string>(''); // '' = all teams
+  const [memberOverviewTeams, setMemberOverviewTeams] = useState<TeamHealthSummary[]>([]);
+  const [memberOverviewLoading, setMemberOverviewLoading] = useState(false);
+  const [memberOverviewError, setMemberOverviewError] = useState<string | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [actionSummary, setActionSummary] = useState<TeamActionSummary[]>([]);
   const [actionSummaryLoading, setActionSummaryLoading] = useState(false);
@@ -218,6 +231,32 @@ export default function ManagerPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const fetchFinalPostWorkshopComments = async (managerId: string, assessmentPeriod: string) => {
+    setPostWorkshopCommentsLoading(true);
+    setPostWorkshopCommentsError(null);
+    try {
+      const data = await getManagerFinalPostWorkshopComments(managerId, assessmentPeriod || undefined);
+      setPostWorkshopComments(data.comments || {});
+    } catch (err) {
+      setPostWorkshopCommentsError('Unable to load final post-workshop comments.');
+      console.error('Error fetching final post-workshop comments:', err);
+    } finally {
+      setPostWorkshopCommentsLoading(false);
+    }
+  };
+
+  const toggleTeamComments = (teamId: string) => {
+    setExpandedTeamComments((prev) => {
+      const next = new Set(prev);
+      if (next.has(teamId)) {
+        next.delete(teamId);
+      } else {
+        next.add(teamId);
+      }
+      return next;
+    });
   };
 
   const fetchSubordinates = async (managerId: string) => {
@@ -302,12 +341,29 @@ export default function ManagerPage() {
     }
   };
 
-  // Fetch radar/trends data when tab or team filter changes
+  const fetchMemberOverview = async (managerId: string, teamId: string, assessmentPeriod: string) => {
+    setMemberOverviewLoading(true);
+    setMemberOverviewError(null);
+    try {
+      const data = await getManagerMemberOverview(managerId, teamId || undefined, assessmentPeriod || undefined);
+      setMemberOverviewTeams(data.teams || []);
+    } catch (err) {
+      setMemberOverviewError('Unable to load member survey overview.');
+      console.error('Error fetching member overview:', err);
+      setMemberOverviewTeams([]);
+    } finally {
+      setMemberOverviewLoading(false);
+    }
+  };
+
+  // Fetch radar/trends/member-overview data when tab or team filter changes
   useEffect(() => {
     if (user && activeTab === 'radar') {
       fetchRadarData(user.id, selectedPeriod);
     } else if (user && activeTab === 'trends') {
       fetchTrendsData(user.id, selectedTrendTeam || undefined);
+    } else if (user && activeTab === 'memberOverview') {
+      fetchMemberOverview(user.id, selectedMemberOverviewTeam, selectedPeriod);
     } else if (user && activeTab === 'actions') {
       setActionSummaryLoading(true);
       listManagerTeamsActionSummary(user.id)
@@ -315,7 +371,7 @@ export default function ManagerPage() {
         .catch(() => setActionSummary([]))
         .finally(() => setActionSummaryLoading(false));
     }
-  }, [user, activeTab, selectedPeriod, selectedTrendTeam]);
+  }, [user, activeTab, selectedPeriod, selectedTrendTeam, selectedMemberOverviewTeam]);
 
   const handlePeriodChange = (period: string) => {
     setSelectedPeriod(period);
@@ -323,6 +379,13 @@ export default function ManagerPage() {
       fetchDashboardData(user.id, period);
       if (activeTab === 'radar') {
         fetchRadarData(user.id, period);
+      }
+      // Invalidate cached comments so they are refetched (lazily, on next expand)
+      // for the newly selected assessment period.
+      setPostWorkshopComments(null);
+      setPostWorkshopCommentsError(null);
+      if (expandedTeam) {
+        fetchFinalPostWorkshopComments(user.id, period);
       }
     }
   };
@@ -430,6 +493,8 @@ export default function ManagerPage() {
 
   if (!user) return null;
 
+  const roleLabel = LEVEL_STYLES[(user as any).hierarchyLevelId]?.label || 'Manager';
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -443,7 +508,7 @@ export default function ManagerPage() {
                 <Users className="w-8 h-8 text-indigo-600" />
               )}
               <div>
-                <h1 className="text-2xl font-bold text-gray-900">Manager Dashboard</h1>
+                <h1 className="text-2xl font-bold text-gray-900">{roleLabel} Dashboard</h1>
                 <p className="text-gray-500">{brandingName ? `${brandingName} Health Overview` : 'Team Health Overview'}</p>
               </div>
             </div>
@@ -451,7 +516,7 @@ export default function ManagerPage() {
             <div className="flex items-center gap-4">
               <div className="text-right">
                 <p className="text-sm font-semibold text-gray-900">{user.name}</p>
-                <p className="text-xs text-gray-500">Manager</p>
+                <p className="text-xs text-gray-500">{roleLabel}</p>
               </div>
 
               {user.canTakeSurvey && (
@@ -556,6 +621,18 @@ export default function ManagerPage() {
             >
               <LineChartIcon className="w-4 h-4" />
               Trends
+            </button>
+            <button
+              data-testid="member-overview-tab"
+              onClick={() => setActiveTab('memberOverview')}
+              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors whitespace-nowrap flex items-center gap-2 ${
+                activeTab === 'memberOverview'
+                  ? 'border-indigo-500 text-indigo-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              <Users className="w-4 h-4" />
+              Member Overview
             </button>
             <button
               data-testid="hierarchy-tab"
@@ -890,6 +967,140 @@ export default function ManagerPage() {
           </div>
         )}
 
+        {/* Member Overview Tab */}
+        {!loading && !error && activeTab === 'memberOverview' && (
+          <div className="bg-white rounded-xl shadow-sm border p-6" data-testid="member-overview-panel">
+            <div className="mb-1">
+              <h3 className="text-xl font-semibold text-gray-900">Member Survey Overview</h3>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Aggregated from team-member survey submissions only
+                {selectedMemberOverviewTeam === '' ? ' · across all your teams' : ''} — post-workshop results are excluded.
+              </p>
+            </div>
+
+            {/* Team filter pills (reused from Trends tab filter pattern) */}
+            {dashboardData && dashboardData.teams.length > 0 && (
+              <div className="mt-5 mb-5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-medium text-gray-500 mr-1">Filter by team:</span>
+                  <button
+                    data-testid="member-overview-team-pill-all"
+                    onClick={() => setSelectedMemberOverviewTeam('')}
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors border ${
+                      selectedMemberOverviewTeam === ''
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-600 border-gray-300 hover:border-indigo-400 hover:text-indigo-600'
+                    }`}
+                  >
+                    All Teams
+                  </button>
+                  {dashboardData.teams.map((team) => (
+                    <button
+                      key={team.teamId}
+                      data-testid="member-overview-team-pill"
+                      onClick={() => setSelectedMemberOverviewTeam(team.teamId)}
+                      className={`px-3 py-1 rounded-full text-xs font-medium transition-colors border ${
+                        selectedMemberOverviewTeam === team.teamId
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-white text-gray-600 border-gray-300 hover:border-indigo-400 hover:text-indigo-600'
+                      }`}
+                    >
+                      {team.teamName}
+                    </button>
+                  ))}
+                </div>
+                {selectedMemberOverviewTeam !== '' && (
+                  <p className="text-xs text-indigo-500 mt-2 flex items-center gap-1">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
+                    Showing member survey results for{' '}
+                    <strong>
+                      {dashboardData.teams.find((t) => t.teamId === selectedMemberOverviewTeam)?.teamName}
+                    </strong>{' '}
+                    only
+                  </p>
+                )}
+              </div>
+            )}
+
+            {memberOverviewLoading ? (
+              <div className="flex justify-center items-center py-12">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+              </div>
+            ) : memberOverviewError ? (
+              <div className="flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                {memberOverviewError}
+              </div>
+            ) : memberOverviewTeams.length === 0 ? (
+              <p className="text-gray-500 text-center py-12">
+                No member survey data available{selectedMemberOverviewTeam ? ' for this team' : ''}.
+              </p>
+            ) : (
+              <div className="space-y-4" data-testid="member-overview-teams">
+                {memberOverviewTeams.map((team) => (
+                  <div
+                    key={team.teamId}
+                    data-testid="member-overview-team-card"
+                    className="border rounded-xl p-4"
+                  >
+                    <div className="flex justify-between items-start mb-3">
+                      <div>
+                        <h4 className="text-lg font-semibold text-gray-900">{team.teamName}</h4>
+                        <span className="text-sm text-gray-600">
+                          <strong>{team.submissionCount}</strong>{' '}
+                          {team.submissionCount === 1 ? 'member submission' : 'member submissions'}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xs text-gray-500 mb-1">Member-Reported Health</div>
+                        <div
+                          className={`text-2xl font-bold px-3 py-1.5 rounded-lg border-2 ${getHealthColor(
+                            team.overallHealth
+                          )}`}
+                        >
+                          {formatHealthScore(team.overallHealth)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {team.dimensions.length > 0 ? (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {team.dimensions.map((dimension) => (
+                          <div
+                            key={dimension.dimensionId}
+                            className="bg-gray-50 rounded-lg p-3 border"
+                          >
+                            <div className="flex justify-between items-center mb-1">
+                              <h4 className="font-medium text-gray-900 capitalize text-sm">
+                                {dimension.dimensionId === 'value'
+                                  ? 'Delivering Value'
+                                  : dimension.dimensionId}
+                              </h4>
+                              <span
+                                className={`text-lg font-bold px-2 py-1 rounded ${getHealthColor(
+                                  dimension.avgScore
+                                )}`}
+                              >
+                                {formatHealthScore(dimension.avgScore)}
+                              </span>
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {dimension.responseCount}{' '}
+                              {dimension.responseCount === 1 ? 'response' : 'responses'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-500 italic">No member survey responses yet</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Team Cards Tab */}
         {!loading && !error && dashboardData && dashboardData.teams.length > 0 && activeTab === 'teams' && (
           <div className="space-y-4">
@@ -953,50 +1164,135 @@ export default function ManagerPage() {
                 {/* Dimension Breakdown */}
                 {team.dimensions.length > 0 && (
                   <div className="mt-4 pt-4 border-t">
-                    <button
-                      data-testid="view-details-button"
-                      onClick={() =>
-                        setExpandedTeam(expandedTeam === team.teamId ? null : team.teamId)
-                      }
-                      className="flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-800 font-medium"
-                    >
-                      <ChevronDown
-                        className={`w-4 h-4 transition-transform ${
-                          expandedTeam === team.teamId ? 'rotate-180' : ''
-                        }`}
-                      />
-                      {expandedTeam === team.teamId ? 'Hide' : 'View'} Dimension Details (
-                      {team.dimensions.length})
-                    </button>
+                    <div className="flex items-center justify-between">
+                      <button
+                        data-testid="view-details-button"
+                        onClick={() => {
+                          const next = expandedTeam === team.teamId ? null : team.teamId;
+                          setExpandedTeam(next);
+                          if (next && user && postWorkshopComments === null && !postWorkshopCommentsLoading) {
+                            fetchFinalPostWorkshopComments(user.id, selectedPeriod);
+                          }
+                        }}
+                        className="flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-800 font-medium"
+                      >
+                        <ChevronDown
+                          className={`w-4 h-4 transition-transform ${
+                            expandedTeam === team.teamId ? 'rotate-180' : ''
+                          }`}
+                        />
+                        {expandedTeam === team.teamId ? 'Hide' : 'View'} Dimension Details (
+                        {team.dimensions.length})
+                      </button>
+
+                      {expandedTeam === team.teamId &&
+                        !postWorkshopCommentsLoading &&
+                        !postWorkshopCommentsError &&
+                        (postWorkshopComments?.[team.teamId] || []).some(
+                          (c) => typeof c.comment === 'string' && c.comment.trim().length > 0
+                        ) && (
+                          <button
+                            data-testid="team-comments-toggle"
+                            onClick={() => toggleTeamComments(team.teamId)}
+                            className="flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-800 font-medium"
+                          >
+                            <ChevronDown
+                              className={`w-4 h-4 transition-transform ${
+                                expandedTeamComments.has(team.teamId) ? 'rotate-180' : ''
+                              }`}
+                            />
+                            {expandedTeamComments.has(team.teamId) ? 'Hide Comments' : 'Show Comments'}
+                          </button>
+                        )}
+                    </div>
 
                     {expandedTeam === team.teamId && (
-                      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                        {team.dimensions.map((dimension) => (
-                          <div
-                            key={dimension.dimensionId}
-                            className="bg-gray-50 rounded-lg p-3 border"
-                          >
-                            <div className="flex justify-between items-center mb-1">
-                              <h4 className="font-medium text-gray-900 capitalize text-sm">
-                                {dimension.dimensionId === 'value'
-                                  ? 'Delivering Value'
-                                  : dimension.dimensionId}
-                              </h4>
-                              <span
-                                className={`text-lg font-bold px-2 py-1 rounded ${getHealthColor(
-                                  dimension.avgScore
-                                )}`}
-                              >
-                                {formatHealthScore(dimension.avgScore)}
-                              </span>
-                            </div>
-                            <div className="text-xs text-gray-500">
-                              {dimension.responseCount}{' '}
-                              {dimension.responseCount === 1 ? 'response' : 'responses'}
-                            </div>
+                      <>
+                        {postWorkshopCommentsLoading && (
+                          <div className="mt-3 text-xs text-gray-400 italic">
+                            Loading post-workshop comments...
                           </div>
-                        ))}
-                      </div>
+                        )}
+
+                        {!postWorkshopCommentsLoading && postWorkshopCommentsError && (
+                          <div className="mt-3 text-xs text-red-600">{postWorkshopCommentsError}</div>
+                        )}
+
+                        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                          {team.dimensions.map((dimension) => {
+                            const dimComment = (postWorkshopComments?.[team.teamId] || []).find(
+                              (c) =>
+                                c.dimensionId === dimension.dimensionId &&
+                                typeof c.comment === 'string' &&
+                                c.comment.trim().length > 0
+                            );
+                            const showComment =
+                              expandedTeamComments.has(team.teamId) && Boolean(dimComment);
+
+                            return (
+                              <div
+                                key={dimension.dimensionId}
+                                data-testid="dimension-detail-card"
+                                className="bg-gray-50 rounded-lg p-3 border"
+                              >
+                                <div className="flex justify-between items-center mb-1">
+                                  <h4 className="font-medium text-gray-900 capitalize text-sm">
+                                    {dimension.dimensionId === 'value'
+                                      ? 'Delivering Value'
+                                      : dimension.dimensionId}
+                                  </h4>
+                                  <span
+                                    className={`text-lg font-bold px-2 py-1 rounded ${getHealthColor(
+                                      dimension.avgScore
+                                    )}`}
+                                  >
+                                    {formatHealthScore(dimension.avgScore)}
+                                  </span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                  <div className="text-xs text-gray-500">
+                                    {dimension.responseCount}{' '}
+                                    {dimension.responseCount === 1 ? 'response' : 'responses'}
+                                  </div>
+                                  {(() => {
+                                    const trendDisplay = getDimensionTrendDisplay(dimension.trend);
+                                    if (!trendDisplay) {
+                                      return null;
+                                    }
+                                    const TrendIcon =
+                                      trendDisplay.icon === 'up'
+                                        ? TrendingUp
+                                        : trendDisplay.icon === 'down'
+                                        ? TrendingDown
+                                        : Minus;
+                                    return (
+                                      <div
+                                        data-testid="dimension-trend"
+                                        className={`flex items-center gap-1 text-xs font-medium ${trendDisplay.colorClass}`}
+                                      >
+                                        <TrendIcon className="w-3.5 h-3.5" />
+                                        {trendDisplay.label}
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+
+                                {showComment && (
+                                  <div
+                                    data-testid="dimension-detail-comment"
+                                    className="mt-2 pt-2 border-t border-gray-200"
+                                  >
+                                    <div className="text-xs font-medium text-gray-500 mb-1">
+                                      Post-Workshop Comment
+                                    </div>
+                                    <p className="text-sm text-gray-800">{dimComment?.comment}</p>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
                     )}
                   </div>
                 )}

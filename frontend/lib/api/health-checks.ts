@@ -7,6 +7,7 @@
 
 import { API_BASE_URL, APIError, APIRequestError, apiRequest, handleResponse } from './client';
 import type { HealthCheckResponse, HealthCheckSession, HealthDimension } from '@/lib/types';
+import type { ManagerFinalPostWorkshopCommentsResponse, ManagerMemberOverviewResponse } from '@/lib/api-types';
 
 // Re-export domain types from the canonical source for backwards compatibility
 export type { HealthCheckResponse, HealthCheckSession, HealthDimension };
@@ -154,6 +155,54 @@ export async function getAssessmentPeriods(): Promise<string[]> {
 
   const data = await handleResponse<{ periods: string[] }>(response);
   return data.periods;
+}
+
+/**
+ * Fetches final post-workshop survey comments for all teams supervised by a manager,
+ * grouped by team ID
+ *
+ * @param managerId Manager's user ID
+ * @param assessmentPeriod Optional assessment period filter
+ * @returns Manager final post-workshop comments response
+ */
+export async function getManagerFinalPostWorkshopComments(
+  managerId: string,
+  assessmentPeriod?: string
+): Promise<ManagerFinalPostWorkshopCommentsResponse> {
+  const url = assessmentPeriod
+    ? `${API_BASE_URL}/api/v1/managers/${managerId}/dashboard/final-post-workshop-comments?assessmentPeriod=${encodeURIComponent(assessmentPeriod)}`
+    : `${API_BASE_URL}/api/v1/managers/${managerId}/dashboard/final-post-workshop-comments`;
+
+  const response = await apiRequest(url);
+
+  return handleResponse<ManagerFinalPostWorkshopCommentsResponse>(response);
+}
+
+/**
+ * Fetches aggregated health data based only on individual team-member survey
+ * submissions (never post-workshop data), optionally scoped to a single team.
+ *
+ * @param managerId Manager's user ID
+ * @param teamId Optional team ID to scope the result to a single team
+ * @param assessmentPeriod Optional assessment period filter
+ * @returns Manager member overview response
+ */
+export async function getManagerMemberOverview(
+  managerId: string,
+  teamId?: string,
+  assessmentPeriod?: string
+): Promise<ManagerMemberOverviewResponse> {
+  const params = new URLSearchParams();
+  if (teamId) params.append('teamId', teamId);
+  if (assessmentPeriod) params.append('assessmentPeriod', assessmentPeriod);
+
+  const url = `${API_BASE_URL}/api/v1/managers/${managerId}/dashboard/member-overview${
+    params.toString() ? `?${params.toString()}` : ''
+  }`;
+
+  const response = await apiRequest(url);
+
+  return handleResponse<ManagerMemberOverviewResponse>(response);
 }
 
 /**

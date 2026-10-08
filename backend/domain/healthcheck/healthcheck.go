@@ -54,6 +54,19 @@ type DimensionSummary struct {
 	DimensionID   string  `json:"dimensionId"`
 	AvgScore      float64 `json:"avgScore"`
 	ResponseCount int     `json:"responseCount"`
+	// Trend is the trend value ("improving", "stable", "declining") from the
+	// final completed post-workshop response for this team+dimension, if any.
+	Trend string `json:"trend,omitempty"`
+}
+
+// PostWorkshopComment represents a single free-text comment left on a final
+// post-workshop survey response
+type PostWorkshopComment struct {
+	TeamID      string `json:"teamId"`
+	SessionID   string `json:"sessionId"`
+	DimensionID string `json:"dimensionId"`
+	Comment     string `json:"comment"`
+	Date        string `json:"date"`
 }
 
 // Repository defines the interface for health check data access
@@ -74,4 +87,11 @@ type Repository interface {
 
 	// FindDistinctAssessmentPeriods returns all unique assessment periods from submitted sessions
 	FindDistinctAssessmentPeriods(ctx context.Context) ([]string, error)
+
+	// FindFinalPostWorkshopComments retrieves free-text comments from completed
+	// post-workshop surveys for teams supervised by the given manager
+	FindFinalPostWorkshopComments(ctx context.Context, managerID string, assessmentPeriod string) ([]PostWorkshopComment, error)
+
+	// FindMemberOverviewByManager aggregates pre-workshop health data from individual team-member surveys for the manager's teams; teamID filters to one team or "" for all supervised teams
+	FindMemberOverviewByManager(ctx context.Context, managerID string, teamID string, assessmentPeriod string) ([]TeamHealthSummary, error)
 }
