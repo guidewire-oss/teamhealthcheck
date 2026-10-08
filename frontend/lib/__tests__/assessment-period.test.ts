@@ -3,14 +3,15 @@
  *
  * Period format depends on team cadence:
  *   - Monthly:     "YYYY Mon"  (e.g., "2026 Mar")
- *   - Quarterly:   "YYYY Q1"   (e.g., "2026 Q1")
  *   - Half-yearly: "YYYY H1"   (e.g., "2026 H1")
  *   - Yearly:      "YYYY"      (e.g., "2026")
  *
- * Legacy format "YYYY - 1st/2nd Half" is parsed for backward compatibility.
+ * Quarterly cadence has been removed and no longer produces new periods; "YYYY Q1"-"YYYY Q4"
+ * and legacy "YYYY - 1st/2nd Half" periods are still *parsed* for backward compatibility with
+ * historical data, and always rendered to users as a safe H1/H2 label (see formatPeriodLabel).
  */
 
-import { getAssessmentPeriod, getCurrentAssessmentPeriod, parseAssessmentPeriod, compareAssessmentPeriods, Cadence } from '../assessment-period';
+import { getAssessmentPeriod, getCurrentAssessmentPeriod, getSelectablePeriods, parseAssessmentPeriod, compareAssessmentPeriods, formatPeriodLabel, Cadence } from '../assessment-period';
 
 // Helper to create dates in local timezone (avoids UTC parsing issues)
 const createDate = (year: number, month: number, day: number) => new Date(year, month - 1, day);
@@ -34,30 +35,6 @@ describe('getAssessmentPeriod', () => {
       months.forEach((name, i) => {
         expect(getAssessmentPeriod(createDate(2026, i + 1, 15), 'monthly')).toBe(`2026 ${name}`);
       });
-    });
-  });
-
-  describe('quarterly cadence', () => {
-    it('should return Q1 for Jan-Mar', () => {
-      expect(getAssessmentPeriod(createDate(2026, 1, 1), 'quarterly')).toBe('2026 Q1');
-      expect(getAssessmentPeriod(createDate(2026, 2, 15), 'quarterly')).toBe('2026 Q1');
-      expect(getAssessmentPeriod(createDate(2026, 3, 31), 'quarterly')).toBe('2026 Q1');
-    });
-
-    it('should return Q2 for Apr-Jun', () => {
-      expect(getAssessmentPeriod(createDate(2026, 4, 1), 'quarterly')).toBe('2026 Q2');
-      expect(getAssessmentPeriod(createDate(2026, 5, 15), 'quarterly')).toBe('2026 Q2');
-      expect(getAssessmentPeriod(createDate(2026, 6, 30), 'quarterly')).toBe('2026 Q2');
-    });
-
-    it('should return Q3 for Jul-Sep', () => {
-      expect(getAssessmentPeriod(createDate(2026, 7, 1), 'quarterly')).toBe('2026 Q3');
-      expect(getAssessmentPeriod(createDate(2026, 9, 30), 'quarterly')).toBe('2026 Q3');
-    });
-
-    it('should return Q4 for Oct-Dec', () => {
-      expect(getAssessmentPeriod(createDate(2026, 10, 1), 'quarterly')).toBe('2026 Q4');
-      expect(getAssessmentPeriod(createDate(2026, 12, 31), 'quarterly')).toBe('2026 Q4');
     });
   });
 
@@ -96,7 +73,7 @@ describe('getAssessmentPeriod', () => {
 
   describe('different years', () => {
     it('should work correctly across years', () => {
-      expect(getAssessmentPeriod(createDate(2024, 3, 15), 'quarterly')).toBe('2024 Q1');
+      expect(getAssessmentPeriod(createDate(2024, 3, 15), 'half-yearly')).toBe('2024 H1');
       expect(getAssessmentPeriod(createDate(2025, 8, 15), 'monthly')).toBe('2025 Aug');
       expect(getAssessmentPeriod(createDate(2027, 11, 1), 'half-yearly')).toBe('2027 H2');
     });
@@ -106,8 +83,8 @@ describe('getAssessmentPeriod', () => {
     it('should return same period for start and end of day', () => {
       const startOfDay = new Date(2026, 2, 31, 0, 0, 0);   // Mar 31 00:00:00
       const endOfDay = new Date(2026, 2, 31, 23, 59, 59);   // Mar 31 23:59:59
-      expect(getAssessmentPeriod(startOfDay, 'quarterly')).toBe('2026 Q1');
-      expect(getAssessmentPeriod(endOfDay, 'quarterly')).toBe('2026 Q1');
+      expect(getAssessmentPeriod(startOfDay, 'half-yearly')).toBe('2026 H1');
+      expect(getAssessmentPeriod(endOfDay, 'half-yearly')).toBe('2026 H1');
     });
   });
 });
@@ -119,8 +96,8 @@ describe('getCurrentAssessmentPeriod', () => {
   });
 
   it('should accept a cadence parameter', () => {
-    const result = getCurrentAssessmentPeriod('quarterly');
-    expect(result).toMatch(/^\d{4} Q[1-4]$/);
+    const result = getCurrentAssessmentPeriod('monthly');
+    expect(result).toMatch(/^\d{4} [A-Za-z]{3}$/);
   });
 });
 
@@ -186,6 +163,40 @@ describe('parseAssessmentPeriod', () => {
   });
 });
 
+describe('getSelectablePeriods', () => {
+  it('includes the current period first for half-yearly cadence', () => {
+    const periods = getSelectablePeriods('half-yearly', 4, createDate(2026, 9, 22));
+    expect(periods[0]).toBe('2026 H2');
+  });
+
+  it('steps backward by half-year increments, including a previous period like H1 2026', () => {
+    const periods = getSelectablePeriods('half-yearly', 4, createDate(2026, 9, 22));
+    expect(periods).toEqual(['2026 H2', '2026 H1', '2025 H2', '2025 H1']);
+  });
+
+  it('steps backward by month for monthly cadence', () => {
+    const periods = getSelectablePeriods('monthly', 3, createDate(2026, 2, 1));
+    expect(periods).toEqual(['2026 Feb', '2026 Jan', '2025 Dec']);
+  });
+
+  it('steps backward by year for yearly cadence', () => {
+    const periods = getSelectablePeriods('yearly', 3, createDate(2026, 6, 1));
+    expect(periods).toEqual(['2026', '2025', '2024']);
+  });
+
+  it('defaults to 6 periods when count is not given', () => {
+    expect(getSelectablePeriods('half-yearly', undefined, createDate(2026, 9, 22))).toHaveLength(6);
+  });
+
+  it('every returned period parses as a valid assessment period', () => {
+    for (const cadence of ['monthly', 'half-yearly', 'yearly'] as const) {
+      for (const period of getSelectablePeriods(cadence, 8, createDate(2026, 9, 22))) {
+        expect(parseAssessmentPeriod(period)).not.toBeNull();
+      }
+    }
+  });
+});
+
 describe('compareAssessmentPeriods', () => {
   it('should compare same-format periods', () => {
     expect(compareAssessmentPeriods('2026 Q1', '2026 Q2')).toBeLessThan(0);
@@ -219,5 +230,47 @@ describe('compareAssessmentPeriods', () => {
   it('should return 0 for invalid periods', () => {
     expect(compareAssessmentPeriods('invalid', '2026 Q1')).toBe(0);
     expect(compareAssessmentPeriods('2026 Q1', 'invalid')).toBe(0);
+  });
+});
+
+describe('formatPeriodLabel', () => {
+  it('re-orders half-yearly periods to "H<n> <year>" for multiple years', () => {
+    expect(formatPeriodLabel('2026 H1')).toBe('H1 2026');
+    expect(formatPeriodLabel('2026 H2')).toBe('H2 2026');
+    expect(formatPeriodLabel('1999 H1')).toBe('H1 1999');
+    expect(formatPeriodLabel('2101 H2')).toBe('H2 2101');
+  });
+
+  it('collapses quarterly periods into their half-year, never exposing Q1-Q4', () => {
+    expect(formatPeriodLabel('2026 Q1')).toBe('H1 2026');
+    expect(formatPeriodLabel('2026 Q2')).toBe('H1 2026');
+    expect(formatPeriodLabel('2026 Q3')).toBe('H2 2026');
+    expect(formatPeriodLabel('2026 Q4')).toBe('H2 2026');
+    expect(formatPeriodLabel('2030 Q1')).toBe('H1 2030');
+    expect(formatPeriodLabel('2030 Q4')).toBe('H2 2030');
+  });
+
+  it('never returns a string containing a quarter label', () => {
+    for (let q = 1; q <= 4; q++) {
+      const label = formatPeriodLabel(`2026 Q${q}`);
+      expect(label).not.toMatch(/Q[1-4]/);
+      expect(label).toMatch(/^H[12] \d{4}$/);
+    }
+  });
+
+  it('maps legacy half labels to canonical H<n> <year> form, rolling the year for 2nd Half', () => {
+    expect(formatPeriodLabel('2024 - 1st Half')).toBe('H2 2024');
+    expect(formatPeriodLabel('2024 - 2nd Half')).toBe('H1 2025');
+    expect(formatPeriodLabel('1999 - 1st Half')).toBe('H2 1999');
+    expect(formatPeriodLabel('1999 - 2nd Half')).toBe('H1 2000');
+  });
+
+  it('leaves monthly and yearly periods unchanged (not quarter labels)', () => {
+    expect(formatPeriodLabel('2026 Mar')).toBe('2026 Mar');
+    expect(formatPeriodLabel('2026')).toBe('2026');
+  });
+
+  it('returns the original string unchanged for an unparseable period', () => {
+    expect(formatPeriodLabel('not-a-period')).toBe('not-a-period');
   });
 });

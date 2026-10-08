@@ -144,6 +144,53 @@ export async function getTeamSubmissionStatus(
   return handleResponse<TeamSubmissionStatus>(response);
 }
 
+export interface SurveyEligibility {
+  eligible: boolean;
+  // Populated when eligible is false: one of "duplicate", "future_period", "past_period", or
+  // "invalid_period" (see backend healthcheck.PeriodEligibilityReason). Callers must branch on
+  // this rather than assuming every ineligible result is a duplicate -- submittedPeriod and
+  // nextEligiblePeriod are only meaningful when reason is "duplicate".
+  reason?: string;
+  // Populated only when reason is "duplicate": the user-facing H1/H2 label of the blocking
+  // submission's period, and the H1/H2 label the caller becomes eligible in. Never a
+  // day-level date -- the survey experience is based on month/year (period) values only.
+  submittedPeriod?: string;
+  nextEligiblePeriod?: string;
+}
+
+/**
+ * Checks whether a survey can be submitted right now, before opening the survey form -- each
+ * survey type can only be resubmitted once six calendar months have elapsed since the
+ * scope's last completed submission of that type. Individual surveys are scoped to the
+ * user; post-workshop surveys are scoped to the team.
+ *
+ * @param params.surveyType 'individual' or 'post_workshop'
+ * @param params.assessmentPeriod Assessment period the survey would be recorded under (e.g. "H1 2026")
+ * @param params.teamId Required when surveyType is 'post_workshop'
+ * @param params.userId Required when surveyType is 'individual'
+ * @returns Eligibility result; when ineligible, includes the already-submitted period and
+ *          the next eligible H1/H2 period
+ */
+export async function checkSurveyEligibility(params: {
+  surveyType: 'individual' | 'post_workshop';
+  assessmentPeriod: string;
+  teamId?: string;
+  userId?: string;
+}): Promise<SurveyEligibility> {
+  const query = new URLSearchParams({
+    surveyType: params.surveyType,
+    assessmentPeriod: params.assessmentPeriod,
+  });
+  if (params.teamId) query.set('teamId', params.teamId);
+  if (params.userId) query.set('userId', params.userId);
+
+  const response = await apiRequest(
+    `${API_BASE_URL}/api/v1/health-checks/eligibility?${query.toString()}`
+  );
+
+  return handleResponse<SurveyEligibility>(response);
+}
+
 /**
  * Fetches all distinct assessment periods from the database
  *

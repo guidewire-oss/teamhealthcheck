@@ -3,10 +3,22 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+
+	"github.com/lib/pq"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/healthcheck"
 )
+
+// uniqueViolationConstraints maps the Postgres unique-index names enforcing "one submission
+// per (scope, survey type, year, half-year)" to the survey type they guard, so a 23505
+// (unique violation) error from Save() can be translated into a friendly
+// healthcheck.SubmissionCooldownError.
+var uniqueViolationConstraints = map[string]string{
+	"uniq_individual_period_submission":    healthcheck.SurveyTypeIndividual,
+	"uniq_post_workshop_period_submission": healthcheck.SurveyTypePostWorkshop,
+}
 
 // HealthCheckRepository implements the healthcheck.Repository interface
 type HealthCheckRepository struct {
@@ -49,6 +61,20 @@ func (r *HealthCheckRepository) Save(ctx context.Context, session *healthcheck.H
 	`, session.ID, session.TeamID, session.UserID, session.Date, session.AssessmentPeriod, surveyType, session.Completed)
 
 	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && (pqErr.Code == "23P01" || pqErr.Code == "23505") {
+			if constraintSurveyType, known := uniqueViolationConstraints[pqErr.Constraint]; known {
+				submitted, serr := r.FindSubmittedPeriods(ctx, healthcheck.LatestSubmissionQuery{
+					SurveyType: constraintSurveyType,
+					TeamID:     session.TeamID,
+					UserID:     session.UserID,
+				})
+				if serr == nil {
+					return healthcheck.NewSubmissionCooldownError(constraintSurveyType, session.AssessmentPeriod, submitted)
+				}
+				return fmt.Errorf("submission rejected: %s for %s already submitted", constraintSurveyType, session.AssessmentPeriod)
+			}
+		}
 		return fmt.Errorf("failed to save session: %w", err)
 	}
 
@@ -479,6 +505,43 @@ func (r *HealthCheckRepository) GetTeamSubmissionStatus(ctx context.Context, tea
 		AllSubmitted:       allSubmitted,
 		PostWorkshopExists: postWorkshopExists,
 	}, nil
+}
+
+// FindSubmittedPeriods returns the assessment-period labels of every completed submission
+// matching the given survey type and scope, or an empty slice if none exist. Scoping:
+//   - individual:    matches by UserID only (a different user's submission never conflicts).
+//   - post_workshop: matches by TeamID only (one workshop consensus per team).
+//
+// This is the persisted source of truth healthcheck.CheckPeriodEligibility and
+// healthcheck.NextEligiblePeriod are evaluated against -- eligibility is never inferred from
+// submission dates.
+func (r *HealthCheckRepository) FindSubmittedPeriods(ctx context.Context, query healthcheck.LatestSubmissionQuery) ([]string, error) {
+	var scopeColumn, scopeValue string
+	if query.SurveyType == healthcheck.SurveyTypePostWorkshop {
+		scopeColumn, scopeValue = "team_id", query.TeamID
+	} else {
+		scopeColumn, scopeValue = "user_id", query.UserID
+	}
+
+	rows, err := r.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT assessment_period
+		FROM health_check_sessions
+		WHERE %s = $1 AND survey_type = $2 AND completed = true
+	`, scopeColumn), scopeValue, query.SurveyType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query submitted periods: %w", err)
+	}
+	defer rows.Close()
+
+	var periods []string
+	for rows.Next() {
+		var period string
+		if err := rows.Scan(&period); err != nil {
+			return nil, fmt.Errorf("failed to scan submitted period: %w", err)
+		}
+		periods = append(periods, period)
+	}
+	return periods, rows.Err()
 }
 
 // Delete removes a session and its responses (cascade handled by DB)

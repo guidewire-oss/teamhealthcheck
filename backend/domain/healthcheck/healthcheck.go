@@ -1,6 +1,9 @@
 package healthcheck
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // Survey type constants
 const (
@@ -49,6 +52,84 @@ type TeamSubmissionStatus struct {
 	PostWorkshopExists bool   `json:"postWorkshopExists"`
 }
 
+// LatestSubmissionQuery scopes a lookup of a caller's submitted assessment periods for a
+// given survey type:
+//   - individual:    scoped to UserID only (a different user's submission never blocks).
+//   - post_workshop: scoped to TeamID only (one workshop consensus per team).
+type LatestSubmissionQuery struct {
+	SurveyType string
+	TeamID     string // required when SurveyType == SurveyTypePostWorkshop
+	UserID     string // required when SurveyType == SurveyTypeIndividual
+}
+
+// SubmissionCooldownError indicates a survey submission was rejected because the caller's
+// scope (the user, for Individual Survey; the team, for Post-Workshop Survey) already has a
+// completed submission for this exact survey type and assessment period -- one submission
+// per (scope, survey type, year, half-year) is allowed. See CheckPeriodEligibility.
+type SubmissionCooldownError struct {
+	SurveyType          string
+	LastSubmittedPeriod string // user-facing H1/H2 label of the duplicated period
+	// NextEligiblePeriod is the user-facing H1/H2 label (e.g. "H2 2026") the caller next
+	// becomes eligible for, computed dynamically from every period already on record for
+	// this scope (see NextEligiblePeriod). The survey experience never exposes day-level
+	// dates, so this label is what error messages and API responses surface.
+	NextEligiblePeriod string
+}
+
+func (e *SubmissionCooldownError) Error() string {
+	return fmt.Sprintf(
+		"You have already submitted the %s for %s. Your next eligible survey period is %s.",
+		SurveyTypeLabel(e.SurveyType), e.LastSubmittedPeriod, e.NextEligiblePeriod,
+	)
+}
+
+// SurveyTypeLabel renders a survey type constant as a user-facing label.
+func SurveyTypeLabel(surveyType string) string {
+	if surveyType == SurveyTypePostWorkshop {
+		return "Post-Workshop Survey"
+	}
+	return "Individual Survey"
+}
+
+// NewSubmissionCooldownError builds a SubmissionCooldownError for a duplicate submission of
+// duplicatedPeriod, given every period already submitted for this scope and survey type
+// (submittedPeriods -- the persisted source of truth, not submitted dates).
+func NewSubmissionCooldownError(surveyType string, duplicatedPeriod string, submittedPeriods []string) *SubmissionCooldownError {
+	return &SubmissionCooldownError{
+		SurveyType:          surveyType,
+		LastSubmittedPeriod: FormatPeriodForDisplay(duplicatedPeriod),
+		NextEligiblePeriod:  NextEligiblePeriod(submittedPeriods),
+	}
+}
+
+// PeriodNotOpenError indicates a survey submission was rejected because the requested
+// assessment period is not currently open for a brand-new submission -- it is either a
+// future half-year that has not started yet, or a stale period from an earlier year. Unlike
+// SubmissionCooldownError, this is never about a duplicate: see CheckPeriodEligibility.
+type PeriodNotOpenError struct {
+	SurveyType string
+	Period     string // user-facing H1/H2 label of the rejected period
+	// Reason is either PeriodReasonFuture or PeriodReasonPast.
+	Reason PeriodEligibilityReason
+}
+
+func (e *PeriodNotOpenError) Error() string {
+	if e.Reason == PeriodReasonPast {
+		return fmt.Sprintf("%s for %s is no longer open for new submissions.", SurveyTypeLabel(e.SurveyType), e.Period)
+	}
+	return fmt.Sprintf("%s for %s is not yet available.", SurveyTypeLabel(e.SurveyType), e.Period)
+}
+
+// NewPeriodNotOpenError builds a PeriodNotOpenError for period (rendered as a safe H1/H2
+// label, never a quarter number).
+func NewPeriodNotOpenError(surveyType string, period string, reason PeriodEligibilityReason) *PeriodNotOpenError {
+	return &PeriodNotOpenError{
+		SurveyType: surveyType,
+		Period:     FormatPeriodForDisplay(period),
+		Reason:     reason,
+	}
+}
+
 // DimensionSummary represents aggregated dimension health
 type DimensionSummary struct {
 	DimensionID   string  `json:"dimensionId"`
@@ -74,4 +155,10 @@ type Repository interface {
 
 	// FindDistinctAssessmentPeriods returns all unique assessment periods from submitted sessions
 	FindDistinctAssessmentPeriods(ctx context.Context) ([]string, error)
+
+	// FindSubmittedPeriods returns the assessment-period labels of every completed submission
+	// matching the given survey type and scope (TeamID for post_workshop, UserID for
+	// individual). This is the persisted source of truth for period-level eligibility and
+	// duplicate checks -- see CheckPeriodEligibility.
+	FindSubmittedPeriods(ctx context.Context, query LatestSubmissionQuery) ([]string, error)
 }

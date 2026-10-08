@@ -286,7 +286,7 @@ var _ = Describe("E2E: Data Validation", func() {
 				), "Valid monthly period format should be accepted")
 			})
 
-			It("should accept valid quarterly period format", func() {
+			It("should reject quarterly period format -- quarter-based periods are no longer supported", func() {
 				uniqueID := fmt.Sprintf("test-quarterly-%d", time.Now().UnixNano())
 				pastYear := time.Now().Year() - 1
 				body := map[string]interface{}{
@@ -309,11 +309,8 @@ var _ = Describe("E2E: Data Validation", func() {
 				Expect(err).NotTo(HaveOccurred())
 				defer resp.Body.Close()
 
-				Expect(resp.StatusCode).To(SatisfyAny(
-					Equal(http.StatusCreated),
-					Equal(http.StatusConflict),
-					Equal(http.StatusOK),
-				), "Valid quarterly period format should be accepted")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+					"Quarterly period format should be rejected even for a past year, since quarterly cadence has been removed")
 			})
 
 			It("should accept valid half-yearly period format", func() {
@@ -401,30 +398,6 @@ var _ = Describe("E2E: Data Validation", func() {
 					"Future monthly period should be rejected")
 			})
 
-			It("should reject future quarterly period", func() {
-				futureYear := time.Now().Year() + 2
-				body := map[string]interface{}{
-					"teamId":           "team-phoenix",
-					"userId":           "demo",
-					"date":             time.Now().Format(time.RFC3339),
-					"assessmentPeriod": fmt.Sprintf("%d Q1", futureYear),
-					"responses": []map[string]interface{}{
-						{
-							"dimensionId": "mission",
-							"score":       3,
-							"trend":       "stable",
-						},
-					},
-				}
-				bodyBytes, _ := json.Marshal(body)
-
-				resp, err := makeAuthenticatedRequest("POST", "/api/v1/health-checks", userToken, strings.NewReader(string(bodyBytes)))
-				Expect(err).NotTo(HaveOccurred())
-				defer resp.Body.Close()
-
-				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
-					"Future quarterly period should be rejected")
-			})
 		})
 	})
 

@@ -5,12 +5,12 @@ import { useRouter } from 'next/navigation';
 import { getCurrentUser, logout, authenticatedFetch } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { getOrgConfig, getHierarchyLevel, getUserPermissions } from '@/lib/org-config';
-import { LogOut, Building2, ChevronDown, BarChart3, LineChart as LineChartIcon, Users as UsersIcon, Activity, ClipboardList, TrendingUp, TrendingDown, Minus, LayoutGrid, List, Info, CheckCircle, Download, ListTodo } from 'lucide-react';
+import { LogOut, Building2, ChevronDown, BarChart3, LineChart as LineChartIcon, Users as UsersIcon, Activity, ClipboardList, TrendingUp, TrendingDown, Minus, LayoutGrid, List, Info, CheckCircle, Download, ListTodo, X } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { AlertCircle } from 'lucide-react';
-import { getTeamSubmissionStatus, getAssessmentPeriods, TeamSubmissionStatus } from '@/lib/api/health-checks';
+import { getTeamSubmissionStatus, getAssessmentPeriods, checkSurveyEligibility, TeamSubmissionStatus } from '@/lib/api/health-checks';
 import { API_BASE_URL } from '@/lib/api/client';
-import { getAssessmentPeriod, toCadence } from '@/lib/assessment-period';
+import { getAssessmentPeriod, getSelectablePeriods, parseAssessmentPeriod, toCadence, formatPeriodLabel, formatMonthYear } from '@/lib/assessment-period';
 import { getTeamInfoCached } from '@/lib/api/teams';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line, ResponsiveContainer } from 'recharts';
 import OnboardingModal from '@/components/OnboardingModal';
@@ -48,6 +48,8 @@ interface IndividualResponse {
 
 interface TrendData {
   period: string;
+  /** User-facing H1/H2 label for `period`; never a quarter label. */
+  label: string;
   [key: string]: string | number;
 }
 
@@ -66,6 +68,22 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [selectedPeriod, setSelectedPeriod] = useState<string>('');
   const [assessmentPeriodOptions, setAssessmentPeriodOptions] = useState<string[]>([]);
+  // Assessment period to take a new survey for (Take Survey / Post-Workshop Survey buttons).
+  // Separate from `selectedPeriod` above, which is the dashboard's chart/data filter.
+  const [takeSurveyPeriod, setTakeSurveyPeriod] = useState<string>('');
+  const [autoTakeSurveyPeriod, setAutoTakeSurveyPeriod] = useState<string>('');
+  const [teamCadence, setTeamCadence] = useState<string>('half-yearly');
+  // Which survey flow the period-selection modal is being shown for, or null when closed.
+  const [pendingSurveyType, setPendingSurveyType] = useState<'individual' | 'post_workshop' | null>(null);
+  // True while the pre-open six-month cooldown eligibility check is in flight.
+  const [checkingEligibility, setCheckingEligibility] = useState(false);
+  // Set when the eligibility check finds the scope still within the six-month cooldown;
+  // renders the "already submitted" info modal instead of opening the survey.
+  const [duplicateInfo, setDuplicateInfo] = useState<{
+    surveyType: 'individual' | 'post_workshop';
+    submittedPeriod: string;
+    nextEligiblePeriod: string;
+  } | null>(null);
   const [submissionStatus, setSubmissionStatus] = useState<TeamSubmissionStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [responseView, setResponseView] = useState<'matrix' | 'cards'>('matrix');
@@ -115,7 +133,10 @@ export default function DashboardPage() {
       getTeamInfoCached(firstTeamId)
         .then((teamInfo) => {
           setTeamMembers(teamInfo.members.map(m => ({ id: m.id, name: m.fullName })));
+          setTeamCadence(teamInfo.cadence);
           const currentPeriod = getAssessmentPeriod(new Date(), toCadence(teamInfo.cadence));
+          setAutoTakeSurveyPeriod(currentPeriod);
+          setTakeSurveyPeriod(currentPeriod);
           return getTeamSubmissionStatus(firstTeamId, currentPeriod);
         })
         .catch(() => {
@@ -248,7 +269,7 @@ export default function DashboardPage() {
         // Frontend: [{ period, mission: 2.5, value: 3.0, ... }]
         if (data.periods && Array.isArray(data.periods) && data.dimensions) {
           const transformed = data.periods.map((period: string, idx: number) => {
-            const row: TrendData = { period };
+            const row: TrendData = { period, label: formatPeriodLabel(period) };
             (data.dimensions || []).forEach((dim: { dimensionId: string; scores: number[] }) => {
               row[dim.dimensionId] = dim.scores[idx] || 0;
             });
@@ -289,7 +310,10 @@ export default function DashboardPage() {
     getTeamInfoCached(newTeamId)
       .then((teamInfo) => {
         setTeamMembers(teamInfo.members.map(m => ({ id: m.id, name: m.fullName })));
+        setTeamCadence(teamInfo.cadence);
         const currentPeriod = getAssessmentPeriod(new Date(), toCadence(teamInfo.cadence));
+        setAutoTakeSurveyPeriod(currentPeriod);
+        setTakeSurveyPeriod(currentPeriod);
         return getTeamSubmissionStatus(newTeamId, currentPeriod);
       })
       .catch(() => {
@@ -305,7 +329,62 @@ export default function DashboardPage() {
     router.push('/login');
   };
 
+  // Builds the /survey URL for the "Take Survey" / "Post-Workshop Survey" buttons, carrying the
+  // Team Lead's selected assessment period (falls back to auto-detection if somehow invalid/empty).
+  const buildSurveyUrl = (surveyType?: 'post_workshop') => {
+    const params = new URLSearchParams();
+    if (teamId) params.set('team', teamId);
+    if (surveyType) params.set('type', surveyType);
+    if (takeSurveyPeriod && parseAssessmentPeriod(takeSurveyPeriod)) params.set('period', takeSurveyPeriod);
+    const query = params.toString();
+    return query ? `/survey?${query}` : '/survey';
+  };
+
+  // Called from the period-selection modal's confirm button. Checks the shared six-month
+  // submission cooldown before opening the survey; individual surveys are scoped to the Team Lead's own user ID,
+  // post-workshop surveys are scoped to the selected team. If the eligibility check itself
+  // fails (e.g. network error), we fail open and let the authoritative server-side check at
+  // submit time (409 Conflict) be the backstop, rather than blocking a legitimate submission.
+  const handleConfirmSurvey = async () => {
+    if (!pendingSurveyType || !user) return;
+    const surveyType = pendingSurveyType;
+
+    setCheckingEligibility(true);
+    try {
+      const result = await checkSurveyEligibility({
+        surveyType,
+        assessmentPeriod: takeSurveyPeriod,
+        teamId: surveyType === 'post_workshop' ? teamId : undefined,
+        userId: surveyType === 'individual' ? user.id : undefined,
+      });
+
+      if (!result.eligible) {
+        setPendingSurveyType(null);
+        setDuplicateInfo({
+          surveyType,
+          submittedPeriod: result.submittedPeriod || takeSurveyPeriod,
+          nextEligiblePeriod: result.nextEligiblePeriod || '',
+        });
+        return;
+      }
+
+      setPendingSurveyType(null);
+      router.push(buildSurveyUrl(surveyType === 'post_workshop' ? 'post_workshop' : undefined));
+    } catch {
+      // Fail open: proceed to the survey. The submit-time 409 check remains authoritative.
+      setPendingSurveyType(null);
+      router.push(buildSurveyUrl(surveyType === 'post_workshop' ? 'post_workshop' : undefined));
+    } finally {
+      setCheckingEligibility(false);
+    }
+  };
+
   // All useMemo hooks must be called unconditionally — before any early return
+  const takeSurveyPeriodOptions = useMemo(() => {
+    const options = getSelectablePeriods(toCadence(teamCadence));
+    return options.includes(takeSurveyPeriod) ? options : [takeSurveyPeriod, ...options];
+  }, [teamCadence, takeSurveyPeriod]);
+
   const matrixDims = useMemo(
     () => individualResponses[0]?.responses || [],
     [individualResponses]
@@ -346,6 +425,7 @@ export default function DashboardPage() {
     () => HEALTH_DIMENSIONS.map((dim) => {
       const data = trends.map((t) => ({
         period: t.period as string,
+        label: t.label as string,
         value: (t[dim.id] as number) || 0,
       }));
       const validData = data.filter((p) => p.value > 0);
@@ -397,7 +477,7 @@ export default function DashboardPage() {
 
   const handleExportToExcel = async () => {
     const teamName = teamOptions.find(t => t.id === teamId)?.name || teamId;
-    const periodLabel = selectedPeriod || 'All Periods';
+    const periodLabel = selectedPeriod ? formatPeriodLabel(selectedPeriod) : 'All Periods';
 
     // Sheet 1: Summary — dimension averages with band labels
     const summaryRows = healthSummary.map(h => ({
@@ -412,7 +492,7 @@ export default function DashboardPage() {
       r.responses.map(resp => ({
         Member: r.userName,
         'Survey Type': r.surveyType === 'post_workshop' ? 'Post-Workshop' : 'Individual',
-        Date: new Date(r.date).toLocaleDateString(),
+        Date: formatMonthYear(r.date),
         Dimension: resp.dimensionName,
         Score: resp.score,
         'Score Label': resp.score === 3 ? 'Green' : resp.score === 2 ? 'Yellow' : 'Red',
@@ -505,9 +585,9 @@ export default function DashboardPage() {
             <div className="flex items-center gap-4">
               {/* Take Survey Button */}
               <button
-                onClick={() => router.push(teamId ? `/survey?team=${teamId}` : '/survey')}
+                onClick={() => setPendingSurveyType('individual')}
                 data-testid="take-survey-button"
-                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg transition-colors duration-150 hover:bg-blue-700 active:bg-blue-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
               >
                 <ClipboardList className="w-4 h-4" />
                 Take Survey
@@ -524,10 +604,10 @@ export default function DashboardPage() {
                 </span>
               ) : (
                 <button
-                  onClick={() => router.push(teamId ? `/survey?type=post_workshop&team=${teamId}` : '/survey?type=post_workshop')}
+                  onClick={() => setPendingSurveyType('post_workshop')}
                   data-testid="post-workshop-survey-button"
                   title="Record your team's workshop consensus"
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg transition-colors bg-amber-500 text-white hover:bg-amber-600"
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg transition-colors duration-150 bg-amber-500 text-gray-900 hover:bg-amber-600 active:bg-amber-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-2"
                 >
                   <ClipboardList className="w-4 h-4" />
                   Post-Workshop Survey
@@ -596,7 +676,7 @@ export default function DashboardPage() {
             >
               <option value="">All Periods</option>
               {assessmentPeriodOptions.map((period) => (
-                <option key={period} value={period}>{period}</option>
+                <option key={period} value={period}>{formatPeriodLabel(period)}</option>
               ))}
             </select>
             {userPermissions.canExportData && healthSummary.length > 0 && (
@@ -951,7 +1031,7 @@ export default function DashboardPage() {
                                             {response.userName}
                                           </div>
                                           <div className="text-xs text-gray-400">
-                                            {new Date(response.date).toLocaleDateString()}
+                                            {formatMonthYear(response.date)}
                                           </div>
                                         </td>
                                         {matrixDims.map((dim) => {
@@ -1143,7 +1223,7 @@ export default function DashboardPage() {
                                           )}
                                         </div>
                                         <p className="text-xs text-gray-400">
-                                          {new Date(response.date).toLocaleDateString()}
+                                          {formatMonthYear(response.date)}
                                         </p>
                                       </div>
 
@@ -1320,7 +1400,7 @@ export default function DashboardPage() {
                                         data={data}
                                         margin={{ top: 4, right: 4, left: 4, bottom: 4 }}
                                       >
-                                        <XAxis dataKey="period" hide />
+                                        <XAxis dataKey="label" hide />
                                         <YAxis domain={[1, 3]} hide />
                                         <Line
                                           type="monotone"
@@ -1388,7 +1468,7 @@ export default function DashboardPage() {
                                   >
                                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                                     <XAxis
-                                      dataKey="period"
+                                      dataKey="label"
                                       tick={{ fontSize: 12, fill: '#6b7280' }}
                                     />
                                     <YAxis
@@ -1513,6 +1593,130 @@ export default function DashboardPage() {
             setShowOnboarding(false);
           }}
         />
+      )}
+      {pendingSurveyType && (
+        <div
+          data-testid="period-selection-modal"
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="period-selection-modal-title"
+            className="bg-white text-gray-900 rounded-2xl shadow-2xl border-2 border-blue-200 w-full sm:w-[600px] max-w-full p-6 sm:p-8"
+          >
+            <div className="flex justify-between items-start mb-6">
+              <h3 id="period-selection-modal-title" className="text-xl font-semibold text-gray-900">
+                Select assessment period
+              </h3>
+              <button
+                data-testid="period-selection-close-button"
+                onClick={() => setPendingSurveyType(null)}
+                aria-label="Close"
+                className="text-gray-400 hover:text-gray-600 rounded-full p-1 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <label htmlFor="take-survey-period-select" className="block text-sm font-semibold text-gray-700 mb-2">
+              Assessment period
+            </label>
+            <div className="relative mb-8">
+              <select
+                id="take-survey-period-select"
+                data-testid="take-survey-period-select"
+                aria-label="Assessment period"
+                value={takeSurveyPeriod}
+                onChange={(e) => setTakeSurveyPeriod(e.target.value)}
+                className="w-full appearance-none pl-4 pr-10 py-3 text-base font-medium bg-white text-gray-900 border-2 border-gray-300 rounded-lg shadow-sm transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer"
+              >
+                {takeSurveyPeriodOptions.map((p) => (
+                  <option key={p} value={p}>
+                    {p}{p === autoTakeSurveyPeriod ? ' (current)' : ''}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="w-5 h-5 text-gray-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            </div>
+            <div className="flex flex-col-reverse sm:flex-row justify-end gap-3">
+              <button
+                data-testid="period-selection-cancel-button"
+                onClick={() => setPendingSurveyType(null)}
+                className="px-5 py-3 text-base font-medium whitespace-nowrap rounded-lg bg-gray-100 text-gray-700 transition-colors duration-150 hover:bg-gray-200 active:bg-gray-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2"
+              >
+                Cancel
+              </button>
+              <button
+                data-testid="period-selection-confirm-button"
+                onClick={handleConfirmSurvey}
+                disabled={checkingEligibility}
+                className={`px-6 py-3 text-base font-semibold whitespace-nowrap rounded-lg shadow-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-70 disabled:cursor-not-allowed ${
+                  pendingSurveyType === 'post_workshop'
+                    ? 'bg-amber-500 text-gray-900 hover:bg-amber-600 active:bg-amber-700 focus-visible:ring-amber-400'
+                    : 'bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800 focus-visible:ring-blue-500'
+                }`}
+              >
+                {checkingEligibility
+                  ? 'Checking...'
+                  : pendingSurveyType === 'post_workshop' ? 'Take Post-Workshop Survey' : 'Take Survey'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {duplicateInfo && (
+        <div
+          data-testid="duplicate-submission-modal"
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="duplicate-submission-modal-title"
+            className="bg-white text-gray-900 rounded-2xl shadow-2xl border-2 border-amber-200 w-full sm:w-[600px] max-w-full p-6 sm:p-8"
+          >
+            <div className="flex justify-between items-start mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                  <AlertCircle className="w-5 h-5 text-amber-600" />
+                </div>
+                <h3 id="duplicate-submission-modal-title" className="text-xl font-semibold text-gray-900">
+                  Already Submitted
+                </h3>
+              </div>
+              <button
+                data-testid="duplicate-submission-close-icon"
+                onClick={() => setDuplicateInfo(null)}
+                aria-label="Close"
+                className="text-gray-400 hover:text-gray-600 rounded-full p-1 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div data-testid="duplicate-submission-message">
+              <p className="text-base text-gray-700 leading-relaxed mb-2">
+                You have already submitted the{' '}
+                <span className="font-semibold">
+                  {duplicateInfo.surveyType === 'post_workshop' ? 'Post-Workshop Survey' : 'Individual Survey'}
+                </span>{' '}
+                for <span className="font-semibold">{duplicateInfo.submittedPeriod}</span>.
+              </p>
+              <p className="text-base text-gray-700 leading-relaxed mb-8">
+                Your next survey is scheduled for{' '}
+                <span className="font-semibold">{duplicateInfo.nextEligiblePeriod}</span>.
+              </p>
+            </div>
+            <div className="flex justify-end">
+              <button
+                data-testid="duplicate-submission-close-button"
+                onClick={() => setDuplicateInfo(null)}
+                className="px-6 py-3 text-base font-semibold whitespace-nowrap rounded-lg bg-gray-100 text-gray-700 transition-colors duration-150 hover:bg-gray-200 active:bg-gray-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
