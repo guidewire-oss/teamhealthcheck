@@ -426,7 +426,7 @@ var _ = Describe("E2E: VP Dashboard Visualizations", Label("e2e"), func() {
 				time.Sleep(500 * time.Millisecond) // Wait for data refresh
 
 				// Then: Should be able to navigate between all tabs
-				By("Verifying Team Cards tab is active by default and shows team data")
+				By("Verifying Post Workshop Survey Results tab is active by default and shows team data")
 				teamCard := page.Locator("[data-testid='team-health-card']").First()
 				err = teamCard.WaitFor(playwright.LocatorWaitForOptions{
 					State:   playwright.WaitForSelectorStateVisible,
@@ -473,8 +473,8 @@ var _ = Describe("E2E: VP Dashboard Visualizations", Label("e2e"), func() {
 					return chartVisible || emptyVisible
 				}, 15*time.Second, 500*time.Millisecond).Should(BeTrue())
 
-				By("Clicking back to Team Cards tab")
-				teamsTab := page.Locator("button:has-text('Team Cards')")
+				By("Clicking back to Post Workshop Survey Results tab")
+				teamsTab := page.Locator("button:has-text('Post Workshop Survey Results')")
 				err = teamsTab.Click()
 				Expect(err).NotTo(HaveOccurred())
 

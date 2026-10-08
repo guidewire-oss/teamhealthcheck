@@ -26,7 +26,6 @@ func SetupAdminRoutes(router *gin.Engine, orgRepo organization.Repository, userR
 			hierarchyLevels.GET("", handler.ListHierarchyLevels)
 			hierarchyLevels.POST("", handler.CreateHierarchyLevel)
 			hierarchyLevels.PUT("/:id", handler.UpdateHierarchyLevel)
-			hierarchyLevels.PUT("/:id/position", handler.UpdateHierarchyPosition)
 			hierarchyLevels.DELETE("/:id", handler.DeleteHierarchyLevel)
 		}
 

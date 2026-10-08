@@ -22,7 +22,7 @@ var _ = Describe("E2E: Admin Dashboard", func() {
 
 	Describe("Hierarchy Tab", func() {
 		Context("when Admin manages hierarchy levels", func() {
-			It("should display list of hierarchy levels with up/down arrows for reordering", func() {
+			It("should display list of hierarchy levels with no reorder controls", func() {
 				By("Logging in as Admin")
 				page, err := browser.NewPage()
 				Expect(err).NotTo(HaveOccurred())
@@ -67,14 +67,14 @@ var _ = Describe("E2E: Admin Dashboard", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(count).To(BeNumerically(">=", 4), "Should display at least 4 hierarchy levels (VP, Director, Manager, Team Lead)")
 
-				By("Verifying up/down reorder arrows exist")
-				upArrows := page.Locator("[data-testid='move-up'], button:has-text('↑'), [aria-label*='up'], svg[data-lucide='arrow-up']")
+				By("Verifying reordering was removed: no up/down arrows exist")
+				upArrows := page.Locator("[data-testid='move-up-btn']")
 				count, _ = upArrows.Count()
-				Expect(count).To(BeNumerically(">=", 1), "Should have up arrows for reordering")
+				Expect(count).To(Equal(0), "Reorder-up controls should no longer be present")
 
-				downArrows := page.Locator("[data-testid='move-down'], button:has-text('↓'), [aria-label*='down'], svg[data-lucide='arrow-down']")
+				downArrows := page.Locator("[data-testid='move-down-btn']")
 				count, _ = downArrows.Count()
-				Expect(count).To(BeNumerically(">=", 1), "Should have down arrows for reordering")
+				Expect(count).To(Equal(0), "Reorder-down controls should no longer be present")
 
 				By("Verifying permissions column exists")
 				permissionsColumn := page.Locator("text=Permissions").Or(page.Locator("text=Access")).Or(page.Locator("text=Can View"))
