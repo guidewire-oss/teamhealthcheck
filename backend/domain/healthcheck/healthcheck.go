@@ -1,12 +1,18 @@
 package healthcheck
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Survey type constants
 const (
 	SurveyTypeIndividual   = "individual"
 	SurveyTypePostWorkshop = "post_workshop"
 )
+
+// ErrDraftNotFound is returned when no draft exists for the requested user/team/surveyType
+var ErrDraftNotFound = errors.New("draft not found")
 
 // HealthCheckResponse represents a single dimension response
 type HealthCheckResponse struct {
@@ -27,6 +33,24 @@ type HealthCheckSession struct {
 	SurveyType       string                `json:"surveyType,omitempty"`
 	Responses        []HealthCheckResponse `json:"responses"`
 	Completed        bool                  `json:"completed"`
+}
+
+// HealthCheckDraft represents a participant's in-progress (not yet submitted) survey answers.
+// Persisted server-side so progress can be resumed on another browser or device.
+type HealthCheckDraft struct {
+	ID               string                `json:"id"`
+	TeamID           string                `json:"teamId"`
+	UserID           string                `json:"userId"`
+	SurveyType       string                `json:"surveyType"`
+	AssessmentPeriod string                `json:"assessmentPeriod"`
+	CurrentDimension int                   `json:"currentDimension"`
+	Responses        []HealthCheckResponse `json:"responses"`
+	// ClientUpdatedAt is optional, client-supplied metadata (epoch-millis) used only for display
+	// (e.g. "saved 5s ago"). Saves always overwrite the stored draft (last write wins by arrival
+	// order at the database) — only one user is ever editing their own draft at a time, so there
+	// is nothing to reconcile a conflict against.
+	ClientUpdatedAt int64  `json:"clientUpdatedAt,omitempty"`
+	UpdatedAt       string `json:"updatedAt,omitempty"`
 }
 
 // TeamHealthSummary represents aggregated health data for a team
@@ -74,4 +98,15 @@ type Repository interface {
 
 	// FindDistinctAssessmentPeriods returns all unique assessment periods from submitted sessions
 	FindDistinctAssessmentPeriods(ctx context.Context) ([]string, error)
+
+	// SaveDraft upserts an in-progress survey draft, keyed by (userID, teamID, surveyType).
+	// It always applies (last write wins by arrival order at the database) — only one user is
+	// ever editing their own draft, so there is no conflict to detect or reject.
+	SaveDraft(ctx context.Context, draft *HealthCheckDraft) error
+
+	// GetDraft returns the draft for the given user/team/surveyType, or ErrDraftNotFound if none exists.
+	GetDraft(ctx context.Context, userID, teamID, surveyType string) (*HealthCheckDraft, error)
+
+	// DeleteDraft removes the draft for the given user/team/surveyType, if any.
+	DeleteDraft(ctx context.Context, userID, teamID, surveyType string) error
 }

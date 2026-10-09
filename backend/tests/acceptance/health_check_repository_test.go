@@ -397,6 +397,179 @@ var _ = Describe("HealthCheckRepository", func() {
 			})
 		})
 	})
+
+	Describe("SaveDraft, GetDraft and DeleteDraft", func() {
+		Context("when saving a new draft", func() {
+			It("should persist and retrieve it by user/team/surveyType", func() {
+				// Given: A partial, in-progress draft (no trend yet on one dimension)
+				draft := &healthcheck.HealthCheckDraft{
+					TeamID:           "team1",
+					UserID:           "user123",
+					SurveyType:       healthcheck.SurveyTypeIndividual,
+					AssessmentPeriod: "2024 - 2nd Half",
+					CurrentDimension: 2,
+					Responses: []healthcheck.HealthCheckResponse{
+						{DimensionID: "mission", Score: 3, Trend: "improving", Comment: ""},
+						{DimensionID: "value", Score: 2, Trend: "", Comment: ""},
+					},
+					ClientUpdatedAt: 1000,
+				}
+
+				// When: Saving the draft
+				Expect(repository.SaveDraft(ctx, draft)).To(Succeed())
+
+				// Then: It should be retrievable by its natural key
+				retrieved, err := repository.GetDraft(ctx, "user123", "team1", healthcheck.SurveyTypeIndividual)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved.AssessmentPeriod).To(Equal("2024 - 2nd Half"))
+				Expect(retrieved.CurrentDimension).To(Equal(2))
+				Expect(retrieved.ClientUpdatedAt).To(Equal(int64(1000)))
+				Expect(retrieved.Responses).To(HaveLen(2))
+			})
+		})
+
+		Context("when no draft exists", func() {
+			It("should return ErrDraftNotFound", func() {
+				_, err := repository.GetDraft(ctx, "no-such-user", "team1", healthcheck.SurveyTypeIndividual)
+				Expect(err).To(MatchError(healthcheck.ErrDraftNotFound))
+			})
+		})
+
+		Context("when a second save follows the first", func() {
+			It("should always overwrite the stored draft (last write wins)", func() {
+				first := &healthcheck.HealthCheckDraft{
+					TeamID: "team2", UserID: "user456", SurveyType: healthcheck.SurveyTypeIndividual,
+					AssessmentPeriod: "2024 - 2nd Half", CurrentDimension: 0,
+					Responses: []healthcheck.HealthCheckResponse{{DimensionID: "mission", Score: 1}},
+				}
+				Expect(repository.SaveDraft(ctx, first)).To(Succeed())
+
+				second := &healthcheck.HealthCheckDraft{
+					TeamID: "team2", UserID: "user456", SurveyType: healthcheck.SurveyTypeIndividual,
+					AssessmentPeriod: "2024 - 2nd Half", CurrentDimension: 1,
+					Responses: []healthcheck.HealthCheckResponse{{DimensionID: "mission", Score: 3}},
+				}
+				Expect(repository.SaveDraft(ctx, second)).To(Succeed())
+
+				retrieved, err := repository.GetDraft(ctx, "user456", "team2", healthcheck.SurveyTypeIndividual)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved.CurrentDimension).To(Equal(1))
+				Expect(retrieved.Responses[0].Score).To(Equal(3))
+			})
+		})
+
+		Context("when individual and post_workshop drafts exist for the same user/team", func() {
+			It("should keep them independent", func() {
+				individual := &healthcheck.HealthCheckDraft{
+					TeamID: "team4", UserID: "user321", SurveyType: healthcheck.SurveyTypeIndividual,
+					AssessmentPeriod: "2024 - 2nd Half",
+					Responses:        []healthcheck.HealthCheckResponse{{DimensionID: "mission", Score: 1}},
+				}
+				postWorkshop := &healthcheck.HealthCheckDraft{
+					TeamID: "team4", UserID: "user321", SurveyType: healthcheck.SurveyTypePostWorkshop,
+					AssessmentPeriod: "2024 - 2nd Half",
+					Responses:        []healthcheck.HealthCheckResponse{{DimensionID: "mission", Score: 3}},
+				}
+				Expect(repository.SaveDraft(ctx, individual)).To(Succeed())
+				Expect(repository.SaveDraft(ctx, postWorkshop)).To(Succeed())
+
+				retrievedIndividual, err := repository.GetDraft(ctx, "user321", "team4", healthcheck.SurveyTypeIndividual)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrievedIndividual.Responses[0].Score).To(Equal(1))
+
+				retrievedPostWorkshop, err := repository.GetDraft(ctx, "user321", "team4", healthcheck.SurveyTypePostWorkshop)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrievedPostWorkshop.Responses[0].Score).To(Equal(3))
+			})
+		})
+
+		Context("when two users' natural keys could collide under naive dash-joining", func() {
+			It("should never read, overwrite, or delete each other's drafts", func() {
+				// "alice-bob" + "team-x" and "alice" + "bob-team-x" both produce the dash-joined
+				// string "alice-bob-team-x" — a naive `userID + "-" + teamID` id would collide.
+				draftA := &healthcheck.HealthCheckDraft{
+					TeamID: "team-x", UserID: "alice-bob", SurveyType: healthcheck.SurveyTypeIndividual,
+					AssessmentPeriod: "2024 - 2nd Half",
+					Responses:        []healthcheck.HealthCheckResponse{{DimensionID: "mission", Score: 1}},
+				}
+				draftB := &healthcheck.HealthCheckDraft{
+					TeamID: "bob-team-x", UserID: "alice", SurveyType: healthcheck.SurveyTypeIndividual,
+					AssessmentPeriod: "2024 - 2nd Half",
+					Responses:        []healthcheck.HealthCheckResponse{{DimensionID: "mission", Score: 3}},
+				}
+
+				Expect(repository.SaveDraft(ctx, draftA)).To(Succeed())
+				Expect(repository.SaveDraft(ctx, draftB)).To(Succeed())
+
+				// Each is readable independently by its own natural key.
+				retrievedA, err := repository.GetDraft(ctx, "alice-bob", "team-x", healthcheck.SurveyTypeIndividual)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrievedA.Responses[0].Score).To(Equal(1))
+
+				retrievedB, err := repository.GetDraft(ctx, "alice", "bob-team-x", healthcheck.SurveyTypeIndividual)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrievedB.Responses[0].Score).To(Equal(3))
+
+				// Overwriting A must never touch B.
+				updateA := &healthcheck.HealthCheckDraft{
+					TeamID: "team-x", UserID: "alice-bob", SurveyType: healthcheck.SurveyTypeIndividual,
+					AssessmentPeriod: "2024 - 2nd Half",
+					Responses:        []healthcheck.HealthCheckResponse{{DimensionID: "mission", Score: 2}},
+				}
+				Expect(repository.SaveDraft(ctx, updateA)).To(Succeed())
+
+				retrievedBAfter, err := repository.GetDraft(ctx, "alice", "bob-team-x", healthcheck.SurveyTypeIndividual)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrievedBAfter.Responses[0].Score).To(Equal(3)) // unchanged
+
+				// Deleting A must never delete B.
+				Expect(repository.DeleteDraft(ctx, "alice-bob", "team-x", healthcheck.SurveyTypeIndividual)).To(Succeed())
+				_, err = repository.GetDraft(ctx, "alice-bob", "team-x", healthcheck.SurveyTypeIndividual)
+				Expect(err).To(MatchError(healthcheck.ErrDraftNotFound))
+
+				stillB, err := repository.GetDraft(ctx, "alice", "bob-team-x", healthcheck.SurveyTypeIndividual)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stillB.Responses[0].Score).To(Equal(3))
+			})
+		})
+
+		Context("when deleting a draft", func() {
+			It("should remove it so GetDraft returns ErrDraftNotFound", func() {
+				draft := &healthcheck.HealthCheckDraft{
+					TeamID: "team5", UserID: "user999", SurveyType: healthcheck.SurveyTypeIndividual,
+					AssessmentPeriod: "2024 - 2nd Half",
+					Responses:        []healthcheck.HealthCheckResponse{{DimensionID: "mission", Score: 1}},
+				}
+				Expect(repository.SaveDraft(ctx, draft)).To(Succeed())
+
+				Expect(repository.DeleteDraft(ctx, "user999", "team5", healthcheck.SurveyTypeIndividual)).To(Succeed())
+
+				_, err := repository.GetDraft(ctx, "user999", "team5", healthcheck.SurveyTypeIndividual)
+				Expect(err).To(MatchError(healthcheck.ErrDraftNotFound))
+			})
+
+			It("should not error when deleting a draft that does not exist", func() {
+				Expect(repository.DeleteDraft(ctx, "ghost-user", "team5", healthcheck.SurveyTypeIndividual)).To(Succeed())
+			})
+		})
+
+		Context("when a session is successfully submitted for a matching draft", func() {
+			It("submission cleanup (DeleteDraft) removes the draft so a resubmission starts fresh", func() {
+				draft := &healthcheck.HealthCheckDraft{
+					TeamID: "team6", UserID: "user111", SurveyType: healthcheck.SurveyTypeIndividual,
+					AssessmentPeriod: "2024 - 2nd Half",
+					Responses:        []healthcheck.HealthCheckResponse{{DimensionID: "mission", Score: 1}},
+				}
+				Expect(repository.SaveDraft(ctx, draft)).To(Succeed())
+
+				// Simulate what SubmitHealthCheck's handler does after a successful, completed save
+				Expect(repository.DeleteDraft(ctx, "user111", "team6", healthcheck.SurveyTypeIndividual)).To(Succeed())
+
+				_, err := repository.GetDraft(ctx, "user111", "team6", healthcheck.SurveyTypeIndividual)
+				Expect(err).To(MatchError(healthcheck.ErrDraftNotFound))
+			})
+		})
+	})
 })
 
 // Helper function to find a response by dimension ID

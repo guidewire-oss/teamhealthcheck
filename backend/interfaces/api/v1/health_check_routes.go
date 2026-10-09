@@ -20,6 +20,8 @@ func SetupHealthCheckRoutes(router *gin.Engine, healthCheckRepo healthcheck.Repo
 	{
 		healthChecks.POST("/health-checks", handler.SubmitHealthCheck)
 		healthChecks.GET("/health-dimensions", handler.GetHealthDimensions)
+		healthChecks.PUT("/health-checks/draft", handler.SaveDraft)
+		healthChecks.GET("/health-checks/draft", handler.GetDraft)
 		healthChecks.GET("/health-checks/:id", handler.GetHealthCheckByID)
 		// Using /health-checks/team/:id to avoid conflict with /teams/:id
 		healthChecks.GET("/health-checks/team/:id", handler.GetTeamHealthChecks)

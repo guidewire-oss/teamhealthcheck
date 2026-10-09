@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -17,6 +18,7 @@ import (
 	"github.com/agopalakrishnan/teams360/backend/domain/healthcheck"
 	"github.com/agopalakrishnan/teams360/backend/domain/organization"
 	"github.com/agopalakrishnan/teams360/backend/interfaces/dto"
+	"github.com/agopalakrishnan/teams360/backend/interfaces/middleware"
 	"github.com/agopalakrishnan/teams360/backend/pkg/logger"
 	"github.com/agopalakrishnan/teams360/backend/pkg/telemetry"
 )
@@ -38,8 +40,10 @@ var (
 // HealthCheckHandler handles health check related endpoints
 type HealthCheckHandler struct {
 	submitHandler       *commands.SubmitHealthCheckHandler
+	saveDraftHandler    *commands.SaveDraftHandler
 	dimensionsHandler   *queries.GetHealthDimensionsHandler
 	teamSessionsHandler *queries.GetTeamSessionsHandler
+	getDraftHandler     *queries.GetDraftHandler
 	repository          healthcheck.Repository
 	notificationService *services.NotificationService
 }
@@ -48,8 +52,10 @@ type HealthCheckHandler struct {
 func NewHealthCheckHandler(repository healthcheck.Repository, orgRepo organization.Repository, notificationService *services.NotificationService) *HealthCheckHandler {
 	return &HealthCheckHandler{
 		submitHandler:       commands.NewSubmitHealthCheckHandler(repository),
+		saveDraftHandler:    commands.NewSaveDraftHandler(repository, orgRepo),
 		dimensionsHandler:   queries.NewGetHealthDimensionsHandler(orgRepo),
 		teamSessionsHandler: queries.NewGetTeamSessionsHandler(repository),
+		getDraftHandler:     queries.NewGetDraftHandler(repository),
 		repository:          repository,
 		notificationService: notificationService,
 	}
@@ -111,6 +117,18 @@ func (h *HealthCheckHandler) SubmitHealthCheck(c *gin.Context) {
 			})
 			return
 		}
+	}
+
+	// Only the authenticated user may submit on their own behalf; a caller must never be able to
+	// submit (and, below, trigger draft cleanup for) another user's identity.
+	authUserID, ok := middleware.GetUserIDFromContext(c)
+	if !ok || authUserID != req.UserID {
+		telemetry.SetSpanError(span, fmt.Errorf("submitting user does not match authenticated user"))
+		log.Warn("rejected health check submission: userId does not match authenticated user")
+		c.JSON(http.StatusForbidden, dto.ErrorResponse{
+			Error: "Access denied: cannot submit a health check for another user",
+		})
+		return
 	}
 
 	// Set span attributes for business context
@@ -180,6 +198,15 @@ func (h *HealthCheckHandler) SubmitHealthCheck(c *gin.Context) {
 		"assessment_period": req.AssessmentPeriod,
 		"dimension_count":   len(req.Responses),
 	}).Info("health check submitted successfully")
+
+	// Best-effort cleanup of the matching in-progress draft, but only for a *completed*
+	// submission: an incomplete session (Completed == false) hasn't replaced the user's
+	// in-progress answers, so the draft must be preserved for them to resume later.
+	if session.Completed {
+		if delErr := h.repository.DeleteDraft(ctx, session.UserID, session.TeamID, session.SurveyType); delErr != nil {
+			log.WithError(delErr).Warn("failed to delete draft after successful submission")
+		}
+	}
 
 	// Fire async email notification (never blocks the response)
 	if h.notificationService != nil {
@@ -381,6 +408,149 @@ func (h *HealthCheckHandler) GetAssessmentPeriods(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"periods": periods})
+}
+
+// SaveDraft handles PUT /api/v1/health-checks/draft
+//
+// @Summary Save or update an in-progress survey draft
+// @Description Upserts the authenticated user's in-progress survey answers for a team and assessment period, so progress can be resumed on another browser or device. Only the authenticated user may save their own draft. Writes always apply (last write wins by arrival order at the database) -- only one user is ever editing their own draft, so there is nothing to reconcile a conflict against.
+// @Tags Health Checks
+// @Accept json
+// @Produce json
+// @Param body body dto.SaveDraftRequest true "Draft payload"
+// @Success 200 {object} dto.DraftResponse
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body or command failure"
+// @Failure 403 {object} dto.ErrorResponse "Cannot save another user's draft"
+// @Security BearerAuth
+// @Router /health-checks/draft [put]
+func (h *HealthCheckHandler) SaveDraft(c *gin.Context) {
+	ctx := c.Request.Context()
+	log := logger.Get().WithContext(ctx)
+
+	var req dto.SaveDraftRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.WithError(err).Warn("invalid draft save request")
+		dto.RespondError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	authUserID, ok := middleware.GetUserIDFromContext(c)
+	if !ok || authUserID != req.UserID {
+		dto.RespondError(c, http.StatusForbidden, "Access denied: cannot save another user's draft")
+		return
+	}
+
+	cmd := commands.SaveDraftCommand{
+		TeamID:           req.TeamID,
+		UserID:           req.UserID,
+		SurveyType:       req.SurveyType,
+		AssessmentPeriod: req.AssessmentPeriod,
+		CurrentDimension: req.CurrentDimension,
+		ClientUpdatedAt:  req.ClientUpdatedAt,
+		Responses:        make([]commands.HealthCheckResponseCommand, len(req.Responses)),
+	}
+	for i, resp := range req.Responses {
+		cmd.Responses[i] = commands.HealthCheckResponseCommand{
+			DimensionID: resp.DimensionID,
+			Score:       resp.Score,
+			Trend:       resp.Trend,
+			Comment:     resp.Comment,
+		}
+	}
+
+	draft, err := h.saveDraftHandler.Handle(ctx, cmd)
+	if err != nil {
+		var validationErr *commands.ValidationError
+		if errors.As(err, &validationErr) {
+			log.WithError(err).Warn("invalid draft save request")
+			dto.RespondError(c, http.StatusBadRequest, validationErr.Error())
+			return
+		}
+
+		log.WithError(err).Error("failed to save draft")
+		dto.RespondError(c, http.StatusInternalServerError, "Failed to save draft")
+		return
+	}
+
+	c.JSON(http.StatusOK, convertDraftToDTO(draft))
+}
+
+// GetDraft handles GET /api/v1/health-checks/draft
+//
+// @Summary Fetch the current in-progress survey draft
+// @Description Returns the authenticated user's saved in-progress survey answers for the given team and survey type, so it can be restored on any browser or device. Returns 404 if no draft exists. Only the authenticated user may fetch their own draft.
+// @Tags Health Checks
+// @Produce json
+// @Param teamId query string true "Team ID"
+// @Param userId query string true "User ID (must match the authenticated user)"
+// @Param surveyType query string false "Survey type: individual (default) or post_workshop"
+// @Success 200 {object} dto.DraftResponse
+// @Failure 400 {object} dto.ErrorResponse "Missing teamId or userId"
+// @Failure 403 {object} dto.ErrorResponse "Cannot fetch another user's draft"
+// @Failure 404 {object} dto.ErrorResponse "No draft found"
+// @Security BearerAuth
+// @Router /health-checks/draft [get]
+func (h *HealthCheckHandler) GetDraft(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	teamID := c.Query("teamId")
+	userID := c.Query("userId")
+	surveyType := c.Query("surveyType")
+
+	if teamID == "" || userID == "" {
+		dto.RespondError(c, http.StatusBadRequest, "teamId and userId query parameters are required")
+		return
+	}
+
+	authUserID, ok := middleware.GetUserIDFromContext(c)
+	if !ok || authUserID != userID {
+		dto.RespondError(c, http.StatusForbidden, "Access denied: cannot fetch another user's draft")
+		return
+	}
+
+	draft, err := h.getDraftHandler.Handle(ctx, queries.GetDraftQuery{
+		TeamID:     teamID,
+		UserID:     userID,
+		SurveyType: surveyType,
+	})
+	if err != nil {
+		if errors.Is(err, healthcheck.ErrDraftNotFound) {
+			dto.RespondError(c, http.StatusNotFound, "No draft found")
+			return
+		}
+		log := logger.Get().WithContext(ctx)
+		log.WithError(err).Error("failed to fetch draft")
+		dto.RespondError(c, http.StatusInternalServerError, "Failed to fetch draft")
+		return
+	}
+
+	c.JSON(http.StatusOK, convertDraftToDTO(draft))
+}
+
+// convertDraftToDTO converts a domain draft to its response DTO
+func convertDraftToDTO(draft *healthcheck.HealthCheckDraft) dto.DraftResponse {
+	response := dto.DraftResponse{
+		ID:               draft.ID,
+		TeamID:           draft.TeamID,
+		UserID:           draft.UserID,
+		SurveyType:       draft.SurveyType,
+		AssessmentPeriod: draft.AssessmentPeriod,
+		CurrentDimension: draft.CurrentDimension,
+		ClientUpdatedAt:  draft.ClientUpdatedAt,
+		UpdatedAt:        draft.UpdatedAt,
+		Responses:        make([]dto.HealthCheckResponseResponse, len(draft.Responses)),
+	}
+
+	for i, resp := range draft.Responses {
+		response.Responses[i] = dto.HealthCheckResponseResponse{
+			DimensionID: resp.DimensionID,
+			Score:       resp.Score,
+			Trend:       resp.Trend,
+			Comment:     resp.Comment,
+		}
+	}
+
+	return response
 }
 
 // Helper function to convert domain model to DTO

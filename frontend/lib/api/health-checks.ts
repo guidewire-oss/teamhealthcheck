@@ -41,6 +41,34 @@ export interface HealthCheckSessionsResponse {
   total: number;
 }
 
+/**
+ * Payload for autosaving an in-progress survey draft. Saves always overwrite (last write wins by
+ * arrival order at the server) -- only one user is ever editing their own draft, so there is
+ * nothing to reconcile a conflict against. `clientUpdatedAt` is optional display-only metadata
+ * (epoch-millis, e.g. "saved 5s ago") and never affects ordering.
+ */
+export interface SaveDraftPayload {
+  teamId: string;
+  userId: string;
+  surveyType?: 'individual' | 'post_workshop';
+  assessmentPeriod: string;
+  currentDimension: number;
+  responses: HealthCheckResponse[];
+  clientUpdatedAt?: number;
+}
+
+export interface DraftRecord {
+  id: string;
+  teamId: string;
+  userId: string;
+  surveyType: 'individual' | 'post_workshop';
+  assessmentPeriod: string;
+  currentDimension: number;
+  responses: HealthCheckResponse[];
+  clientUpdatedAt?: number;
+  updatedAt?: string;
+}
+
 // Re-export APIError and APIRequestError for backwards compatibility
 export type { APIError };
 export { APIRequestError as HealthCheckAPIError };
@@ -110,6 +138,55 @@ export async function getTeamHealthChecks(
 
   const data = await handleResponse<HealthCheckSessionsResponse>(response);
   return data.sessions;
+}
+
+/**
+ * Saves (upserts) the current user's in-progress survey draft to the server,
+ * so it can be restored on another browser or device. Callers should treat a
+ * rejected promise as non-fatal and keep relying on the localStorage fallback
+ * (e.g. the API being temporarily unreachable).
+ *
+ * @param payload Draft contents plus a client-generated `clientUpdatedAt` timestamp
+ * @returns The persisted draft record
+ */
+export async function saveDraft(payload: SaveDraftPayload): Promise<DraftRecord> {
+  const response = await apiRequest(`${API_BASE_URL}/api/v1/health-checks/draft`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+
+  return handleResponse<DraftRecord>(response);
+}
+
+/**
+ * Fetches the current user's in-progress survey draft for a team/survey type.
+ *
+ * Returns null when no draft exists (404) or when the request could not reach the server at all
+ * (a network-level failure, e.g. offline/unreachable) — both are treated as "no server draft
+ * available right now" so callers can fall back to localStorage. Any other HTTP failure (401,
+ * 403, 500, ...) is a real error and is rethrown rather than silently swallowed, so a caller
+ * doesn't mistake an auth or server failure for "no draft exists".
+ */
+export async function getDraft(
+  teamId: string,
+  userId: string,
+  surveyType: 'individual' | 'post_workshop' = 'individual'
+): Promise<DraftRecord | null> {
+  const params = new URLSearchParams({ teamId, userId, surveyType });
+
+  let response: Response;
+  try {
+    response = await apiRequest(`${API_BASE_URL}/api/v1/health-checks/draft?${params.toString()}`);
+  } catch {
+    // apiRequest/fetch itself threw — a network-level failure, not an HTTP response.
+    return null;
+  }
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  return handleResponse<DraftRecord>(response);
 }
 
 /**
