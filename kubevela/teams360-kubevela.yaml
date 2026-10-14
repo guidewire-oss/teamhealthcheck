@@ -40,6 +40,17 @@ spec:
         image: ghcr.io/guidewire-oss/teams360:IMAGE_TAG
         imagePullPolicy: Always
         port: 8080
+        # The organization-sync scheduler's shutdown grace (45s, see
+        # cmd/api/main.go) must be strictly less than this, or Kubernetes
+        # SIGKILLs the pod before the scheduler finishes waiting, making the
+        # grace period meaningless. 60s (vs. the unset default of 30s)
+        # leaves that headroom deliberately, not incidentally.
+        #
+        # UNVERIFIED, same class of risk as the replicas property elsewhere
+        # in this manifest turning out not to be a real webservice parameter:
+        # confirm this field is actually honored by the installed webservice
+        # ComponentDefinition (`vela show webservice`) before relying on it.
+        terminationGracePeriodSeconds: 60
         livenessProbe:
           httpGet:
             path: /health

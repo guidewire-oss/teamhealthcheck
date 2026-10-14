@@ -251,7 +251,10 @@ func TestHoldFreezesTheThresholdForLaterAttempts(t *testing.T) {
 		t.Fatalf("expected the first attempt to be held, got %v", err)
 	}
 
-	state := service.LockState()
+	state, err := service.LockState(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected LockState error: %v", err)
+	}
 	if !state.Held || state.Threshold != 20 {
 		t.Fatalf("expected a hold frozen at 20%%, got %+v", state)
 	}
@@ -279,7 +282,11 @@ func TestOverrideResolvesTheHoldAndUnlocks(t *testing.T) {
 	if !errors.As(err, &hold) {
 		t.Fatalf("expected a hold, got %v", err)
 	}
-	if !service.LockState().Locked() {
+	state, err := service.LockState(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected LockState error: %v", err)
+	}
+	if !state.Locked() {
 		t.Fatal("expected the threshold to be locked")
 	}
 
@@ -294,7 +301,11 @@ func TestOverrideResolvesTheHoldAndUnlocks(t *testing.T) {
 	if !result.MassDeletionOverridden {
 		t.Fatal("expected the result to record the override")
 	}
-	if service.LockState().Locked() {
+	state, err = service.LockState(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected LockState error: %v", err)
+	}
+	if state.Locked() {
 		t.Fatal("a resolved hold must unlock the threshold")
 	}
 }
@@ -315,7 +326,11 @@ func TestCleanSyncResolvesAPriorHold(t *testing.T) {
 	if _, err := service.Sync(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if service.LockState().Locked() {
+	state, err := service.LockState(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected LockState error: %v", err)
+	}
+	if state.Locked() {
 		t.Fatal("a completed sync must unlock the threshold")
 	}
 }
@@ -335,7 +350,11 @@ func TestDismissHoldUnlocksWithoutApplying(t *testing.T) {
 	if !service.DismissHold() {
 		t.Fatal("expected a hold to dismiss")
 	}
-	if service.LockState().Locked() {
+	state, err := service.LockState(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected LockState error: %v", err)
+	}
+	if state.Locked() {
 		t.Fatal("dismissing must unlock the threshold")
 	}
 	if repo.calls != callsWhenHeld {

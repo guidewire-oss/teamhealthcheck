@@ -727,6 +727,11 @@ var _ = Describe("E2E: Admin Dashboard Management", Label("e2e", "admin"), func(
 				By("Waiting for users list to load")
 				time.Sleep(2 * time.Second) // Allow time for API call to complete
 
+				// The list is paginated and sorted by username, so on a database
+				// populated by earlier specs the new user is not on page 1.
+				By("Searching for the test user")
+				Expect(page.Locator("[data-testid='user-search-input']").Fill(testUsername)).To(Succeed())
+
 				// Wait for the specific test user to appear in the list
 				By("Waiting for test user to appear in list")
 				testUserText := page.Locator(fmt.Sprintf("text=%s", testFullName))
@@ -853,6 +858,11 @@ var _ = Describe("E2E: Admin Dashboard Management", Label("e2e", "admin"), func(
 				// Wait for users list to load
 				By("Waiting for users list to load")
 				time.Sleep(2 * time.Second) // Allow time for API call to complete
+
+				// The list is paginated and sorted by username, so on a database
+				// populated by earlier specs the new user is not on page 1.
+				By("Searching for the test user")
+				Expect(page.Locator("[data-testid='user-search-input']").Fill(testUsername)).To(Succeed())
 
 				// Wait for the specific test user to appear in the list
 				By("Waiting for test user to appear in list")

@@ -27,6 +27,7 @@ import {
   onSyncStateChange,
 } from "@/lib/admin-sync-state";
 import MassDeletionThresholdSettings from "./MassDeletionThresholdSettings";
+import OrgSyncScheduleSettings from "./OrgSyncScheduleSettings";
 
 /**
  * Manual trigger for the external organization-data provider sync.
@@ -519,6 +520,10 @@ export default function DataProviderConfig() {
       {/* Configures the hold above: the percentage at which a sync stops and
           asks for review, rather than applying its deletions. */}
       <MassDeletionThresholdSettings syncActivity={syncing || !!hold} />
+
+      {/* Runs the same sync unattended, on a schedule -- disabled by default,
+          never auto-approves a hold, and shows the persisted last result. */}
+      <OrgSyncScheduleSettings />
     </div>
   );
 }

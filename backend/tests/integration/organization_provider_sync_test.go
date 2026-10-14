@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/application/services"
 	"github.com/agopalakrishnan/teams360/backend/infrastructure/dataprovider"
@@ -191,7 +192,7 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 		syncService := services.NewOrganizationSyncService(providerRepo, dataProviderClient, userRepo, teamRepo)
 
 		router = gin.New()
-		v1.SetupOrganizationProviderRoutes(router, syncService, postgres.NewOrganizationRepository(db), jwtService)
+		v1.SetupOrganizationProviderRoutes(router, syncService, postgres.NewOrganizationRepository(db), jwtService, time.UTC)
 	})
 
 	AfterEach(func() {
@@ -741,7 +742,7 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 			syncService := services.NewOrganizationSyncService(providerRepo, nil, userRepo, teamRepo)
 			jwtService := services.NewJWTService()
 			router = gin.New()
-			v1.SetupOrganizationProviderRoutes(router, syncService, postgres.NewOrganizationRepository(db), jwtService)
+			v1.SetupOrganizationProviderRoutes(router, syncService, postgres.NewOrganizationRepository(db), jwtService, time.UTC)
 
 			w := doSync(adminToken)
 			Expect(w.Code).To(Equal(http.StatusBadRequest))

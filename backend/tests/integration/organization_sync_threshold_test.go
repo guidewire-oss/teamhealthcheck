@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/application/services"
 	"github.com/agopalakrishnan/teams360/backend/infrastructure/dataprovider"
@@ -132,7 +133,7 @@ var _ = Describe("Integration: Organization Sync Deletion Threshold", func() {
 			services.WithDeleteThresholdStore(orgRepo))
 
 		router = gin.New()
-		v1.SetupOrganizationProviderRoutes(router, syncService, orgRepo, jwtService)
+		v1.SetupOrganizationProviderRoutes(router, syncService, orgRepo, jwtService, time.UTC)
 	})
 
 	AfterEach(func() {

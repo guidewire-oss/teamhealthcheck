@@ -58,6 +58,29 @@ type AppSettings struct {
 	OrgSyncMaxDeletePercent *float64 `json:"orgSyncMaxDeletePercent,omitempty"`
 }
 
+// Automatic organization-sync frequencies. Never exposed to admins as cron
+// syntax -- the UI presents these three fixed choices only.
+const (
+	OrgSyncFrequencyDaily   = "daily"
+	OrgSyncFrequencyWeekly  = "weekly"
+	OrgSyncFrequencyMonthly = "monthly"
+)
+
+// OrgSyncSchedule is the admin-configured automatic organization-sync
+// schedule. Disabled by default, for both new and existing deployments.
+// Frequency and NextRunAt are meaningful only while Enabled -- a database
+// CHECK constraint enforces the same rule, so no code path can leave the
+// scheduler "on, but with no idea when".
+type OrgSyncSchedule struct {
+	Enabled bool `json:"enabled"`
+	// Frequency is one of the OrgSyncFrequency* constants, or "" when never
+	// configured.
+	Frequency string `json:"frequency,omitempty"`
+	// NextRunAt is a UTC instant, not a wall-clock local time -- see the
+	// scheduler package's doc on why. nil while disabled.
+	NextRunAt *time.Time `json:"nextRunAt,omitempty"`
+}
+
 // OrganizationConfig represents the organization configuration
 // This is an aggregate root in DDD terms
 type OrganizationConfig struct {
@@ -107,4 +130,23 @@ type Repository interface {
 	// A nil result means no administrator has configured one.
 	GetOrgSyncMaxDeletePercent(ctx context.Context) (*float64, error)
 	UpdateOrgSyncMaxDeletePercent(ctx context.Context, percent float64) error
+
+	// GetOrgSyncSchedule reads the automatic-sync schedule for admin display.
+	GetOrgSyncSchedule(ctx context.Context) (*OrgSyncSchedule, error)
+	// UpdateOrgSyncSchedule is the ADMIN-facing write: enabling, disabling, or
+	// changing frequency. It INITIALIZES or RECOMPUTES nextRunAt -- it never
+	// ADVANCES an already-due occurrence, which is ClaimOrgSyncOccurrence's
+	// job alone. The caller (the service layer) computes nextRunAt fresh from
+	// "now" before calling this; frequency is "" when disabling (preserved
+	// separately is a service-layer concern, not this method's).
+	UpdateOrgSyncSchedule(ctx context.Context, enabled bool, frequency string, nextRunAt *time.Time) error
+	// ClaimOrgSyncOccurrence is the ONLY operation that ever advances an
+	// already-enabled, already-due occurrence to its next one. It succeeds
+	// (true) only if the schedule is still enabled and next_run_at still
+	// equals observedNextRunAt -- an atomic compare-and-swap, so of every
+	// replica racing the same due occurrence, exactly one wins. A false
+	// result (no error) means another replica already claimed it, or an
+	// admin disabled the schedule in the interim; the caller does nothing
+	// further in either case.
+	ClaimOrgSyncOccurrence(ctx context.Context, observedNextRunAt, newNextRunAt time.Time) (bool, error)
 }

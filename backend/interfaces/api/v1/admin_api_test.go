@@ -15,6 +15,7 @@ import (
 	"github.com/agopalakrishnan/teams360/backend/infrastructure/persistence/postgres"
 	"github.com/agopalakrishnan/teams360/backend/interfaces/api/v1"
 	"github.com/agopalakrishnan/teams360/backend/interfaces/dto"
+	"github.com/agopalakrishnan/teams360/backend/tests/testhelpers"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-migrate/migrate/v4"
 	migratePostgres "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -32,7 +33,7 @@ var _ = Describe("Admin API", func() {
 	BeforeEach(func() {
 		gin.SetMode(gin.TestMode)
 
-		databaseURL := "postgres://postgres:postgres@localhost:5432/teams360_test?sslmode=disable"
+		databaseURL := testhelpers.GetTestDatabaseURL()
 		var err error
 		db, err = sql.Open("postgres", databaseURL)
 		Expect(err).NotTo(HaveOccurred())

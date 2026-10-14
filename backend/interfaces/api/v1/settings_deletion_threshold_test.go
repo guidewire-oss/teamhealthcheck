@@ -107,7 +107,7 @@ var _ = Describe("Admin settings: organization-sync deletion threshold", func() 
 		// whether they may run depends on this sync service's own state.
 		syncService = services.NewOrganizationSyncService(&fakeSyncRepository{}, &fakeFetcher{}, nil, nil)
 		router = gin.New()
-		v1.SetupOrganizationProviderRoutes(router, syncService, repo, jwtService)
+		v1.SetupOrganizationProviderRoutes(router, syncService, repo, jwtService, time.UTC)
 	})
 
 	AfterEach(func() {
@@ -256,7 +256,7 @@ var _ = Describe("Admin settings: organization-sync deletion threshold", func() 
 			syncService = services.NewOrganizationSyncService(syncRepo, fetcher, nil, nil,
 				services.WithDeleteThresholdStore(store))
 			router = gin.New()
-			v1.SetupOrganizationProviderRoutes(router, syncService, repo, jwtService)
+			v1.SetupOrganizationProviderRoutes(router, syncService, repo, jwtService, time.UTC)
 		}
 
 		// rewire is the normal case: the sync reads its threshold from the same

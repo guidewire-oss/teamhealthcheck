@@ -339,8 +339,14 @@ var _ = Describe("E2E: VP Dashboard Visualizations", Label("e2e"), func() {
 
 				By("VP clicking on Trends tab")
 				trendsTab := page.Locator("[data-testid='trends-tab']")
-				err = trendsTab.Click()
-				Expect(err).NotTo(HaveOccurred())
+				// The onboarding modal can render after the first dismiss check
+				// under load and intercept the click, so dismiss and retry.
+				Eventually(func() error {
+					dismissOnboardingIfVisible(page)
+					return trendsTab.Click(playwright.LocatorClickOptions{
+						Timeout: playwright.Float(3000),
+					})
+				}, 20*time.Second, 500*time.Millisecond).Should(Succeed())
 
 				// Then: Should show empty state
 				By("Verifying empty state message is displayed")

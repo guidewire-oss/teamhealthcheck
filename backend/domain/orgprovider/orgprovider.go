@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/pkg/orgsnapshot"
 )
@@ -155,6 +156,18 @@ type ApplyInput struct {
 	// report) is treated exactly like no override at all -- the sync is held
 	// again, with the current counts, for a fresh confirmation.
 	ConfirmedMassDeletion *ConfirmedMassDeletion
+
+	// RunID, Trigger, InstanceID and StartedAt identify this attempt for the durable
+	// success record ApplySnapshot writes internally, in the same transaction
+	// as the destructive writes it describes, immediately before COMMIT. They
+	// are used only on the success path -- a blocked or failed outcome is
+	// recorded separately by the caller, since this transaction rolls back on
+	// every other path and cannot durably record anything itself. An empty
+	// RunID is replaced with a fresh UUID so a direct caller never fails on it.
+	RunID      string
+	Trigger    string
+	InstanceID string
+	StartedAt  time.Time
 }
 
 // ConfirmedMassDeletion is the counts an administrator actually reviewed

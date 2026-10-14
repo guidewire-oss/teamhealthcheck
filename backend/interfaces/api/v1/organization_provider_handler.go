@@ -1,12 +1,16 @@
 package v1
 
 import (
+	"context"
 	"errors"
 	"io"
 	"math"
 	"net/http"
 	"os"
+	"strconv"
+	"time"
 
+	"github.com/agopalakrishnan/teams360/backend/application/scheduler"
 	"github.com/agopalakrishnan/teams360/backend/application/services"
 	"github.com/agopalakrishnan/teams360/backend/domain/organization"
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
@@ -15,6 +19,7 @@ import (
 	"github.com/agopalakrishnan/teams360/backend/interfaces/middleware"
 	"github.com/agopalakrishnan/teams360/backend/pkg/logger"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // OrganizationProviderHandler serves the external organization-data provider
@@ -23,38 +28,56 @@ import (
 // in OrganizationSyncService and OrganizationProviderRepository respectively.
 type OrganizationProviderHandler struct {
 	syncService *services.OrganizationSyncService
-	// settingsRepo persists the admin-configured mass-deletion threshold.
-	// The threshold endpoints live here, next to the sync, because whether
-	// they may run at all depends on the sync's own state.
+	// settingsRepo persists the admin-configured mass-deletion threshold and
+	// the automatic-sync schedule. The threshold endpoints live here because
+	// whether the threshold may be changed depends on the sync's own
+	// running/held state (see lockState below). The schedule endpoints live
+	// here too, for proximity to the sync they configure, but are NOT
+	// lock-gated: changing whether/when a sync runs automatically does not
+	// bypass the mass-deletion guard the way raising the threshold would.
 	settingsRepo organization.Repository
 	providerName string
+	// scheduleLoc is the IANA location every scheduled occurrence is computed
+	// in (ORG_SYNC_SCHEDULE_TZ in main.go, default UTC). Used only when an
+	// admin enables or re-enables the schedule -- the scheduler itself
+	// receives the same value directly, not through this handler.
+	scheduleLoc *time.Location
 }
 
-// NewOrganizationProviderHandler creates the handler.
+// NewOrganizationProviderHandler creates the handler. scheduleLoc must not be
+// nil -- pass time.UTC explicitly where no other zone applies.
 func NewOrganizationProviderHandler(
 	syncService *services.OrganizationSyncService,
 	settingsRepo organization.Repository,
+	scheduleLoc *time.Location,
 ) *OrganizationProviderHandler {
 	return &OrganizationProviderHandler{
 		syncService:  syncService,
 		settingsRepo: settingsRepo,
 		providerName: "data-provider",
+		scheduleLoc:  scheduleLoc,
 	}
 }
 
 // lockState reports the current threshold lock, tolerating a nil sync service
 // (which only happens in tests that exercise the settings endpoints alone).
-func (h *OrganizationProviderHandler) lockState() services.SyncLockState {
+//
+// An error here MUST be surfaced by the caller as a failure -- never treated
+// as "not locked". A claim read error producing a false "editable" response
+// would reopen exactly the cross-replica bypass the durable hold flag exists
+// to close.
+func (h *OrganizationProviderHandler) lockState(ctx context.Context) (services.SyncLockState, error) {
 	if h.syncService == nil {
-		return services.SyncLockState{}
+		return services.SyncLockState{}, nil
 	}
-	return h.syncService.LockState()
+	return h.syncService.LockState(ctx)
 }
 
 // thresholdResponse builds the settings body, including why the threshold is
 // frozen and at what value, so a tab that has just loaded knows to disable its
 // controls without a second request.
 func (h *OrganizationProviderHandler) thresholdResponse(
+	state services.SyncLockState,
 	saved *float64,
 	value float64,
 	source string,
@@ -67,7 +90,6 @@ func (h *OrganizationProviderHandler) thresholdResponse(
 		MaxPercent:       services.MaxConfigurableDeletePercent,
 	}
 
-	state := h.lockState()
 	body.Locked = state.Locked()
 	switch {
 	case state.Syncing:
@@ -110,7 +132,18 @@ func (h *OrganizationProviderHandler) GetDeletionThreshold(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, h.thresholdResponse(saved, value, source))
+	state, err := h.lockState(c.Request.Context())
+	if err != nil {
+		// Never a false "editable": a claim read error is reported as a
+		// failure, not silently treated as unlocked.
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to determine lock state",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, h.thresholdResponse(state, saved, value, source))
 }
 
 // UpdateDeletionThreshold handles
@@ -126,7 +159,15 @@ func (h *OrganizationProviderHandler) GetDeletionThreshold(c *gin.Context) {
 func (h *OrganizationProviderHandler) UpdateDeletionThreshold(c *gin.Context) {
 	// Checked before the body is even read, so a request from another tab is
 	// refused on the same grounds as one from this tab.
-	if state := h.lockState(); state.Locked() {
+	state, err := h.lockState(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to determine lock state",
+			Message: err.Error(),
+		})
+		return
+	}
+	if state.Locked() {
 		c.JSON(http.StatusConflict, dto.ErrorResponse{
 			Error:   "Deletion threshold is locked",
 			Message: thresholdLockMessage(state),
@@ -166,7 +207,15 @@ func (h *OrganizationProviderHandler) UpdateDeletionThreshold(c *gin.Context) {
 	// Re-checked after validation and immediately before the write: a sync that
 	// started while this request was being parsed must not have its threshold
 	// moved out from under it.
-	if state := h.lockState(); state.Locked() {
+	state, err = h.lockState(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to determine lock state",
+			Message: err.Error(),
+		})
+		return
+	}
+	if state.Locked() {
 		c.JSON(http.StatusConflict, dto.ErrorResponse{
 			Error:   "Deletion threshold is locked",
 			Message: thresholdLockMessage(state),
@@ -183,7 +232,7 @@ func (h *OrganizationProviderHandler) UpdateDeletionThreshold(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, h.thresholdResponse(&percent, percent, services.ThresholdSourceAdmin))
+	c.JSON(http.StatusOK, h.thresholdResponse(state, &percent, percent, services.ThresholdSourceAdmin))
 }
 
 // DismissMassDeletionHold handles
@@ -192,6 +241,10 @@ func (h *OrganizationProviderHandler) UpdateDeletionThreshold(c *gin.Context) {
 // It resolves a hold the administrator has decided not to override -- because
 // the provider data is what needs fixing -- and so unfreezes the threshold. It
 // applies nothing and deletes nothing: the held sync stays unapplied.
+//
+// Clears both the in-memory hold and the durable hold_active flag (via
+// ClearHold), so the escape hatch works even on a replica whose in-memory
+// hold was never set because another replica ran the held sync.
 func (h *OrganizationProviderHandler) DismissMassDeletionHold(c *gin.Context) {
 	if h.syncService == nil {
 		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
@@ -202,7 +255,15 @@ func (h *OrganizationProviderHandler) DismissMassDeletionHold(c *gin.Context) {
 	}
 
 	// A hold cannot be dismissed out from under a running sync.
-	if h.syncService.LockState().Syncing {
+	state, err := h.syncService.LockState(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to determine lock state",
+			Message: err.Error(),
+		})
+		return
+	}
+	if state.Syncing {
 		c.JSON(http.StatusConflict, dto.ErrorResponse{
 			Error:   "A synchronization is already running",
 			Message: "Wait for the running synchronization to finish, then try again.",
@@ -211,7 +272,13 @@ func (h *OrganizationProviderHandler) DismissMassDeletionHold(c *gin.Context) {
 		return
 	}
 
-	h.syncService.DismissHold()
+	if err := h.syncService.ClearHold(c.Request.Context()); err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to clear the mass-deletion hold",
+			Message: err.Error(),
+		})
+		return
+	}
 
 	saved, err := h.settingsRepo.GetOrgSyncMaxDeletePercent(c.Request.Context())
 	if err != nil {
@@ -230,7 +297,19 @@ func (h *OrganizationProviderHandler) DismissMassDeletionHold(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, h.thresholdResponse(saved, value, source))
+	// Re-fetched, not reused: the state captured above predates ClearHold and
+	// would still report Held -- the response must reflect the just-cleared
+	// state, not the one that justified clearing it.
+	freshState, err := h.lockState(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to determine lock state",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, h.thresholdResponse(freshState, saved, value, source))
 }
 
 // thresholdLockMessage explains a refusal in the terms the admin is looking at.
@@ -257,6 +336,250 @@ func (h *OrganizationProviderHandler) GetSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, settings)
 }
 
+// GetOrgSyncSchedule handles
+// GET /api/v1/admin/settings/organization-provider/schedule.
+func (h *OrganizationProviderHandler) GetOrgSyncSchedule(c *gin.Context) {
+	schedule, err := h.settingsRepo.GetOrgSyncSchedule(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to fetch organization sync schedule",
+			Message: err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, orgSyncScheduleResponse(schedule))
+}
+
+// UpdateOrgSyncSchedule handles
+// PUT /api/v1/admin/settings/organization-provider/schedule.
+//
+// Enabling initializes or recomputes nextRunAt from now -- it never advances
+// an already-scheduled occurrence, which is the scheduler's atomic claim's
+// job alone (see application/scheduler). Disabling preserves the saved
+// frequency (so re-enabling remembers the admin's last choice, matching
+// Weekly-as-default applying only on the very first enable) but clears
+// nextRunAt, so a disabled schedule never shows a stale next-run date and
+// re-enabling always recomputes fresh.
+func (h *OrganizationProviderHandler) UpdateOrgSyncSchedule(c *gin.Context) {
+	var req dto.UpdateOrgSyncScheduleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Error:   "Invalid request body",
+			Message: err.Error(),
+		})
+		return
+	}
+	if req.Enabled == nil {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Error:   "enabled is required",
+			Message: "Provide enabled as true or false",
+		})
+		return
+	}
+
+	current, err := h.settingsRepo.GetOrgSyncSchedule(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to fetch organization sync schedule",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	if !*req.Enabled {
+		if err := h.settingsRepo.UpdateOrgSyncSchedule(c.Request.Context(), false, current.Frequency, nil); err != nil {
+			c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+				Error:   "Failed to save organization sync schedule",
+				Message: err.Error(),
+			})
+			return
+		}
+		c.JSON(http.StatusOK, orgSyncScheduleResponse(&organization.OrgSyncSchedule{Enabled: false, Frequency: current.Frequency}))
+		return
+	}
+
+	// Weekly-as-default applies only on the very first enable (no frequency
+	// saved yet); a later re-enable with no frequency in the request reuses
+	// whatever was preserved from the last disable.
+	frequency := current.Frequency
+	if req.Frequency != nil && *req.Frequency != "" {
+		frequency = *req.Frequency
+	}
+	if frequency == "" {
+		frequency = organization.OrgSyncFrequencyWeekly
+	}
+	if !scheduler.ValidFrequency(frequency) {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Error:   "frequency must be one of: daily, weekly, monthly",
+			Message: "Provide frequency as one of: daily, weekly, monthly",
+		})
+		return
+	}
+
+	nextRunAt := scheduler.NextOccurrence(frequency, time.Now().UTC(), h.scheduleLoc)
+	if err := h.settingsRepo.UpdateOrgSyncSchedule(c.Request.Context(), true, frequency, &nextRunAt); err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to save organization sync schedule",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, orgSyncScheduleResponse(&organization.OrgSyncSchedule{Enabled: true, Frequency: frequency, NextRunAt: &nextRunAt}))
+}
+
+// orgSyncScheduleResponse builds the schedule settings body, including the
+// fixed set of choices the UI presents -- never raw cron syntax -- so a tab
+// that has just loaded can render its picker without a second request.
+func orgSyncScheduleResponse(schedule *organization.OrgSyncSchedule) dto.OrgSyncScheduleDTO {
+	resp := dto.OrgSyncScheduleDTO{
+		Enabled:   schedule.Enabled,
+		Frequency: schedule.Frequency,
+		AvailableFrequencies: []string{
+			organization.OrgSyncFrequencyDaily,
+			organization.OrgSyncFrequencyWeekly,
+			organization.OrgSyncFrequencyMonthly,
+		},
+		DefaultFrequency: organization.OrgSyncFrequencyWeekly,
+	}
+	if schedule.NextRunAt != nil {
+		formatted := schedule.NextRunAt.UTC().Format(time.RFC3339)
+		resp.NextRunAt = &formatted
+	}
+	return resp
+}
+
+// GetOrgSyncLastRun handles
+// GET /api/v1/admin/organization-provider/sync/last-run.
+//
+// Reports the persisted result of the most recent attempt that actually ran,
+// separately from the most recent skip, so a skip can never mask the last
+// actionable result -- see orgprovider.OrgSyncLastRun's doc.
+func (h *OrganizationProviderHandler) GetOrgSyncLastRun(c *gin.Context) {
+	if h.syncService == nil {
+		c.JSON(http.StatusOK, dto.OrgSyncLastRunDTO{})
+		return
+	}
+	last, err := h.syncService.GetLastRun(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to fetch the last organization sync result",
+			Message: err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, orgSyncLastRunResponse(last))
+}
+
+func orgSyncLastRunResponse(last *orgprovider.OrgSyncLastRun) dto.OrgSyncLastRunDTO {
+	var resp dto.OrgSyncLastRunDTO
+	if last == nil {
+		return resp
+	}
+	if a := last.LastAttempt; a != nil {
+		resp.LastAttempt = &dto.OrgSyncAttemptDTO{
+			RunID:            a.RunID,
+			Trigger:          a.Trigger,
+			Status:           a.Status,
+			StartedAt:        a.StartedAt.UTC().Format(time.RFC3339),
+			FinishedAt:       a.FinishedAt.UTC().Format(time.RFC3339),
+			ThresholdPercent: a.ThresholdPercent,
+			UsersExisting:    a.UsersExisting,
+			UsersDeleting:    a.UsersDeleting,
+			UsersPercent:     a.UsersPercent,
+			TeamsExisting:    a.TeamsExisting,
+			TeamsDeleting:    a.TeamsDeleting,
+			TeamsPercent:     a.TeamsPercent,
+			WritesStatus:     a.WritesStatus,
+			OverrideUsed:     a.OverrideUsed,
+			UsersSynced:      a.UsersSynced,
+			TeamsSynced:      a.TeamsSynced,
+			Message:          a.Message,
+		}
+	}
+	if sk := last.LastSkip; sk != nil {
+		resp.LastSkip = &dto.OrgSyncSkipDTO{
+			RunID:  sk.RunID,
+			Reason: sk.Reason,
+			At:     sk.At.UTC().Format(time.RFC3339),
+		}
+	}
+	return resp
+}
+
+// SyncRunIDHeader carries the run ID of a manual sync on every response to
+// POST .../sync, success or failure, so an admin can quote it and an operator
+// can find that sync's log lines.
+const SyncRunIDHeader = "X-Sync-Run-Id"
+
+const (
+	defaultSyncHistoryLimit = 50
+	maxSyncHistoryLimit     = 200
+)
+
+// GetOrgSyncHistory handles
+// GET /api/v1/admin/organization-provider/sync/history?limit=N.
+//
+// Returns the most recent sync outcomes -- manual and scheduled, success,
+// blocked, failed and skipped -- newest first. limit defaults to 50 and is
+// capped at 200.
+func (h *OrganizationProviderHandler) GetOrgSyncHistory(c *gin.Context) {
+	limit := defaultSyncHistoryLimit
+	if raw := c.Query("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+				Error:   "Invalid limit",
+				Message: "limit must be a positive integer",
+			})
+			return
+		}
+		limit = min(n, maxSyncHistoryLimit)
+	}
+
+	if h.syncService == nil {
+		c.JSON(http.StatusOK, dto.OrgSyncHistoryDTO{Entries: []dto.OrgSyncHistoryEntryDTO{}})
+		return
+	}
+	entries, err := h.syncService.GetHistory(c.Request.Context(), limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to fetch the organization sync history",
+			Message: err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, orgSyncHistoryResponse(entries))
+}
+
+func orgSyncHistoryResponse(entries []orgprovider.OrgSyncHistoryEntry) dto.OrgSyncHistoryDTO {
+	resp := dto.OrgSyncHistoryDTO{Entries: make([]dto.OrgSyncHistoryEntryDTO, 0, len(entries))}
+	for _, e := range entries {
+		resp.Entries = append(resp.Entries, dto.OrgSyncHistoryEntryDTO{
+			RunID:            e.RunID,
+			Trigger:          e.Trigger,
+			Status:           e.Status,
+			StartedAt:        e.StartedAt.UTC().Format(time.RFC3339),
+			FinishedAt:       e.FinishedAt.UTC().Format(time.RFC3339),
+			InstanceID:       e.InstanceID,
+			ThresholdPercent: e.ThresholdPercent,
+			UsersExisting:    e.UsersExisting,
+			UsersDeleting:    e.UsersDeleting,
+			UsersPercent:     e.UsersPercent,
+			TeamsExisting:    e.TeamsExisting,
+			TeamsDeleting:    e.TeamsDeleting,
+			TeamsPercent:     e.TeamsPercent,
+			WritesStatus:     e.WritesStatus,
+			OverrideUsed:     e.OverrideUsed,
+			UsersSynced:      e.UsersSynced,
+			TeamsSynced:      e.TeamsSynced,
+			SkipReason:       e.SkipReason,
+			Message:          e.Message,
+		})
+	}
+	return resp
+}
+
 // Sync handles POST /api/v1/admin/organization-provider/sync.
 
 func (h *OrganizationProviderHandler) Sync(c *gin.Context) {
@@ -280,6 +603,12 @@ func (h *OrganizationProviderHandler) Sync(c *gin.Context) {
 	}
 
 	actorID, _ := middleware.GetUserIDFromContext(c)
+
+	// Generated here, before the sync starts, so the ID reaches the caller on
+	// every outcome -- including errors -- as a header, and is the same ID the
+	// sync stamps on its log lines and stores in the database.
+	runID := uuid.NewString()
+	c.Header(SyncRunIDHeader, runID)
 
 	if request.OverrideMassDeletion && !isAdminRequest(c) {
 		logger.Get().Security("org_sync_mass_deletion_override_denied").
@@ -322,6 +651,7 @@ func (h *OrganizationProviderHandler) Sync(c *gin.Context) {
 		OverrideMassDeletion:  request.OverrideMassDeletion,
 		ConfirmedMassDeletion: confirmed,
 		ActorUserID:           actorID,
+		RunID:                 runID,
 	})
 	if err != nil {
 		status, response := mapSyncError(err)
@@ -351,9 +681,17 @@ func isAdminRequest(c *gin.Context) bool {
 func mapSyncError(err error) (int, any) {
 	switch {
 	case errors.Is(err, services.ErrSyncInProgress):
+		// The trigger-aware message names what is actually running when
+		// known ("an automatic scheduled sync"), degrading to the vaguer "a
+		// synchronization" when it cannot be determined -- never guessed.
+		message := "Another synchronization is already in progress. Wait for it to finish, then try again."
+		var inProgress *services.SyncInProgressError
+		if errors.As(err, &inProgress) {
+			message = "Cannot start a manual sync because " + inProgress.Error() + ". Wait for it to finish, then try again."
+		}
 		return http.StatusConflict, dto.ErrorResponse{
 			Error:   "A synchronization is already running",
-			Message: "Another synchronization is already in progress. Wait for it to finish, then try again.",
+			Message: message,
 		}
 
 	case errors.Is(err, services.ErrProviderNotConfigured):
@@ -379,6 +717,17 @@ func mapSyncError(err error) (int, any) {
 		return http.StatusBadGateway, dto.ErrorResponse{
 			Error:   "Failed to reach the organization data provider",
 			Message: err.Error(),
+		}
+
+	case errors.Is(err, orgprovider.ErrSyncCommitAmbiguous):
+		// Distinct from the default branch deliberately: this is the one
+		// outcome the sync cannot confirm either way (the write may have
+		// committed on the server with the acknowledgment lost), so the
+		// message says so explicitly rather than reading as an ordinary
+		// failure an admin might assume changed nothing.
+		return http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Synchronization outcome could not be confirmed",
+			Message: "The database did not confirm whether this sync's changes were saved. Verify the current user and team counts directly before re-running the sync.",
 		}
 
 	case errors.Is(err, orgprovider.ErrMassDeletionBlocked):

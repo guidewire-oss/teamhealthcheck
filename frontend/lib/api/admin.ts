@@ -923,6 +923,99 @@ export async function dismissMassDeletionHold(): Promise<OrgSyncDeletionThreshol
   );
 }
 
+/** The three fixed automatic-sync cadences. Never raw cron syntax in the UI. */
+export type OrgSyncFrequency = 'daily' | 'weekly' | 'monthly';
+
+/** The admin-configured automatic organization-sync schedule. */
+export interface OrgSyncSchedule {
+  enabled: boolean;
+  /** Absent while never configured. */
+  frequency?: OrgSyncFrequency;
+  /** ISO 8601, absent while disabled. */
+  nextRunAt?: string;
+  /** The fixed set of choices to render -- served by the backend, not hardcoded here either. */
+  availableFrequencies: OrgSyncFrequency[];
+  /** Used only on the very first ever enable; a later re-enable reuses the last saved frequency. */
+  defaultFrequency: OrgSyncFrequency;
+}
+
+/** Reads the automatic organization-sync schedule. */
+export async function getOrgSyncSchedule(): Promise<OrgSyncSchedule> {
+  return createApiClient<OrgSyncSchedule>(
+    `${API_BASE_URL}/api/v1/admin/settings/organization-provider/schedule`
+  );
+}
+
+/**
+ * Enables, disables, or changes the frequency of the automatic sync.
+ * Disabling preserves the saved frequency (so re-enabling remembers the last
+ * choice) but clears the next-run date.
+ */
+export async function updateOrgSyncSchedule(
+  enabled: boolean,
+  frequency?: OrgSyncFrequency
+): Promise<OrgSyncSchedule> {
+  return createApiClient<OrgSyncSchedule>(
+    `${API_BASE_URL}/api/v1/admin/settings/organization-provider/schedule`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ enabled, frequency }),
+    }
+  );
+}
+
+/** Tri-state report of whether a sync attempt's destructive writes landed. */
+export type OrgSyncWritesStatus = 'none' | 'applied' | 'unknown';
+
+/** One sync attempt that ran to a conclusion (success, blocked, or failed). */
+export interface OrgSyncAttempt {
+  trigger: 'manual' | 'scheduled';
+  status: 'success' | 'blocked' | 'failed';
+  startedAt: string;
+  finishedAt: string;
+  thresholdPercent?: number;
+  usersExisting?: number;
+  usersDeleting?: number;
+  usersPercent?: number;
+  teamsExisting?: number;
+  teamsDeleting?: number;
+  teamsPercent?: number;
+  /**
+   * 'applied' means the transaction committed, not that any row changed --
+   * always shown alongside the counts above, never alone. 'unknown' means the
+   * outcome could not be confirmed either way; verify current counts directly.
+   */
+  writesStatus: OrgSyncWritesStatus;
+  overrideUsed: boolean;
+  usersSynced?: number;
+  teamsSynced?: number;
+  message: string;
+}
+
+/** The most recent scheduled occurrence that was skipped rather than attempted. */
+export interface OrgSyncSkip {
+  reason: 'manual_sync_running' | 'scheduled_sync_running' | 'hold_unresolved' | 'overdue_catch_up_skipped';
+  at: string;
+}
+
+/**
+ * The persisted result of the organization sync's most recent activity.
+ * lastAttempt and lastSkip are independently absent: a skip never overwrites
+ * the last attempt that actually ran, so both can be shown together --
+ * headline result plus a secondary "most recently skipped" line.
+ */
+export interface OrgSyncLastRun {
+  lastAttempt?: OrgSyncAttempt;
+  lastSkip?: OrgSyncSkip;
+}
+
+/** Reads the persisted last-attempt/last-skip result, surviving refresh, logout/login, and a process restart. */
+export async function getOrgSyncLastRun(): Promise<OrgSyncLastRun> {
+  return createApiClient<OrgSyncLastRun>(
+    `${API_BASE_URL}/api/v1/admin/organization-provider/sync/last-run`
+  );
+}
+
 /** How a deletion metric's rows are removed. */
 export type DeletionMetricKind = 'deleted' | 'cascaded';
 

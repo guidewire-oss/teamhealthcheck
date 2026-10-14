@@ -839,6 +839,82 @@ func (r *OrganizationRepository) UpdateOrgSyncMaxDeletePercent(ctx context.Conte
 	return nil
 }
 
+// GetOrgSyncSchedule reads the automatic organization-sync schedule.
+func (r *OrganizationRepository) GetOrgSyncSchedule(ctx context.Context) (*organization.OrgSyncSchedule, error) {
+	var enabled bool
+	var frequency sql.NullString
+	var nextRunAt sql.NullTime
+	err := r.db.QueryRowContext(ctx, `
+		SELECT org_sync_schedule_enabled, org_sync_schedule_frequency, org_sync_next_run_at
+		FROM app_settings WHERE id = 1
+	`).Scan(&enabled, &frequency, &nextRunAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// No settings row yet means disabled, exactly like the column
+			// defaults -- not a failure.
+			return &organization.OrgSyncSchedule{}, nil
+		}
+		return nil, fmt.Errorf("failed to query organization sync schedule: %w", err)
+	}
+
+	schedule := &organization.OrgSyncSchedule{Enabled: enabled, Frequency: frequency.String}
+	if nextRunAt.Valid {
+		t := nextRunAt.Time
+		schedule.NextRunAt = &t
+	}
+	return schedule, nil
+}
+
+// UpdateOrgSyncSchedule is the admin-facing write: enabling, disabling, or
+// changing frequency. It initializes or recomputes nextRunAt -- see the
+// interface doc for why this is never the same operation as
+// ClaimOrgSyncOccurrence.
+func (r *OrganizationRepository) UpdateOrgSyncSchedule(ctx context.Context, enabled bool, frequency string, nextRunAt *time.Time) error {
+	var freq sql.NullString
+	if frequency != "" {
+		freq = sql.NullString{String: frequency, Valid: true}
+	}
+	var next sql.NullTime
+	if nextRunAt != nil {
+		next = sql.NullTime{Time: *nextRunAt, Valid: true}
+	}
+
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO app_settings (id, org_sync_schedule_enabled, org_sync_schedule_frequency, org_sync_next_run_at, updated_at)
+		VALUES (1, $1, $2, $3, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			org_sync_schedule_enabled = EXCLUDED.org_sync_schedule_enabled,
+			org_sync_schedule_frequency = EXCLUDED.org_sync_schedule_frequency,
+			org_sync_next_run_at = EXCLUDED.org_sync_next_run_at,
+			updated_at = NOW()
+	`, enabled, freq, next)
+	if err != nil {
+		return fmt.Errorf("failed to update organization sync schedule: %w", err)
+	}
+	return nil
+}
+
+// ClaimOrgSyncOccurrence is the only statement that ever advances an
+// already-enabled, already-due occurrence. The WHERE clause is the entire
+// mechanism: it is both the concurrency control (only the replica whose
+// UPDATE actually matches a row wins) and the guard against a schedule an
+// admin disabled mid-race (org_sync_schedule_enabled = true must still hold).
+func (r *OrganizationRepository) ClaimOrgSyncOccurrence(ctx context.Context, observedNextRunAt, newNextRunAt time.Time) (bool, error) {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE app_settings
+		SET org_sync_next_run_at = $1, updated_at = NOW()
+		WHERE id = 1 AND org_sync_schedule_enabled = true AND org_sync_next_run_at = $2
+	`, newNextRunAt, observedNextRunAt)
+	if err != nil {
+		return false, fmt.Errorf("failed to claim organization sync occurrence: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("failed to determine whether the organization sync occurrence claim succeeded: %w", err)
+	}
+	return affected == 1, nil
+}
+
 // Helper methods
 
 // saveHierarchyLevelTx saves a hierarchy level within a transaction

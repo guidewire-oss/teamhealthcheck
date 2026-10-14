@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/XSAM/otelsql"
+	"github.com/agopalakrishnan/teams360/backend/application/scheduler"
 	"github.com/agopalakrishnan/teams360/backend/application/services"
 	"github.com/agopalakrishnan/teams360/backend/application/trends"
 	"github.com/agopalakrishnan/teams360/backend/infrastructure/dataprovider"
@@ -31,7 +33,15 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
+	// Cancellable so shutdown can signal every long-running background
+	// component (Phase 2's scheduler consumes ctx.Done(); nothing else does
+	// yet). cancel() fires inline in the shutdown sequence below, NOT via
+	// defer -- it must run before main() returns, not as part of the
+	// LIFO-ordered deferred cleanup, since some of that cleanup (telemetry
+	// shutdown) must NOT see an already-cancelled context. See the telemetry
+	// shutdown block below for why it deliberately uses its own context
+	// instead of this one.
+	ctx, cancel := context.WithCancel(context.Background())
 
 	// Initialize logger
 	logLevel := os.Getenv("LOG_LEVEL")
@@ -54,7 +64,15 @@ func main() {
 		log.WithError(err).Warn("failed to initialize telemetry, continuing without it")
 	} else {
 		defer func() {
-			if err := shutdownTelemetry(ctx); err != nil {
+			// A bug the cancellable root context introduces, fixed here: this
+			// defer runs when main() returns, which is AFTER cancel() has
+			// already fired inline in the shutdown sequence below. Passing
+			// the (by then cancelled) root ctx would drop the final span
+			// flush. Use a fresh, short-lived context instead, detached from
+			// shutdown entirely.
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			if err := shutdownTelemetry(shutdownCtx); err != nil {
 				log.WithError(err).Warn("error shutting down telemetry")
 			}
 		}()
@@ -208,8 +226,43 @@ func main() {
 	}
 	// orgRepo also serves the admin-configured mass-deletion threshold; without
 	// it the guard would silently fall back to the environment variable.
+	//
+	// This deployment is single-instance only: no distributed (cross-replica)
+	// locker is wired here. The in-process admission flag inside
+	// OrganizationSyncService (its `running` field) is the only, sufficient
+	// guard for one process -- it already serializes manual and scheduled
+	// syncs against each other and against themselves. If this service is
+	// ever deployed with more than one replica against the same database,
+	// re-introduce a SyncLocker (see application/services/organization_sync_locker.go
+	// and infrastructure/persistence/postgres/organization_sync_locker.go,
+	// both left in place for exactly that) via WithSyncLocker below. orgRepo
+	// doubles as the SyncRunRecorder: both interfaces are satisfied by the
+	// same concrete *postgres.OrganizationProviderRepository.
 	orgSyncService := services.NewOrganizationSyncService(orgProviderRepo, dataProviderFetcher, userRepo, teamRepo,
-		services.WithDeleteThresholdStore(orgRepo))
+		services.WithDeleteThresholdStore(orgRepo),
+		services.WithSyncRunRecorder(orgProviderRepo),
+	)
+
+	// ORG_SYNC_SCHEDULE_TZ: the IANA location every scheduled occurrence is
+	// computed in. Explicit loading rather than the ambient container
+	// timezone, which this deployment's own Dockerfile leaves unset --
+	// alpine defaults to UTC, but by accident, not by declaration. Default
+	// here matches that accident deliberately, as an explicit default.
+	scheduleTZ := os.Getenv("ORG_SYNC_SCHEDULE_TZ")
+	if scheduleTZ == "" {
+		scheduleTZ = "UTC"
+	}
+	scheduleLoc, err := time.LoadLocation(scheduleTZ)
+	if err != nil {
+		log.WithError(err).WithField("timezone", scheduleTZ).Fatal("invalid ORG_SYNC_SCHEDULE_TZ")
+	}
+
+	// The scheduler triggers a scheduled run through the exact same
+	// SyncWithOptions path a manual request uses -- see
+	// application/scheduler. It takes no locker of its own: the lock lives
+	// inside SyncWithOptions, common to every caller.
+	orgSyncScheduler := scheduler.New(orgSyncService, orgRepo, scheduleLoc)
+	orgSyncScheduler.Start(ctx)
 
 	// Initialize router (use gin.New() instead of gin.Default() to disable default logger)
 	router := gin.New()
@@ -243,7 +296,7 @@ func main() {
 	v1.SetupUserRoutes(router, db, jwtService)          // User routes with JWT + same-user-or-manager
 	v1.SetupProtectedUserRoutes(router, db, jwtService) // Protected routes requiring JWT
 	v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, healthCheckRepo, jwtService)
-	v1.SetupOrganizationProviderRoutes(router, orgSyncService, orgRepo, jwtService)
+	v1.SetupOrganizationProviderRoutes(router, orgSyncService, orgRepo, jwtService, scheduleLoc)
 	v1.SetupPasswordResetRoutes(router, passwordResetService, userRepo)
 
 	// Static file serving for frontend SPA
@@ -349,6 +402,30 @@ func main() {
 	// Wait for interrupt signal
 	<-quit
 	log.Info("shutting down server gracefully...")
+
+	// Fires inline, not deferred, so it runs before main() returns rather than
+	// racing the LIFO-ordered deferred cleanup. The telemetry shutdown above
+	// deliberately uses its own separate context instead, precisely so it is
+	// unaffected by this cancellation either way. The scheduler's poll loop
+	// sees ctx.Done() and stops starting new occurrences immediately.
+	cancel()
+
+	// schedulerStopGrace (45s) must stay strictly under the pod's
+	// terminationGracePeriodSeconds (60s, set explicitly in
+	// kubevela/teams360-kubevela.yaml) -- otherwise Kubernetes SIGKILLs the
+	// process while Stop is still waiting, making the wait moot. It is also
+	// independent of SyncRunMaxDuration-style run bounds: an in-flight sync
+	// was started on a context detached from shutdown (see runCtx in
+	// scheduler.go, built with context.WithoutCancel), so it is not aborted
+	// by cancel() above -- it keeps
+	// running, unaware shutdown began, and gets a real chance to finish
+	// within this window instead of being cut off for no benefit. If it
+	// does not finish within the grace, Stop gives up waiting and the
+	// process exits regardless: ApplySnapshot is a single transaction, so a
+	// process ending mid-run leaves no partial writes.
+	const schedulerStopGrace = 45 * time.Second
+	orgSyncScheduler.Stop(schedulerStopGrace)
+	log.Info("organization sync scheduler stopped")
 }
 
 func directoryRedirectPath(urlPath string, isDir bool) (string, bool) {
