@@ -117,8 +117,7 @@ See [team-dashboard-api.md](./team-dashboard-api.md) for full request/response e
 |--------|------|------|-------------|
 | GET | `/api/v1/admin/hierarchy-levels` | Admin | List all hierarchy levels with permissions. |
 | POST | `/api/v1/admin/hierarchy-levels` | Admin | Create a new hierarchy level. |
-| PUT | `/api/v1/admin/hierarchy-levels/:id` | Admin | Update a hierarchy level's name, color, or permissions. |
-| PUT | `/api/v1/admin/hierarchy-levels/:id/position` | Admin | Reorder a hierarchy level (drag-and-drop). |
+| PUT | `/api/v1/admin/hierarchy-levels/:id` | Admin | Update a hierarchy level's name or permissions. |
 | DELETE | `/api/v1/admin/hierarchy-levels/:id` | Admin | Delete a hierarchy level. Fails if any users reference it. |
 
 ---

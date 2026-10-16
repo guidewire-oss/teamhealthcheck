@@ -41,7 +41,7 @@ var _ = Describe("E2E: VP/Executive Dashboard", func() {
 		`, testVPUserID, testDirectorID)
 	})
 
-	Describe("Hierarchy View Tab", func() {
+	Describe("Individual Survey Summary Tab", func() {
 		Context("when VP views the organizational hierarchy", func() {
 			It("should display organization tree with expandable nodes", func() {
 				By("Logging in as VP")
@@ -66,15 +66,15 @@ var _ = Describe("E2E: VP/Executive Dashboard", func() {
 				Expect(err).NotTo(HaveOccurred())
 				dismissOnboardingIfVisible(page)
 
-				By("Verifying Hierarchy View tab exists")
-				hierarchyTab := page.Locator("[data-testid='hierarchy-tab'], button:has-text('Hierarchy View')")
+				By("Verifying Individual Survey Summary tab exists")
+				hierarchyTab := page.Locator("[data-testid='hierarchy-tab'], button:has-text('Individual Survey Summary')")
 				err = hierarchyTab.WaitFor(playwright.LocatorWaitForOptions{
 					State:   playwright.WaitForSelectorStateVisible,
 					Timeout: playwright.Float(10000),
 				})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("Clicking on Hierarchy View tab")
+				By("Clicking on Individual Survey Summary tab")
 				err = hierarchyTab.Click()
 				Expect(err).NotTo(HaveOccurred())
 				time.Sleep(500 * time.Millisecond)
@@ -104,7 +104,7 @@ var _ = Describe("E2E: VP/Executive Dashboard", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(count).To(BeNumerically(">=", 1), "Should display at least one director node")
 
-				GinkgoWriter.Printf("Hierarchy View displayed successfully\n")
+				GinkgoWriter.Printf("Individual Survey Summary displayed successfully\n")
 			})
 		})
 	})
