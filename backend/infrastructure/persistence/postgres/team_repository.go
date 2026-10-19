@@ -186,7 +186,7 @@ func (r *TeamRepository) FindBySupervisorID(ctx context.Context, supervisorID st
 // (GetSurveyCompletionOverviewHandler) resolves everything above that one
 // supervisor purely via users.reports_to.
 //
-// health_check_enabled is added by migration 000021_add_health_check_enabled
+// health_check_enabled is added by migration 000023_add_health_check_enabled
 // — any database that has run migrations has it. No other method on this
 // repository selects it, so FindAll/FindByID/etc. are unaffected.
 //

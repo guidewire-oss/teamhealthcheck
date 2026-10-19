@@ -6,9 +6,11 @@ import { getCurrentUser, logout, authenticatedFetch, User } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { API_BASE_URL } from '@/lib/api/client';
 import { getAssessmentPeriods } from '@/lib/api/health-checks';
+import { formatScore } from '@/lib/format';
 import { LogOut, Users, ChevronDown, AlertCircle, Activity, LineChart as LineChartIcon, CheckCircle, Clock, ClipboardList, TrendingUp, TrendingDown, Minus, LayoutGrid, Download, ListTodo } from 'lucide-react';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import OnboardingModal from '@/components/OnboardingModal';
+import BrandMark from '@/components/BrandMark';
 import { listManagerTeamsActionSummary, TeamActionSummary } from '@/lib/api/action-items';
 import * as XLSX from 'xlsx';
 import DocsLink from '@/components/DocsLink';
@@ -341,7 +343,7 @@ export default function ManagerPage() {
   };
 
   const formatHealthScore = (score: number) => {
-    return score.toFixed(1);
+    return formatScore(score);
   };
 
   const getAvgBadgeStyle = (avg: number): { backgroundColor: string; color: string } =>
@@ -435,20 +437,14 @@ export default function ManagerPage() {
       {/* Header */}
       <div className="bg-white shadow-sm border-b">
         <div className="container mx-auto px-4 py-4">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-4">
-              {brandingLogo ? (
-                <img src={brandingLogo} alt="Company logo" className="w-8 h-8 object-contain rounded" />
-              ) : (
-                <Users className="w-8 h-8 text-indigo-600" />
-              )}
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900">Manager Dashboard</h1>
-                <p className="text-gray-500">{brandingName ? `${brandingName} Health Overview` : 'Team Health Overview'}</p>
-              </div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-start">
+            <div className="min-w-0">
+              <BrandMark logoUrl={brandingLogo} companyName={brandingName} size="header" className="mb-2" />
+              <h1 className="text-2xl font-bold text-gray-900">Manager Dashboard</h1>
+              <p className="text-gray-500 mt-1">Team Health Overview</p>
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 flex-wrap">
               <div className="text-right">
                 <p className="text-sm font-semibold text-gray-900">{user.name}</p>
                 <p className="text-xs text-gray-500">Manager</p>
@@ -651,7 +647,6 @@ export default function ManagerPage() {
                   <RadarChart data={radarData}>
                     <PolarGrid />
                     <PolarAngleAxis dataKey="dimension" />
-                    <PolarRadiusAxis domain={[0, 3]} />
                     <Radar
                       name="Health Score"
                       dataKey="averageScore"
@@ -659,7 +654,11 @@ export default function ManagerPage() {
                       fill="#6366f1"
                       fillOpacity={0.6}
                     />
-                    <Tooltip />
+                    <PolarRadiusAxis domain={[0, 3]} tick={{ fill: '#334155', fontSize: 12, fontWeight: 600 }} />
+                    <Tooltip
+                      formatter={(value: number, name: string) => [formatScore(Number(value)), name]}
+                      itemStyle={{ color: '#000000' }}
+                    />
                     <Legend />
                   </RadarChart>
                 </ResponsiveContainer>

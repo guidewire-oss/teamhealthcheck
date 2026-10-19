@@ -87,6 +87,17 @@ var _ = Describe("E2E: Admin Dimension Management", func() {
 	})
 
 	Context("when admin edits a dimension", func() {
+		AfterEach(func() {
+			// Restore the real "mission" dimension's description so other tests
+			// (and the survey page, which now reads live dimension text from the
+			// database) don't see this test's temporary edit after it completes.
+			db.Exec(`
+				UPDATE health_dimensions
+				SET description = 'We know exactly why we are here, and we are really excited about it'
+				WHERE id = 'mission'
+			`)
+		})
+
 		It("should allow editing dimension name and descriptions", func() {
 			loginAsAdmin()
 			navigateToSettings()
@@ -169,6 +180,15 @@ var _ = Describe("E2E: Admin Dimension Management", func() {
 	})
 
 	Context("when admin creates a new dimension", func() {
+		AfterEach(func() {
+			// Clean up: this test creates a real, active dimension via the UI with
+			// no synthetic-only marker. Left behind, it becomes a 12th active
+			// dimension that every other concurrently-running or later survey test
+			// sees, breaking any test that assumes exactly 11 dimensions (e.g.
+			// never reaching the "Submit Responses" button on the last page).
+			db.Exec("DELETE FROM health_dimensions WHERE name = 'E2E Test Dimension'")
+		})
+
 		It("should allow adding a new health dimension", func() {
 			loginAsAdmin()
 			navigateToSettings()
@@ -225,9 +245,9 @@ var _ = Describe("E2E: Admin Dimension Management", func() {
 		})
 	})
 
-	Context("when admin deactivates a dimension", func() {
+	Context("when admin toggles a dimension's active status", func() {
 		BeforeEach(func() {
-			// Create a dimension specifically for deactivation test
+			// Create a dimension specifically for the toggle test
 			_, err := db.Exec(`
 				INSERT INTO health_dimensions (id, name, description, good_description, bad_description, is_active, weight)
 				VALUES ('e2e_delete_test', 'E2E Delete Test', 'To be deactivated', 'Good', 'Bad', true, 1.0)
@@ -241,100 +261,79 @@ var _ = Describe("E2E: Admin Dimension Management", func() {
 			db.Exec("DELETE FROM health_dimensions WHERE id = 'e2e_delete_test'")
 		})
 
-		It("should soft-delete a dimension by setting is_active to false", func() {
+		It("should deactivate a dimension via the toggle control", func() {
 			loginAsAdmin()
 			navigateToSettings()
 
-			By("Finding the test dimension and clicking delete")
-			deleteRow := page.Locator("[data-testid='dimension-row']").Filter(playwright.LocatorFilterOptions{
+			By("Finding the test dimension and clicking the toggle")
+			dimensionRow := page.Locator("[data-testid='dimension-row']").Filter(playwright.LocatorFilterOptions{
 				HasText: "E2E Delete Test",
 			})
 
 			// Wait for the row to be visible
 			Eventually(func() bool {
-				visible, _ := deleteRow.IsVisible()
+				visible, _ := dimensionRow.IsVisible()
 				return visible
 			}, 5*time.Second, 500*time.Millisecond).Should(BeTrue())
 
-			deleteBtn := deleteRow.Locator("[data-testid='delete-dimension-btn']")
-			err := deleteBtn.Click()
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Confirming deactivation in the dialog")
-			confirmBtn := page.Locator("[data-testid='confirm-delete-btn']")
-			Eventually(func() bool {
-				visible, _ := confirmBtn.IsVisible()
-				return visible
-			}, 5*time.Second, 500*time.Millisecond).Should(BeTrue())
-
-			err = confirmBtn.Click()
+			toggleBtn := dimensionRow.Locator("[data-testid='toggle-dimension-btn']")
+			err := toggleBtn.Click()
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying the dimension now shows as Inactive in the list")
-			// After soft delete, dimension should show as inactive but still be visible
 			Eventually(func() bool {
 				// Check that the row has the "Inactive" badge
-				inactiveBadge := deleteRow.Locator("span:has-text('Inactive')")
+				inactiveBadge := dimensionRow.Locator("span:has-text('Inactive')")
 				visible, _ := inactiveBadge.IsVisible()
 				return visible
 			}, 5*time.Second, 500*time.Millisecond).Should(BeTrue())
 
-			By("Verifying the dimension is soft-deleted in database (is_active = false)")
+			By("Verifying the dimension is deactivated in database (is_active = false)")
 			var isActive bool
 			err = db.QueryRow("SELECT is_active FROM health_dimensions WHERE id = 'e2e_delete_test'").Scan(&isActive)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(isActive).To(BeFalse(), "Dimension should be soft-deleted (is_active = false)")
+			Expect(isActive).To(BeFalse(), "Dimension should be deactivated (is_active = false)")
 
 			By("Verifying historical data is preserved - dimension still exists")
 			var count int
 			err = db.QueryRow("SELECT COUNT(*) FROM health_dimensions WHERE id = 'e2e_delete_test'").Scan(&count)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(count).To(Equal(1), "Dimension should still exist in database after soft delete")
+			Expect(count).To(Equal(1), "Dimension should still exist in database after deactivation")
 		})
 
-		It("should allow reactivating a soft-deleted dimension", func() {
+		It("should allow reactivating a deactivated dimension", func() {
 			loginAsAdmin()
 			navigateToSettings()
 
-			// First, soft-delete the dimension
+			// First, deactivate the dimension via the toggle
 			By("Finding and deactivating the test dimension")
-			deleteRow := page.Locator("[data-testid='dimension-row']").Filter(playwright.LocatorFilterOptions{
+			dimensionRow := page.Locator("[data-testid='dimension-row']").Filter(playwright.LocatorFilterOptions{
 				HasText: "E2E Delete Test",
 			})
 
 			Eventually(func() bool {
-				visible, _ := deleteRow.IsVisible()
+				visible, _ := dimensionRow.IsVisible()
 				return visible
 			}, 5*time.Second, 500*time.Millisecond).Should(BeTrue())
 
-			deleteBtn := deleteRow.Locator("[data-testid='delete-dimension-btn']")
-			err := deleteBtn.Click()
-			Expect(err).NotTo(HaveOccurred())
-
-			confirmBtn := page.Locator("[data-testid='confirm-delete-btn']")
-			Eventually(func() bool {
-				visible, _ := confirmBtn.IsVisible()
-				return visible
-			}, 5*time.Second, 500*time.Millisecond).Should(BeTrue())
-
-			err = confirmBtn.Click()
+			toggleBtn := dimensionRow.Locator("[data-testid='toggle-dimension-btn']")
+			err := toggleBtn.Click()
 			Expect(err).NotTo(HaveOccurred())
 
 			// Wait for deactivation to complete
 			Eventually(func() bool {
-				inactiveBadge := deleteRow.Locator("span:has-text('Inactive')")
+				inactiveBadge := dimensionRow.Locator("span:has-text('Inactive')")
 				visible, _ := inactiveBadge.IsVisible()
 				return visible
 			}, 5*time.Second, 500*time.Millisecond).Should(BeTrue())
 
-			By("Clicking the toggle button to reactivate")
-			toggleBtn := deleteRow.Locator("[data-testid='toggle-dimension-btn']")
+			By("Clicking the toggle button again to reactivate")
 			err = toggleBtn.Click()
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying the Inactive badge disappears")
 			Eventually(func() bool {
-				inactiveBadge := deleteRow.Locator("span:has-text('Inactive')")
+				inactiveBadge := dimensionRow.Locator("span:has-text('Inactive')")
 				visible, _ := inactiveBadge.IsVisible()
 				return !visible
 			}, 5*time.Second, 500*time.Millisecond).Should(BeTrue())
