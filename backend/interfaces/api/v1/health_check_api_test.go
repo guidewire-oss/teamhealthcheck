@@ -402,11 +402,13 @@ var _ = Describe("Health Check API", func() {
 	Describe("GET /api/v1/health-checks/team/:id", func() {
 		Context("when team has multiple sessions", func() {
 			It("should return all sessions for the team", func() {
-				// Given: Multiple sessions for team1
+				// Given: Multiple sessions for team1, each submitted by its own authenticated user
+				// (SubmitHealthCheck requires the submitting userId to match the bearer token).
 				for i := 0; i < 3; i++ {
+					submitterID := "user" + string(rune(i+1))
 					submission := map[string]interface{}{
 						"teamId": "team1",
-						"userId": "user" + string(rune(i+1)),
+						"userId": submitterID,
 						"date":   time.Now().Format(time.RFC3339),
 						"responses": []map[string]interface{}{
 							{"dimensionId": "mission", "score": 3, "trend": "improving"},
@@ -414,12 +416,16 @@ var _ = Describe("Health Check API", func() {
 						"completed": true,
 					}
 
+					submitterTokenPair, tokenErr := jwtService.GenerateTokenPair(context.Background(), submitterID, submitterID, submitterID+"@test.com", "level-5", []string{"team1"})
+					Expect(tokenErr).NotTo(HaveOccurred())
+
 					body, _ := json.Marshal(submission)
 					req := httptest.NewRequest(http.MethodPost, "/api/v1/health-checks", bytes.NewBuffer(body))
 					req.Header.Set("Content-Type", "application/json")
-					req.Header.Set("Authorization", "Bearer "+userToken)
+					req.Header.Set("Authorization", "Bearer "+submitterTokenPair.AccessToken)
 					w := httptest.NewRecorder()
 					router.ServeHTTP(w, req)
+					Expect(w.Code).To(Equal(http.StatusCreated))
 				}
 
 				// When: Getting team sessions
@@ -464,14 +470,20 @@ var _ = Describe("Health Check API", func() {
 					"completed": true,
 				}
 
-				// Post both submissions
+				// Post both submissions, each authenticated as its own submitting user (SubmitHealthCheck
+				// requires the submitting userId to match the bearer token).
 				for _, sub := range []map[string]interface{}{submission1, submission2} {
+					submitterID := sub["userId"].(string)
+					submitterTokenPair, tokenErr := jwtService.GenerateTokenPair(context.Background(), submitterID, submitterID, submitterID+"@test.com", "level-5", []string{"team1"})
+					Expect(tokenErr).NotTo(HaveOccurred())
+
 					body, _ := json.Marshal(sub)
 					req := httptest.NewRequest(http.MethodPost, "/api/v1/health-checks", bytes.NewBuffer(body))
 					req.Header.Set("Content-Type", "application/json")
-					req.Header.Set("Authorization", "Bearer "+userToken)
+					req.Header.Set("Authorization", "Bearer "+submitterTokenPair.AccessToken)
 					w := httptest.NewRecorder()
 					router.ServeHTTP(w, req)
+					Expect(w.Code).To(Equal(http.StatusCreated))
 				}
 
 				// When: Filtering by period

@@ -3,7 +3,9 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/healthcheck"
 )
@@ -538,6 +540,117 @@ func (r *HealthCheckRepository) FindDistinctAssessmentPeriods(ctx context.Contex
 	healthcheck.SortAssessmentPeriodsDescending(periods)
 
 	return periods, nil
+}
+
+// draftID derives an informational primary key for a draft from its natural key. It is never
+// used to look up, upsert-conflict-target, or delete a draft (all of that goes through the
+// UNIQUE(user_id, team_id, survey_type) constraint via the natural key columns below), so it is
+// safe purely as an opaque, human-readable identifier. It is still generated collision-free using
+// length-prefixing, so two different (userID, teamID, surveyType) triples can never collapse onto
+// the same value (e.g. userID="alice-bob"/teamID="team-x" vs. userID="alice"/teamID="bob-team-x").
+func draftID(userID, teamID, surveyType string) string {
+	return fmt.Sprintf("%d:%s|%d:%s|%d:%s", len(userID), userID, len(teamID), teamID, len(surveyType), surveyType)
+}
+
+// scanDraft scans a single draft row (as selected/returned by the queries below, which all
+// select the same column list) into a HealthCheckDraft.
+func scanDraft(scan func(...any) error) (*healthcheck.HealthCheckDraft, error) {
+	var draft healthcheck.HealthCheckDraft
+	var responsesJSON []byte
+	var updatedAt time.Time
+
+	if err := scan(
+		&draft.ID, &draft.TeamID, &draft.UserID, &draft.SurveyType, &draft.AssessmentPeriod,
+		&draft.CurrentDimension, &responsesJSON, &draft.ClientUpdatedAt, &updatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal(responsesJSON, &draft.Responses); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal draft responses: %w", err)
+	}
+	draft.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
+
+	return &draft, nil
+}
+
+const draftColumns = `id, team_id, user_id, survey_type, assessment_period, current_dimension, responses, client_updated_at, updated_at`
+
+// SaveDraft unconditionally upserts an autosave: only one user is ever editing their own draft,
+// so there is nothing to reconcile a conflict against — the write always applies, and whichever
+// save reaches the database last wins (ordinary last-write-wins by arrival order, not by trusting
+// any client-supplied timestamp).
+func (r *HealthCheckRepository) SaveDraft(ctx context.Context, draft *healthcheck.HealthCheckDraft) error {
+	surveyType := draft.SurveyType
+	if surveyType == "" {
+		surveyType = healthcheck.SurveyTypeIndividual
+	}
+	draft.SurveyType = surveyType
+	draft.ID = draftID(draft.UserID, draft.TeamID, surveyType)
+
+	responsesJSON, err := json.Marshal(draft.Responses)
+	if err != nil {
+		return fmt.Errorf("failed to marshal draft responses: %w", err)
+	}
+
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO health_check_drafts (
+			id, team_id, user_id, survey_type, assessment_period, current_dimension, responses, client_updated_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
+		ON CONFLICT (user_id, team_id, survey_type) DO UPDATE SET
+			assessment_period = EXCLUDED.assessment_period,
+			current_dimension = EXCLUDED.current_dimension,
+			responses = EXCLUDED.responses,
+			client_updated_at = EXCLUDED.client_updated_at,
+			updated_at = CURRENT_TIMESTAMP
+	`, draft.ID, draft.TeamID, draft.UserID, surveyType, draft.AssessmentPeriod, draft.CurrentDimension, responsesJSON, draft.ClientUpdatedAt)
+
+	if err != nil {
+		return fmt.Errorf("failed to save draft: %w", err)
+	}
+
+	return nil
+}
+
+// GetDraft returns the draft for the given user/team/surveyType, or healthcheck.ErrDraftNotFound if none exists.
+func (r *HealthCheckRepository) GetDraft(ctx context.Context, userID, teamID, surveyType string) (*healthcheck.HealthCheckDraft, error) {
+	if surveyType == "" {
+		surveyType = healthcheck.SurveyTypeIndividual
+	}
+
+	row := r.db.QueryRowContext(ctx, `
+		SELECT `+draftColumns+`
+		FROM health_check_drafts
+		WHERE user_id = $1 AND team_id = $2 AND survey_type = $3
+	`, userID, teamID, surveyType)
+
+	draft, err := scanDraft(row.Scan)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, healthcheck.ErrDraftNotFound
+		}
+		return nil, fmt.Errorf("failed to query draft: %w", err)
+	}
+
+	return draft, nil
+}
+
+// DeleteDraft removes the draft for the given user/team/surveyType, if any. It is not an error
+// for no draft to exist (e.g. it was already cleaned up by a prior successful submission).
+func (r *HealthCheckRepository) DeleteDraft(ctx context.Context, userID, teamID, surveyType string) error {
+	if surveyType == "" {
+		surveyType = healthcheck.SurveyTypeIndividual
+	}
+
+	_, err := r.db.ExecContext(ctx,
+		"DELETE FROM health_check_drafts WHERE user_id = $1 AND team_id = $2 AND survey_type = $3",
+		userID, teamID, surveyType,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to delete draft: %w", err)
+	}
+
+	return nil
 }
 
 // scanSessions is a helper function to scan query results into sessions

@@ -1,24 +1,137 @@
 'use client';
 
-import { useState, useEffect, useRef, Suspense } from 'react';
+import { useState, useEffect, useRef, useCallback, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getCurrentUser, logout } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { HealthCheckResponse } from '@/lib/types';
 import { getAssessmentPeriod, toCadence } from '@/lib/assessment-period';
-import { submitHealthCheck, formatDateForAPI, HealthCheckAPIError } from '@/lib/api/health-checks';
+import { submitHealthCheck, formatDateForAPI, HealthCheckAPIError, saveDraft, getDraft, DraftRecord } from '@/lib/api/health-checks';
 import { getTeamInfoCached, TeamInfo, TeamsAPIError } from '@/lib/api/teams';
-import { TrendingUp, TrendingDown, Minus, ChevronLeft, ChevronRight, Save, LogOut, CheckCircle, BarChart3, Loader2, AlertCircle, Info, X } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, ChevronLeft, ChevronRight, Save, LogOut, CheckCircle, BarChart3, Loader2, AlertCircle, Info, X, CloudOff } from 'lucide-react';
+
+type SurveyType = 'individual' | 'post_workshop';
 
 interface SurveyDraft {
   responses: HealthCheckResponse[];
   currentDimension: number;
   assessmentPeriod: string;
+  surveyType: SurveyType;
   savedAt: string;
+  // Optional display-only metadata (epoch-millis); never used to order saves.
+  clientUpdatedAt?: number;
 }
 
-function getDraftKey(userId: string, teamId: string): string {
+// Survey-type-specific key, so an individual-survey draft and a post-workshop draft for the same
+// user/team never collide or overwrite each other in localStorage.
+function getDraftKey(userId: string, teamId: string, surveyType: SurveyType): string {
+  return `surveyDraft:${userId}:${teamId}:${surveyType}`;
+}
+
+// Pre-existing key format (no surveyType), used before drafts were survey-type-specific.
+function getLegacyDraftKey(userId: string, teamId: string): string {
   return `surveyDraft:${userId}:${teamId}`;
+}
+
+type DraftSaveStatus = 'idle' | 'saving' | 'saved' | 'offline';
+
+function formatSavedAt(ms: number): string {
+  const diff = Date.now() - ms;
+  if (diff < 5000) return 'just now';
+  if (diff < 60000) return `${Math.floor(diff / 1000)}s ago`;
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  return new Date(ms).toLocaleTimeString();
+}
+
+/**
+ * Reads the local draft for a user/team/surveyType. Falls back, at most once, to a legacy
+ * (pre-survey-type) key — but only for 'individual', since that was the sole survey type such
+ * drafts could historically have been written under; a legacy draft is never surfaced for
+ * 'post_workshop', so the two survey types can never cross-contaminate. The legacy key is
+ * deleted immediately after being read so it can never be read again for either survey type.
+ * All localStorage access is wrapped so a quota/security exception degrades to "no local draft"
+ * rather than throwing.
+ */
+function readLocalDraft(userId: string, teamId: string, surveyType: SurveyType): SurveyDraft | null {
+  try {
+    const draftJson = localStorage.getItem(getDraftKey(userId, teamId, surveyType));
+    if (draftJson) {
+      return JSON.parse(draftJson) as SurveyDraft;
+    }
+  } catch {
+    // Corrupt or inaccessible — fall through to the legacy check below.
+  }
+
+  if (surveyType !== 'individual') return null;
+
+  try {
+    const legacyKey = getLegacyDraftKey(userId, teamId);
+    const legacyJson = localStorage.getItem(legacyKey);
+    if (!legacyJson) return null;
+    localStorage.removeItem(legacyKey);
+    const legacy = JSON.parse(legacyJson) as Omit<SurveyDraft, 'surveyType'>;
+    return { ...legacy, surveyType: 'individual' };
+  } catch {
+    return null; // Ignore corrupt/inaccessible legacy draft
+  }
+}
+
+function writeLocalDraft(userId: string, teamId: string, draft: SurveyDraft): void {
+  try {
+    localStorage.setItem(getDraftKey(userId, teamId, draft.surveyType), JSON.stringify(draft));
+  } catch (err) {
+    // A quota/security exception here must never prevent the (separate) server save from
+    // proceeding — localStorage is only the offline/optimistic fallback.
+    console.warn('Failed to persist draft to localStorage (continuing with server-only persistence):', err);
+  }
+}
+
+function removeLocalDraft(userId: string, teamId: string, surveyType: SurveyType): void {
+  try {
+    localStorage.removeItem(getDraftKey(userId, teamId, surveyType));
+  } catch (err) {
+    console.warn('Failed to clear local draft:', err);
+  }
+}
+
+/**
+ * Resolves which draft to restore for a user/team/surveyType. The server draft is authoritative
+ * (only one user is ever editing their own draft, so it's always safe to prefer it); the
+ * localStorage draft is used only as an offline fallback when the server has nothing or is
+ * unreachable. Drafts from a different assessment period than `currentPeriod` are never restored.
+ */
+async function resolveDraft(
+  userId: string,
+  teamId: string,
+  surveyType: SurveyType,
+  currentPeriod: string
+): Promise<SurveyDraft | null> {
+  let serverRecord: DraftRecord | null = null;
+  try {
+    serverRecord = await getDraft(teamId, userId, surveyType);
+  } catch (err) {
+    // getDraft() already resolves 404/network failures to null; reaching here means a real HTTP
+    // error (401/403/500/...). This is a background restore, not a user-initiated action, so we
+    // degrade to the localStorage fallback rather than surfacing an error.
+    console.warn('Failed to fetch server draft, falling back to localStorage:', err);
+  }
+
+  if (serverRecord && serverRecord.assessmentPeriod === currentPeriod && serverRecord.responses.length > 0) {
+    return {
+      responses: serverRecord.responses,
+      currentDimension: serverRecord.currentDimension,
+      assessmentPeriod: serverRecord.assessmentPeriod,
+      surveyType,
+      savedAt: serverRecord.updatedAt || new Date().toISOString(),
+      clientUpdatedAt: serverRecord.clientUpdatedAt,
+    };
+  }
+
+  const localDraft = readLocalDraft(userId, teamId, surveyType);
+  if (localDraft && localDraft.assessmentPeriod === currentPeriod && localDraft.responses.length > 0) {
+    return localDraft;
+  }
+  return null;
 }
 
 export default function SurveyPage() {
@@ -54,11 +167,83 @@ function SurveyPageContent() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [draftRestored, setDraftRestored] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const draftInitialized = useRef(false);
+  // Set once submission starts (and stays set unless submission fails), so no further autosave
+  // can start, and a save already in flight can be awaited before the server deletes the draft —
+  // otherwise a stale PUT could complete after the DELETE and resurrect stale progress.
+  const draftFinalizedRef = useRef(false);
+  const pendingSaveRef = useRef<Promise<void> | null>(null);
   const [teamOptions, setTeamOptions] = useState<{id: string, name: string}[]>([]);
   const [showHelpPanel, setShowHelpPanel] = useState(false);
   const helpAutoShown = useRef(false);
+  const [draftSaveStatus, setDraftSaveStatus] = useState<DraftSaveStatus>('idle');
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [, forceTick] = useState(0);
+
+  // Keep the "Saved Xs/Xm ago" text fresh without needing a save to happen
+  useEffect(() => {
+    if (!lastSavedAt) return;
+    const interval = setInterval(() => forceTick((t) => t + 1), 5000);
+    return () => clearInterval(interval);
+  }, [lastSavedAt]);
+
+  // Persists the draft to localStorage (always) and the server (best-effort). Only called from
+  // the "Next" click, the team-switch flush, or a manual "Save Draft" click — never automatically
+  // on every score/trend/comment edit — so the user always has a clear, predictable moment when
+  // their progress is stored (see the "Draft save" note rendered next to the Save Draft button).
+  // The server save always overwrites (last write wins) since only one user is ever editing their
+  // own draft. Takes explicit args rather than reading from closures so it's safe to call from
+  // any of those. Wrapped in useCallback with a stable identity (only surveyType as a dep) so
+  // callers that depend on it don't get a new function identity every render.
+  const persistDraft = useCallback((
+    targetUser: any,
+    targetTeam: TeamInfo,
+    targetResponses: HealthCheckResponse[],
+    targetDimension: number
+  ) => {
+    if (targetResponses.length === 0) return;
+    // Submission has started (or already succeeded) for this draft — never resurrect it with a
+    // late save.
+    if (draftFinalizedRef.current) return;
+
+    const clientUpdatedAt = Date.now();
+    const assessmentPeriod = getAssessmentPeriod(new Date(), toCadence(targetTeam.cadence));
+    const draft: SurveyDraft = {
+      responses: targetResponses,
+      currentDimension: targetDimension,
+      assessmentPeriod,
+      surveyType,
+      savedAt: new Date().toISOString(),
+      clientUpdatedAt,
+    };
+
+    writeLocalDraft(targetUser.id, targetTeam.id, draft);
+    setDraftSaveStatus('saving');
+
+    const savePromise = saveDraft({
+      teamId: targetTeam.id,
+      userId: targetUser.id,
+      surveyType,
+      assessmentPeriod,
+      currentDimension: targetDimension,
+      responses: targetResponses,
+      clientUpdatedAt,
+    })
+      .then(() => {
+        if (draftFinalizedRef.current) return; // submission raced ahead of this save's response
+        setDraftSaveStatus('saved');
+        setLastSavedAt(clientUpdatedAt);
+      })
+      .catch((err) => {
+        if (draftFinalizedRef.current) return;
+        console.error('Failed to persist draft to server, continuing with local fallback:', err);
+        setDraftSaveStatus('offline');
+        setLastSavedAt(clientUpdatedAt);
+      });
+
+    pendingSaveRef.current = savePromise;
+    return savePromise;
+  }, [surveyType]);
 
   useEffect(() => {
     const currentUser = getCurrentUser();
@@ -73,22 +258,17 @@ function SurveyPageContent() {
       if (teamId) {
         setTeamLoading(true);
         getTeamInfoCached(teamId)
-          .then((teamInfo) => {
+          .then(async (teamInfo) => {
             setTeam(teamInfo);
-            // Restore draft after team info loaded
-            try {
-              const draftJson = localStorage.getItem(getDraftKey(currentUser.id, teamId));
-              if (draftJson) {
-                const draft: SurveyDraft = JSON.parse(draftJson);
-                const currentPeriod = getAssessmentPeriod(new Date(), toCadence(teamInfo.cadence));
-                if (draft.assessmentPeriod === currentPeriod && draft.responses.length > 0) {
-                  setResponses(draft.responses);
-                  setCurrentDimension(draft.currentDimension);
-                  setDraftRestored(true);
-                }
-              }
-            } catch {
-              // Ignore corrupt draft
+            // Restore draft after team info loaded (server draft preferred, localStorage fallback)
+            const currentPeriod = getAssessmentPeriod(new Date(), toCadence(teamInfo.cadence));
+            const draft = await resolveDraft(currentUser.id, teamId, surveyType, currentPeriod);
+            if (draft) {
+              setResponses(draft.responses);
+              setCurrentDimension(draft.currentDimension);
+              setDraftRestored(true);
+              setDraftSaveStatus('saved');
+              setLastSavedAt(new Date(draft.savedAt).getTime() || Date.now());
             }
             draftInitialized.current = true;
             setTeamLoading(false);
@@ -111,52 +291,39 @@ function SurveyPageContent() {
         setTeamError('No team assigned to this user');
       }
     }
-  }, [router, preferredTeamId]);
+  }, [router, preferredTeamId, surveyType]);
 
   const handleTeamSwitch = (newTeamId: string) => {
     if (!user || !team) return;
 
-    // Flush any pending draft save for the current team before switching
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current);
-      debounceRef.current = null;
-    }
+    // Flush the current draft state before switching, so progress on this team isn't lost.
     if (responses.length > 0 && draftInitialized.current && !submitted) {
-      const draft: SurveyDraft = {
-        responses,
-        currentDimension,
-        assessmentPeriod: getAssessmentPeriod(new Date(), toCadence(team.cadence)),
-        savedAt: new Date().toISOString(),
-      };
-      localStorage.setItem(getDraftKey(user.id, team.id), JSON.stringify(draft));
+      persistDraft(user, team, responses, currentDimension);
     }
 
     setTeamLoading(true);
     setResponses([]);
     setCurrentDimension(0);
     setDraftRestored(false);
+    setDraftSaveStatus('idle');
+    setLastSavedAt(null);
     setSubmitted(false);
     setError(null);
     setValidationError(null);
     draftInitialized.current = false;
 
     getTeamInfoCached(newTeamId)
-      .then((teamInfo) => {
+      .then(async (teamInfo) => {
         setTeam(teamInfo);
-        // Restore draft for the new team
-        try {
-          const draftJson = localStorage.getItem(getDraftKey(user.id, newTeamId));
-          if (draftJson) {
-            const draft: SurveyDraft = JSON.parse(draftJson);
-            const currentPeriod = getAssessmentPeriod(new Date(), toCadence(teamInfo.cadence));
-            if (draft.assessmentPeriod === currentPeriod && draft.responses.length > 0) {
-              setResponses(draft.responses);
-              setCurrentDimension(draft.currentDimension);
-              setDraftRestored(true);
-            }
-          }
-        } catch {
-          // Ignore corrupt draft
+        // Restore draft for the new team (server draft preferred, localStorage fallback)
+        const currentPeriod = getAssessmentPeriod(new Date(), toCadence(teamInfo.cadence));
+        const draft = await resolveDraft(user.id, newTeamId, surveyType, currentPeriod);
+        if (draft) {
+          setResponses(draft.responses);
+          setCurrentDimension(draft.currentDimension);
+          setDraftRestored(true);
+          setDraftSaveStatus('saved');
+          setLastSavedAt(new Date(draft.savedAt).getTime() || Date.now());
         }
         draftInitialized.current = true;
         setTeamLoading(false);
@@ -168,37 +335,12 @@ function SurveyPageContent() {
       });
   };
 
-  // Autosave draft to localStorage (debounced)
-  useEffect(() => {
-    if (!user || !team || !draftInitialized.current || submitted) return;
-    if (responses.length === 0) return;
-
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      const draft: SurveyDraft = {
-        responses,
-        currentDimension,
-        assessmentPeriod: getAssessmentPeriod(new Date(), toCadence(team.cadence)),
-        savedAt: new Date().toISOString(),
-      };
-      localStorage.setItem(getDraftKey(user.id, team.id), JSON.stringify(draft));
-    }, 300);
-
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-  }, [responses, currentDimension, user, team, submitted]);
-
-  // beforeunload warning when survey has unsaved responses
-  useEffect(() => {
-    if (responses.length === 0 || submitted) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = '';
-    };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [responses.length, submitted]);
+  // Manual "Save Draft" button: an explicit, immediate save independent of "Next".
+  const handleManualSaveDraft = () => {
+    if (!user || !team || responses.length === 0) return;
+    if (draftFinalizedRef.current) return;
+    persistDraft(user, team, responses, currentDimension);
+  };
 
   // Auto-show help panel once on the first dimension for first-time survey takers.
   // Must be here (before any early returns) to comply with Rules of Hooks.
@@ -292,7 +434,13 @@ function SurveyPageContent() {
     // Clear validation error and proceed
     setValidationError(null);
     if (currentDimension < HEALTH_DIMENSIONS.length - 1) {
-      setCurrentDimension(currentDimension + 1);
+      const nextDimension = currentDimension + 1;
+      setCurrentDimension(nextDimension);
+      // Draft is only saved on "Next" (not on every score/trend/comment change),
+      // so the user always has a clear, predictable moment when their progress is stored.
+      if (user && team && !submitted) {
+        persistDraft(user, team, responses, nextDimension);
+      }
     }
   };
 
@@ -323,6 +471,15 @@ function SurveyPageContent() {
       return;
     }
 
+    // Stop any further saves for this draft key from this point forward, and let any
+    // already-in-flight save (from the last "Next" click) finish before asking the server to
+    // delete the draft — otherwise a stale PUT could complete after the DELETE and resurrect
+    // stale progress.
+    draftFinalizedRef.current = true;
+    if (pendingSaveRef.current) {
+      await pendingSaveRef.current;
+    }
+
     setSubmitting(true);
     setError(null);
     setValidationError(null);
@@ -348,8 +505,8 @@ function SurveyPageContent() {
         completed: true
       });
 
-      // Clear draft on successful submit
-      localStorage.removeItem(getDraftKey(user.id, team.id));
+      // Clear draft on successful, completed submit
+      removeLocalDraft(user.id, team.id, surveyType);
 
       // Store session ID and redirect
       setSessionId(session.id);
@@ -359,6 +516,8 @@ function SurveyPageContent() {
       router.push(isPostWorkshop ? '/dashboard' : '/home');
     } catch (err) {
       console.error('Failed to submit health check:', err);
+      // The draft was never deleted (submission failed), so resume autosaving it.
+      draftFinalizedRef.current = false;
 
       if (err instanceof HealthCheckAPIError) {
         setError(err.message || 'Failed to submit your responses. Please try again.');
@@ -506,9 +665,52 @@ function SurveyPageContent() {
                 style={{ width: `${progress}%` }}
               />
             </div>
-            <p className={`text-sm mt-2 ${isPostWorkshop ? 'text-amber-200' : 'text-indigo-200'}`}>
-              Question {currentQuestionNumber} of {totalQuestions}
-            </p>
+            <div className="flex items-center justify-between mt-2 gap-3">
+              <p className={`text-sm ${isPostWorkshop ? 'text-amber-200' : 'text-indigo-200'}`}>
+                Question {currentQuestionNumber} of {totalQuestions}
+              </p>
+              <div className="flex items-center gap-3">
+                <span
+                  data-testid="draft-save-status"
+                  title="Your progress is saved as a draft when you click Next, or immediately if you click Save Draft. Answers on the current question aren't saved until then."
+                  className={`flex items-center gap-1.5 text-xs ${isPostWorkshop ? 'text-amber-200' : 'text-indigo-200'}`}
+                >
+                  {draftSaveStatus === 'saving' && (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Saving…
+                    </>
+                  )}
+                  {draftSaveStatus === 'saved' && lastSavedAt && (
+                    <>
+                      <CheckCircle className="w-3.5 h-3.5" />
+                      Draft saved {formatSavedAt(lastSavedAt)}
+                    </>
+                  )}
+                  {draftSaveStatus === 'offline' && lastSavedAt && (
+                    <>
+                      <CloudOff className="w-3.5 h-3.5" />
+                      Saved on this device only {formatSavedAt(lastSavedAt)}
+                    </>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleManualSaveDraft}
+                  disabled={responses.length === 0 || draftSaveStatus === 'saving'}
+                  data-testid="save-draft-button"
+                  title="Save your progress now instead of waiting until you click Next"
+                  className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1 rounded-full border transition-colors ${
+                    responses.length === 0 || draftSaveStatus === 'saving'
+                      ? 'border-white/20 text-white/40 cursor-not-allowed'
+                      : `border-white/40 hover:bg-white/10 ${isPostWorkshop ? 'text-amber-100' : 'text-indigo-100'}`
+                  }`}
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  Save Draft
+                </button>
+              </div>
+            </div>
           </div>
 
           <div className="p-8">
@@ -519,7 +721,7 @@ function SurveyPageContent() {
               >
                 <div className="flex items-center gap-2">
                   <Info className="w-4 h-4 flex-shrink-0" />
-                  <span>Your previous progress has been restored from a saved draft.</span>
+                  <span>Your answers for this question are saved as a draft when you click Next (or Save Draft)</span>
                 </div>
                 <button
                   onClick={() => setDraftRestored(false)}

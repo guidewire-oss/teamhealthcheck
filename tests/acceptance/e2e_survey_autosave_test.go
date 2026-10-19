@@ -54,6 +54,9 @@ var _ = Describe("E2E: Survey Autosave", Label("e2e"), func() {
 		)`)
 		db.Exec(`DELETE FROM health_check_sessions WHERE user_id = 'e2e_lead1'
 			AND id NOT LIKE 'e2e_%' AND id NOT LIKE 'demo-%'`)
+		// Clear any server-side draft saved during the test so it doesn't leak into
+		// (and skew the restored dimension for) the next test's fresh survey load.
+		db.Exec(`DELETE FROM health_check_drafts WHERE user_id = 'e2e_lead1'`)
 	})
 
 	loginAndGoToSurvey := func() {
@@ -131,25 +134,23 @@ var _ = Describe("E2E: Survey Autosave", Label("e2e"), func() {
 	}
 
 	Describe("Draft save and restore", func() {
-		It("should restore draft progress after page reload", func() {
+		It("should restore draft progress (as of the last 'Next' click) after page reload", func() {
 			loginAndGoToSurvey()
 
 			By("Filling first dimension (Mission) with Green score, Improving trend")
 			fillDimension("mission", 3, "improving")
-			clickNext()
+			clickNext() // saves the draft: responses=[mission], currentDimension=Value
 
 			By("Filling second dimension (Value) with Yellow score, Stable trend")
 			fillDimension("value", 2, "stable")
+			clickNext() // saves the draft: responses=[mission,value], currentDimension=Speed
 
-			By("Waiting for autosave debounce")
-			time.Sleep(500 * time.Millisecond)
-
-			By("Reloading the page")
+			By("Reloading the page before answering Speed (the third dimension)")
 			_, err := page.Reload()
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Waiting for survey to reload")
-			err = page.Locator("text=Delivering Value").WaitFor(playwright.LocatorWaitForOptions{
+			err = page.Locator("text=Speed").WaitFor(playwright.LocatorWaitForOptions{
 				State:   playwright.WaitForSelectorStateVisible,
 				Timeout: playwright.Float(10000),
 			})
@@ -162,11 +163,15 @@ var _ = Describe("E2E: Survey Autosave", Label("e2e"), func() {
 				return visible
 			}, 5*time.Second, 500*time.Millisecond).Should(BeTrue())
 
-			By("Verifying we're on the second dimension (Value)")
+			By("Verifying we're on the third dimension (Speed), i.e. past the last saved 'Next'")
 			heading := page.Locator("h2")
 			text, err := heading.TextContent()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(text).To(ContainSubstring("Delivering Value"))
+			Expect(text).To(ContainSubstring("Speed"))
+
+			By("Navigating back to Value to verify its answer was preserved")
+			previousButton := page.Locator("button:has-text('Previous')")
+			Expect(previousButton.Click()).To(Succeed())
 
 			By("Verifying the score selection is preserved (Yellow)")
 			yellowSelected := page.Locator("[data-dimension='value'][data-score='2']")
@@ -180,6 +185,14 @@ var _ = Describe("E2E: Survey Autosave", Label("e2e"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(stableClass).To(ContainSubstring("border-blue-500"))
 
+			By("Navigating back to Mission to verify its answer was also preserved")
+			Expect(previousButton.Click()).To(Succeed())
+
+			greenSelected := page.Locator("[data-dimension='mission'][data-score='3']")
+			missionClass, err := greenSelected.GetAttribute("class")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(missionClass).To(ContainSubstring("border-green-500"))
+
 			By("Dismissing the draft banner")
 			dismissBtn := banner.Locator("button[aria-label='Dismiss']")
 			err = dismissBtn.Click()
@@ -188,6 +201,35 @@ var _ = Describe("E2E: Survey Autosave", Label("e2e"), func() {
 
 			visible, _ := banner.IsVisible()
 			Expect(visible).To(BeFalse())
+		})
+
+		It("should NOT persist an answer on the current dimension until 'Next' (or 'Save Draft') is clicked", func() {
+			loginAndGoToSurvey()
+
+			By("Filling the first dimension (Mission) but never clicking Next or Save Draft")
+			fillDimension("mission", 3, "improving")
+			time.Sleep(500 * time.Millisecond) // give any (unwanted) background save a chance to fire
+
+			By("Reloading the page")
+			_, err := page.Reload()
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Waiting for survey to reload")
+			err = page.Locator("text=Mission").WaitFor(playwright.LocatorWaitForOptions{
+				State:   playwright.WaitForSelectorStateVisible,
+				Timeout: playwright.Float(10000),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying no draft was restored (the unsaved Mission answer is gone)")
+			banner := page.Locator("[data-testid='draft-restored-banner']")
+			visible, _ := banner.IsVisible()
+			Expect(visible).To(BeFalse())
+
+			unselected := page.Locator("[data-dimension='mission'][data-score='3']")
+			className, err := unselected.GetAttribute("class")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(className).NotTo(ContainSubstring("border-green-500"))
 		})
 	})
 
