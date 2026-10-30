@@ -111,6 +111,21 @@ type ApplyInput struct {
 	// Snapshot contains only importable records.
 	Snapshot *orgsnapshot.Snapshot
 
+	// SnapshotType gates reconciliation of absent records. The zero value is
+	// treated as PARTIAL: completeness must be asserted, never assumed.
+	SnapshotType SnapshotType
+
+	// RunID, when set, names the org_sync_runs row ApplySnapshot marks SUCCESS
+	// inside the same transaction as the data writes. SUCCESS therefore exists
+	// if and only if the commit did, and a run another worker already failed
+	// cannot be overwritten (the guarded UPDATE affects no row and the apply
+	// rolls back).
+	RunID string
+
+	// OnStage, when set, is told which step is starting. It must not block and
+	// its failures must not affect the apply; progress reporting is best-effort.
+	OnStage func(stage string)
+
 	// IncomingUsers/IncomingTeams/IncomingMemberships are the RAW provider
 	// payload's own record counts, before FilterSnapshot drops anything --
 	// unlike Snapshot, which only ever holds what survived filtering. A held
@@ -185,26 +200,46 @@ type ApplyResult struct {
 	HealthChecksDisabled int `json:"healthChecksDisabled"`
 	HealthChecksEnabled  int `json:"healthChecksEnabled"`
 
-	// UsersDeleted/TeamsDeleted count non-protected records absent from the
-	// snapshot that were hard-deleted, per the approved "the data provider is authoritative"
-	// rule -- deletion is never skipped or held back for these records.
-	UsersDeleted int `json:"usersDeleted"`
-	TeamsDeleted int `json:"teamsDeleted"`
+	// UsersDeactivated/TeamsDeactivated count non-protected records absent from
+	// a verified COMPLETE snapshot that were marked inactive. Nothing is ever
+	// hard-deleted by a sync: survey sessions, responses and action items keep
+	// resolving, and a record the provider sends again is reactivated.
+	UsersDeactivated int `json:"usersDeactivated"`
+	TeamsDeactivated int `json:"teamsDeactivated"`
 
-	// ActionItemsDeleted counts action_items rows removed as a side effect of
-	// the deletions above (action_items.created_by/team_id are NOT NULL with
-	// ON DELETE CASCADE -- see migrations/000020_create_action_items -- so a
-	// deleted user's/team's action items are cascade-deleted along with them).
-	// This is visibility into a required cascade, not an optional retention: it
-	// is reported so an admin can see what a sync actually removed, not a gate
-	// that blocks the user/team deletion itself.
-	ActionItemsDeleted int `json:"actionItemsDeleted"`
+	// Added/updated/unchanged are committed changes, not records merely read.
+	// Added = newly inserted. Updated = an existing record whose normalized
+	// business fields (or manager, or active state) actually changed. Unchanged =
+	// an existing record that was identical, which never counts as updated, so
+	// re-syncing identical data reports zero added and zero updated.
+	InsertedUsers  int `json:"insertedUsers"`
+	UpdatedUsers   int `json:"updatedUsers"`
+	UnchangedUsers int `json:"unchangedUsers"`
+	InsertedTeams  int `json:"insertedTeams"`
+	UpdatedTeams   int `json:"updatedTeams"`
+	UnchangedTeams int `json:"unchangedTeams"`
+
+	// MembershipsAdded counts memberships inserted or reactivated.
+	MembershipsAdded int `json:"membershipsAdded"`
 
 	// MassDeletionOverride is set only when the guard tripped and an
 	// administrator's explicit override let the sync proceed anyway. It carries
 	// the counts that were waived, so the service can audit-log them.
 	MassDeletionOverride *MassDeletionReport `json:"massDeletionOverride,omitempty"`
 }
+
+// SnapshotType says whether a payload is the full source population. Only a
+// COMPLETE snapshot may deactivate records that are absent from it.
+type SnapshotType string
+
+const (
+	SnapshotComplete SnapshotType = "COMPLETE"
+	SnapshotPartial  SnapshotType = "PARTIAL"
+)
+
+// ErrStaleSnapshot means a newer snapshot has already been committed, so this
+// older one must not overwrite it.
+var ErrStaleSnapshot = errors.New("snapshot is older than the last applied snapshot")
 
 // ErrMassDeletionBlocked is returned when a sync's calculated deletions exceed
 // the configured safety threshold. Nothing is written when this is returned.
@@ -399,10 +434,10 @@ type Repository interface {
 
 	// ApplySnapshot writes the snapshot in a single transaction. Protected users
 	// and teams (IsProtectedUser/IsProtectedTeam) are never created, updated, or
-	// deleted. Every other user/team present in the snapshot is upserted; every
-	// other user/team absent from the snapshot is a hard-delete candidate,
-	// subject to EvaluateMassDeletionGuard (unless ApplyInput.OverrideMassDeletion
-	// waives that one check) and the action-items retention check documented on
-	// ApplyResult. On any error, nothing is committed.
+	// deactivated. Every other user/team present in the snapshot is upserted (and
+	// reactivated). Only when ApplyInput.SnapshotType is COMPLETE are absent
+	// users/teams and memberships marked inactive -- never deleted -- subject to
+	// EvaluateMassDeletionGuard (unless ApplyInput.OverrideMassDeletion waives
+	// that one check). On any error, nothing is committed.
 	ApplySnapshot(ctx context.Context, in ApplyInput) (*ApplyResult, error)
 }

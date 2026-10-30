@@ -28,14 +28,29 @@ func NewTeamAdminHandler(teamRepo team.Repository, userRepo user.Repository, org
 // ListTeams handles GET /api/v1/admin/teams
 //
 // @Summary List all teams (admin)
-// @Description Returns every team in the organization with the full set of admin-facing details: ID, name, team lead ID and name, cadence, distribution list email, member count, and timestamps, along with the total team count. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Description Returns every team in the organization -- active and inactive -- with the full set of admin-facing details: ID, name, active status, team lead ID and name, cadence, distribution list email, current (active) member count, and timestamps, along with the total team count. Inactive teams are soft-deactivated, never deleted, and stay listed for historical data; use the status filter to narrow the list. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
 // @Tags Admin Teams
 // @Produce json
+// @Param status query string false "Limit to active or inactive teams; omit or use all for every team" Enums(active, inactive, all)
 // @Success 200 {object} dto.TeamsResponse
+// @Failure 400 {object} dto.ErrorResponse "Invalid status filter"
 // @Failure 500 {object} dto.ErrorResponse "Failed to query teams"
 // @Security BearerAuth
 // @Router /admin/teams [get]
 func (h *TeamAdminHandler) ListTeams(c *gin.Context) {
+	status := strings.ToLower(strings.TrimSpace(c.Query("status")))
+	switch status {
+	case "", "all":
+		status = "" // every team, inactive ones included
+	case "active", "inactive":
+	default:
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Error:   "Invalid status filter",
+			Message: "status must be one of: active, inactive, all",
+		})
+		return
+	}
+
 	teams, err := h.teamRepo.FindAllWithDetails(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
@@ -45,10 +60,14 @@ func (h *TeamAdminHandler) ListTeams(c *gin.Context) {
 		return
 	}
 
-	// Convert to DTOs
-	teamDTOs := make([]dto.AdminTeamDTO, len(teams))
-	for i, tm := range teams {
-		teamDTOs[i] = dto.AdminTeamDTO{
+	// Convert to DTOs, applying the optional status filter. Without one, inactive
+	// teams stay in the list: they are history, not removed data.
+	teamDTOs := make([]dto.AdminTeamDTO, 0, len(teams))
+	for _, tm := range teams {
+		if (status == "active" && !tm.IsActive) || (status == "inactive" && tm.IsActive) {
+			continue
+		}
+		teamDTOs = append(teamDTOs, dto.AdminTeamDTO{
 			ID:                    tm.ID,
 			Name:                  tm.Name,
 			TeamLeadID:            tm.TeamLeadID,
@@ -58,7 +77,9 @@ func (h *TeamAdminHandler) ListTeams(c *gin.Context) {
 			MemberCount:           tm.MemberCount,
 			CreatedAt:             tm.CreatedAt,
 			UpdatedAt:             tm.UpdatedAt,
-		}
+			IsActive:              tm.IsActive,
+			DeactivatedAt:         tm.DeactivatedAt,
+		})
 	}
 
 	c.JSON(http.StatusOK, dto.TeamsResponse{
@@ -131,6 +152,7 @@ func (h *TeamAdminHandler) CreateTeam(c *gin.Context) {
 		MemberCount:           0,
 		CreatedAt:             tm.CreatedAt,
 		UpdatedAt:             tm.UpdatedAt,
+		IsActive:              true, // a newly created team is always active
 	}
 
 	// Auto-derive supervisor chain from team lead's reports_to hierarchy
@@ -238,6 +260,8 @@ func (h *TeamAdminHandler) UpdateTeam(c *gin.Context) {
 		MemberCount:           memberCount,
 		CreatedAt:             updatedTm.CreatedAt,
 		UpdatedAt:             updatedTm.UpdatedAt,
+		IsActive:              updatedTm.IsActive,
+		DeactivatedAt:         updatedTm.DeactivatedAt,
 	}
 
 	c.JSON(http.StatusOK, responseDTO)
@@ -245,27 +269,40 @@ func (h *TeamAdminHandler) UpdateTeam(c *gin.Context) {
 
 // DeleteTeam handles DELETE /api/v1/admin/teams/:id
 //
-// @Summary Delete a team
-// @Description Permanently deletes the team identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// The route keeps its name for existing callers, but teams are never
+// hard-deleted: this soft-deactivates the team. It stays in the system and in
+// every historical record, its memberships end, and it stops receiving surveys.
+// A later provider sync that reports the team again reactivates it.
+//
+// @Summary Deactivate a team
+// @Description Soft-deactivates the team identified by the path ID. The team is never deleted: it stays listed and searchable as Inactive, its surveys, responses and action items are kept, and its memberships end. Repeating the call for an already inactive team changes nothing. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
 // @Tags Admin Teams
 // @Produce json
 // @Param id path string true "Team ID"
 // @Success 200 {object} dto.MessageResponse
-// @Failure 500 {object} dto.ErrorResponse "Failed to delete team"
+// @Failure 404 {object} dto.ErrorResponse "Team not found"
+// @Failure 500 {object} dto.ErrorResponse "Failed to deactivate team"
 // @Security BearerAuth
 // @Router /admin/teams/{id} [delete]
 func (h *TeamAdminHandler) DeleteTeam(c *gin.Context) {
 	id := c.Param("id")
 
-	if err := h.teamRepo.Delete(c.Request.Context(), id); err != nil {
+	if err := h.teamRepo.Deactivate(c.Request.Context(), id); err != nil {
+		if strings.Contains(err.Error(), "team not found") {
+			c.JSON(http.StatusNotFound, dto.ErrorResponse{
+				Error:   "Team not found",
+				Message: err.Error(),
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
-			Error:   "Failed to delete team",
+			Error:   "Failed to deactivate team",
 			Message: err.Error(),
 		})
 		return
 	}
 
-	dto.RespondMessage(c, http.StatusOK, "Team deleted successfully")
+	dto.RespondMessage(c, http.StatusOK, "Team deactivated successfully")
 }
 
 // GetTeamMembers handles GET /api/v1/admin/teams/:id/members

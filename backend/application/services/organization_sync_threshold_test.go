@@ -220,7 +220,7 @@ func (r *holdingRepo) ApplySnapshot(_ context.Context, in orgprovider.ApplyInput
 		return &orgprovider.ApplyResult{UsersSynced: len(in.Snapshot.Users)}, nil
 	}
 	if in.OverrideMassDeletion && report.MatchesConfirmed(in.ConfirmedMassDeletion) {
-		return &orgprovider.ApplyResult{UsersDeleted: report.Users.Deleting, MassDeletionOverride: &report}, nil
+		return &orgprovider.ApplyResult{UsersDeactivated: report.Users.Deleting, MassDeletionOverride: &report}, nil
 	}
 	if report.Held() {
 		return nil, &orgprovider.MassDeletionHoldError{Report: report}
@@ -251,7 +251,7 @@ func TestHoldFreezesTheThresholdForLaterAttempts(t *testing.T) {
 		t.Fatalf("expected the first attempt to be held, got %v", err)
 	}
 
-	state := service.LockState()
+	state := service.LockState(context.Background())
 	if !state.Held || state.Threshold != 20 {
 		t.Fatalf("expected a hold frozen at 20%%, got %+v", state)
 	}
@@ -279,7 +279,7 @@ func TestOverrideResolvesTheHoldAndUnlocks(t *testing.T) {
 	if !errors.As(err, &hold) {
 		t.Fatalf("expected a hold, got %v", err)
 	}
-	if !service.LockState().Locked() {
+	if !service.LockState(context.Background()).Locked() {
 		t.Fatal("expected the threshold to be locked")
 	}
 
@@ -294,7 +294,7 @@ func TestOverrideResolvesTheHoldAndUnlocks(t *testing.T) {
 	if !result.MassDeletionOverridden {
 		t.Fatal("expected the result to record the override")
 	}
-	if service.LockState().Locked() {
+	if service.LockState(context.Background()).Locked() {
 		t.Fatal("a resolved hold must unlock the threshold")
 	}
 }
@@ -315,7 +315,7 @@ func TestCleanSyncResolvesAPriorHold(t *testing.T) {
 	if _, err := service.Sync(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if service.LockState().Locked() {
+	if service.LockState(context.Background()).Locked() {
 		t.Fatal("a completed sync must unlock the threshold")
 	}
 }
@@ -335,7 +335,7 @@ func TestDismissHoldUnlocksWithoutApplying(t *testing.T) {
 	if !service.DismissHold() {
 		t.Fatal("expected a hold to dismiss")
 	}
-	if service.LockState().Locked() {
+	if service.LockState(context.Background()).Locked() {
 		t.Fatal("dismissing must unlock the threshold")
 	}
 	if repo.calls != callsWhenHeld {

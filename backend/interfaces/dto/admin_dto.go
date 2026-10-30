@@ -64,6 +64,9 @@ type AdminUserDTO struct {
 	AuthType       string    `json:"authType"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+	// IsActive is false for a soft-deactivated person, who stays listed for history.
+	IsActive      bool       `json:"isActive"`
+	DeactivatedAt *time.Time `json:"deactivatedAt,omitempty"`
 } //@name AdminUserDTO
 
 // CreateUserRequest represents request to create a user
@@ -134,6 +137,9 @@ type AdminTeamDTO struct {
 	MemberCount           int       `json:"memberCount"`
 	CreatedAt             time.Time `json:"createdAt"`
 	UpdatedAt             time.Time `json:"updatedAt"`
+	// IsActive is false for a soft-deactivated team, which stays listed for history.
+	IsActive      bool       `json:"isActive"`
+	DeactivatedAt *time.Time `json:"deactivatedAt,omitempty"`
 } //@name AdminTeamDTO
 
 // CreateTeamRequest represents request to create a team

@@ -28,10 +28,11 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, e
 	var email, hierarchyLevelID, reportsTo sql.NullString
 	var createdAt, updatedAt sql.NullTime
 	var passwordHash, authType sql.NullString
+	var deactivatedAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
 		FROM users
 		WHERE id = $1
 	`, id).Scan(
@@ -45,6 +46,8 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, e
 		&authType,
 		&createdAt,
 		&updatedAt,
+		&u.IsActive,
+		&deactivatedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -80,6 +83,11 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, e
 		u.UpdatedAt = updatedAt.Time
 	}
 
+	if deactivatedAt.Valid {
+		t := deactivatedAt.Time
+		u.DeactivatedAt = &t
+	}
+
 	// Fetch team IDs
 	teamIDs, err := r.fetchTeamIDs(ctx, id)
 	if err != nil {
@@ -104,7 +112,7 @@ func (r *UserRepository) FindByUsername(ctx context.Context, username string) (*
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
 		       password_hash, auth_type, created_at, updated_at
 		FROM users
-		WHERE username = $1
+		WHERE username = $1 AND is_active
 	`, username).Scan(
 		&u.ID,
 		&u.Username,
@@ -175,7 +183,7 @@ func (r *UserRepository) FindByEmail(ctx context.Context, emailParam string) (*u
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
 		       password_hash, auth_type, created_at, updated_at
 		FROM users
-		WHERE email = $1
+		WHERE email = $1 AND is_active
 	`, emailParam).Scan(
 		&u.ID,
 		&u.Username,
@@ -323,7 +331,7 @@ func (r *UserRepository) FindAll(ctx context.Context) ([]*user.User, error) {
 		teamRows, err := r.db.QueryContext(ctx, `
 			SELECT user_id, team_id
 			FROM team_members
-			WHERE user_id = ANY($1)
+			WHERE user_id = ANY($1) AND is_active
 			ORDER BY user_id, team_id
 		`, pq.Array(userIDs))
 		if err != nil {
@@ -363,22 +371,24 @@ func (r *UserRepository) FindPage(ctx context.Context, filter user.ListFilter, p
 		  AND ($2 = '' OR username ILIKE '%' || $2 || '%'
 		            OR full_name ILIKE '%' || $2 || '%'
 		            OR email ILIKE '%' || $2 || '%')
-	`, filter.HierarchyLevel, filter.Search).Scan(&total)
+		  AND ($3 = '' OR ($3 = 'active' AND is_active) OR ($3 = 'inactive' AND NOT is_active))
+	`, filter.HierarchyLevel, filter.Search, filter.Status).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count users: %w", err)
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
 		FROM users
 		WHERE ($1 = '' OR hierarchy_level_id = $1)
 		  AND ($2 = '' OR username ILIKE '%' || $2 || '%'
 		            OR full_name ILIKE '%' || $2 || '%'
 		            OR email ILIKE '%' || $2 || '%')
+		  AND ($5 = '' OR ($5 = 'active' AND is_active) OR ($5 = 'inactive' AND NOT is_active))
 		ORDER BY username
 		LIMIT $3 OFFSET $4
-	`, filter.HierarchyLevel, filter.Search, pageSize, offset)
+	`, filter.HierarchyLevel, filter.Search, pageSize, offset, filter.Status)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to query users page: %w", err)
 	}
@@ -403,7 +413,7 @@ func (r *UserRepository) FindPage(ctx context.Context, filter user.ListFilter, p
 		teamRows, err := r.db.QueryContext(ctx, `
 			SELECT user_id, team_id
 			FROM team_members
-			WHERE user_id = ANY($1)
+			WHERE user_id = ANY($1) AND is_active
 			ORDER BY user_id, team_id
 		`, pq.Array(userIDs))
 		if err != nil {
@@ -473,6 +483,7 @@ func (r *UserRepository) scanUsersWithoutTeamIDs(rows *sql.Rows) ([]*user.User, 
 		var email, hierarchyLevelID, reportsTo sql.NullString
 		var createdAt, updatedAt sql.NullTime
 		var passwordHash, authType sql.NullString
+		var deactivatedAt sql.NullTime
 
 		err := rows.Scan(
 			&u.ID,
@@ -485,6 +496,8 @@ func (r *UserRepository) scanUsersWithoutTeamIDs(rows *sql.Rows) ([]*user.User, 
 			&authType,
 			&createdAt,
 			&updatedAt,
+			&u.IsActive,
+			&deactivatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user: %w", err)
@@ -513,6 +526,11 @@ func (r *UserRepository) scanUsersWithoutTeamIDs(rows *sql.Rows) ([]*user.User, 
 		}
 		if updatedAt.Valid {
 			u.UpdatedAt = updatedAt.Time
+		}
+
+		if deactivatedAt.Valid {
+			t := deactivatedAt.Time
+			u.DeactivatedAt = &t
 		}
 
 		u.IsAdmin = u.Username == "admin"
@@ -645,7 +663,7 @@ func (r *UserRepository) FindSubordinates(ctx context.Context, supervisorID stri
 		teamRows, err := r.db.QueryContext(ctx, `
 			SELECT user_id, team_id
 			FROM team_members
-			WHERE user_id = ANY($1)
+			WHERE user_id = ANY($1) AND is_active
 			ORDER BY user_id, team_id
 		`, pq.Array(userIDs))
 		if err != nil {
@@ -878,16 +896,25 @@ func (r *UserRepository) Update(ctx context.Context, u *user.User) error {
 
 	// Update team memberships
 	// Delete existing memberships
-	_, err = tx.ExecContext(ctx, "DELETE FROM team_members WHERE user_id = $1", u.ID)
-	if err != nil {
-		return fmt.Errorf("failed to delete team memberships: %w", err)
+	// Reconcile memberships without destroying history: a team the person was
+	// taken out of becomes an inactive membership (kept), and a team they are
+	// put back into is reactivated. Rewriting the whole set (delete, re-insert)
+	// would erase inactive history and could resurrect an old membership.
+	if _, err = tx.ExecContext(ctx, `
+		UPDATE team_members
+		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
+		WHERE user_id = $1 AND is_active AND team_id <> ALL($2)
+	`, u.ID, pq.Array(u.TeamIDs)); err != nil {
+		return fmt.Errorf("failed to end team memberships: %w", err)
 	}
 
-	// Insert new memberships
 	for _, teamID := range u.TeamIDs {
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO team_members (team_id, user_id)
 			VALUES ($1, $2)
+			ON CONFLICT (team_id, user_id) DO UPDATE
+				SET is_active = true, deactivated_at = NULL
+				WHERE team_members.is_active = false
 		`, teamID, u.ID)
 		if err != nil {
 			return fmt.Errorf("failed to save team membership: %w", err)
@@ -905,6 +932,46 @@ func (r *UserRepository) Update(ctx context.Context, u *user.User) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	return nil
+}
+
+// Deactivate soft-deactivates a person. The users row is kept, so surveys,
+// responses and action items keep resolving to them; their memberships are ended
+// (kept as inactive history) so they stop receiving surveys. Both writes happen
+// in one transaction. deactivated_at keeps its original value if the person was
+// already inactive, which makes repeating the call harmless.
+func (r *UserRepository) Deactivate(ctx context.Context, id string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE users
+		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+	`, id)
+	if err != nil {
+		return fmt.Errorf("failed to deactivate user: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("failed to confirm user deactivation: %w", err)
+	} else if n == 0 {
+		return fmt.Errorf("user not found with provided ID")
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE team_members
+		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
+		WHERE user_id = $1 AND is_active
+	`, id); err != nil {
+		return fmt.Errorf("failed to end memberships of deactivated user: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit user deactivation: %w", err)
+	}
 	return nil
 }
 
@@ -959,7 +1026,7 @@ func (r *UserRepository) FindTeamIDsForUsers(ctx context.Context, userIDs []stri
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT user_id, team_id
 		FROM team_members
-		WHERE user_id = ANY($1)
+		WHERE user_id = ANY($1) AND is_active
 		ORDER BY user_id, team_id
 	`, pq.Array(userIDs))
 	if err != nil {
@@ -1021,7 +1088,7 @@ func (r *UserRepository) fetchTeamIDs(ctx context.Context, userID string) ([]str
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT team_id
 		FROM team_members
-		WHERE user_id = $1
+		WHERE user_id = $1 AND is_active
 		ORDER BY team_id
 	`, userID)
 

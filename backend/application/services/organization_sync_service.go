@@ -2,6 +2,9 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -12,6 +15,7 @@ import (
 	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
+	"github.com/agopalakrishnan/teams360/backend/domain/orgsyncrun"
 	"github.com/agopalakrishnan/teams360/backend/domain/team"
 	"github.com/agopalakrishnan/teams360/backend/domain/user"
 	"github.com/agopalakrishnan/teams360/backend/pkg/logger"
@@ -84,6 +88,14 @@ func WithDeleteThresholdStore(store DeleteThresholdStore) Option {
 	}
 }
 
+// WithRunStore enables persisted, asynchronous runs and the cross-instance lock.
+// Without it the service only offers the synchronous Sync path.
+func WithRunStore(store orgsyncrun.Store) Option {
+	return func(s *OrganizationSyncService) {
+		s.runs = store
+	}
+}
+
 // SnapshotFetcher fetches a complete organization snapshot from an external
 // provider. The sync service depends on this interface, not a concrete
 // client, so a second provider can be added without touching orchestration.
@@ -102,13 +114,21 @@ type SyncResult struct {
 	UsersSynced        int `json:"usersSynced"`
 	MembershipsSynced  int `json:"membershipsSynced"`
 	MembershipsRemoved int `json:"membershipsRemoved"`
+	// MembershipChanges is real additions, reactivations and removals only.
+	MembershipChanges int `json:"membershipChanges"`
 
 	HealthChecksDisabled int `json:"healthChecksDisabled"`
 	HealthChecksEnabled  int `json:"healthChecksEnabled"`
 
-	UsersDeleted       int `json:"usersDeleted"`
-	TeamsDeleted       int `json:"teamsDeleted"`
-	ActionItemsDeleted int `json:"actionItemsDeleted"`
+	UsersDeactivated int `json:"usersDeactivated"`
+	TeamsDeactivated int `json:"teamsDeactivated"`
+
+	InsertedUsers  int `json:"insertedUsers"`
+	UpdatedUsers   int `json:"updatedUsers"`
+	UnchangedUsers int `json:"unchangedUsers"`
+	InsertedTeams  int `json:"insertedTeams"`
+	UpdatedTeams   int `json:"updatedTeams"`
+	UnchangedTeams int `json:"unchangedTeams"`
 
 	UsersSkipped         int                       `json:"usersSkipped"`
 	SkippedUsers         []orgprovider.SkippedUser `json:"skippedUsers,omitempty"`
@@ -188,6 +208,10 @@ type OrganizationSyncService struct {
 	// variable and the built-in default decide.
 	thresholds DeleteThresholdStore
 
+	// runs persists run status and provides the cross-instance lock. Nil in
+	// deployments/tests that only use the synchronous path.
+	runs orgsyncrun.Store
+
 	// mu guards held. It is not the sync admission lock -- that is running,
 	// below -- only the small record describing an unresolved hold.
 	mu sync.Mutex
@@ -253,6 +277,18 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 	}
 	defer s.running.Store(false)
 
+	return s.syncCore(ctx, opts, "", nil)
+}
+
+// syncCore is the one implementation of fetch -> validate -> apply. Both the
+// synchronous path and persisted runs call it, so there is a single sync
+// behaviour. runID and onStage are empty/nil for the synchronous path.
+func (s *OrganizationSyncService) syncCore(ctx context.Context, opts SyncOptions, runID string, onStage func(orgsyncrun.Stage)) (*SyncResult, error) {
+	stage := func(st orgsyncrun.Stage) {
+		if onStage != nil {
+			onStage(st)
+		}
+	}
 	log := logger.Get()
 	startedAt := time.Now().UTC()
 
@@ -269,6 +305,7 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 		return nil, err
 	}
 
+	stage(orgsyncrun.StageFetching)
 	snapshot, err := s.fetcher.FetchSnapshot(ctx)
 	if err != nil {
 		return nil, errors.Join(ErrProviderFetchFailed, err)
@@ -277,6 +314,7 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 		return nil, errors.Join(ErrInvalidSnapshot, errors.New("provider returned no snapshot"))
 	}
 
+	stage(orgsyncrun.StageValidating)
 	knownLevels, err := s.repo.KnownHierarchyLevelIDs(ctx)
 	if err != nil {
 		return nil, err
@@ -296,7 +334,12 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 	}
 
 	applied, err := s.repo.ApplySnapshot(ctx, orgprovider.ApplyInput{
-		Snapshot: filtered.Snapshot,
+		Snapshot:     filtered.Snapshot,
+		SnapshotType: snapshotTypeOf(snapshot),
+		RunID:        runID,
+		OnStage: func(name string) {
+			stage(orgsyncrun.Stage(name))
+		},
 		// The raw, pre-filter payload's own counts -- not len(filtered.Snapshot.*),
 		// which only reflects what survived filtering. See ApplyInput's doc.
 		IncomingUsers:            len(snapshot.Users),
@@ -337,11 +380,17 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 		UsersSynced:          applied.UsersSynced,
 		MembershipsSynced:    applied.MembershipsSynced,
 		MembershipsRemoved:   applied.MembershipsRemoved,
+		MembershipChanges:    applied.MembershipsAdded + applied.MembershipsRemoved,
 		HealthChecksDisabled: applied.HealthChecksDisabled,
 		HealthChecksEnabled:  applied.HealthChecksEnabled,
-		UsersDeleted:         applied.UsersDeleted,
-		TeamsDeleted:         applied.TeamsDeleted,
-		ActionItemsDeleted:   applied.ActionItemsDeleted,
+		UsersDeactivated:     applied.UsersDeactivated,
+		TeamsDeactivated:     applied.TeamsDeactivated,
+		InsertedUsers:        applied.InsertedUsers,
+		UpdatedUsers:         applied.UpdatedUsers,
+		UnchangedUsers:       applied.UnchangedUsers,
+		InsertedTeams:        applied.InsertedTeams,
+		UpdatedTeams:         applied.UpdatedTeams,
+		UnchangedTeams:       applied.UnchangedTeams,
 		UsersSkipped:         len(filtered.SkippedUsers),
 		SkippedUsers:         filtered.SkippedUsers,
 		ManagerLinksCleared:  filtered.ClearedManagers,
@@ -381,8 +430,8 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 		"usersSynced":       result.UsersSynced,
 		"teamsSynced":       result.TeamsSynced,
 		"membershipsSynced": result.MembershipsSynced,
-		"usersDeleted":      result.UsersDeleted,
-		"teamsDeleted":      result.TeamsDeleted,
+		"usersDeactivated":  result.UsersDeactivated,
+		"teamsDeactivated":  result.TeamsDeactivated,
 		"usersSkipped":      result.UsersSkipped,
 	}).Info("organization provider sync completed")
 
@@ -400,8 +449,43 @@ func formatCascade(m *orgprovider.DeletionMetric) string {
 // LockState reports whether the mass-deletion threshold is currently frozen,
 // and at what value. An expired hold is dropped here rather than lingering, so
 // callers never have to reason about staleness themselves.
-func (s *OrganizationSyncService) LockState() SyncLockState {
-	state := SyncLockState{Syncing: s.running.Load()}
+//
+// "Syncing" comes from the persisted run when a run store is configured: only a
+// run whose status is PENDING or RUNNING counts. That is authoritative across
+// replicas and flips the instant a run's SUCCESS commits, whereas the
+// in-process flag is cleared a moment later and could be read mid-teardown,
+// leaving the threshold looking locked after the sync had finished. Runs a
+// crashed worker abandoned are swept first so they cannot hold the lock either.
+// Without a run store (the synchronous path) the in-process flag is the only
+// signal there is.
+func (s *OrganizationSyncService) LockState(ctx context.Context) SyncLockState {
+	state := s.heldState()
+	state.Syncing = s.syncing(ctx)
+	return state
+}
+
+// syncing answers "is a sync in progress" as described on LockState.
+func (s *OrganizationSyncService) syncing(ctx context.Context) bool {
+	if s.runs == nil {
+		return s.running.Load()
+	}
+	if _, err := s.runs.RecoverStale(ctx, StaleRunTTL); err != nil {
+		logger.Get().WithError(err).Warn("stale sync run recovery failed")
+	}
+	active, err := s.runs.Active(ctx)
+	if err != nil {
+		// Fail closed: if the answer cannot be read, do not let the threshold be
+		// changed underneath a sync that may be running.
+		logger.Get().WithError(err).Warn("could not read the active sync run; treating the threshold as locked")
+		return true
+	}
+	return active != nil
+}
+
+// heldState reports only the unresolved-hold part of the lock, which lives in
+// memory and needs no database read.
+func (s *OrganizationSyncService) heldState() SyncLockState {
+	var state SyncLockState
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -440,7 +524,7 @@ func (s *OrganizationSyncService) recordHold(threshold float64, report orgprovid
 // thresholdForRun returns the threshold this attempt is judged against: the
 // frozen value while a hold is unresolved, otherwise the configured one.
 func (s *OrganizationSyncService) thresholdForRun(ctx context.Context) (float64, error) {
-	if state := s.LockState(); state.Held {
+	if state := s.heldState(); state.Held {
 		return state.Threshold, nil
 	}
 	return s.maxDeletePercent(ctx)
@@ -573,4 +657,232 @@ func (s *OrganizationSyncService) rederiveSupervisorChains(ctx context.Context, 
 	}
 
 	return firstErr
+}
+
+// snapshotTypeOf decides whether absent records may be deactivated. A payload
+// only counts as COMPLETE when the contract says so: either snapshotType is
+// explicitly "COMPLETE", or it is omitted, which contract v1.0 defines as a
+// complete snapshot. Non-empty is never taken as evidence of completeness --
+// ValidationError has already rejected empty users/teams -- and PARTIAL (or any
+// value validation did not accept) keeps every missing record untouched.
+func snapshotTypeOf(snap *orgsnapshot.Snapshot) orgprovider.SnapshotType {
+	switch snap.SnapshotType {
+	case "", orgsnapshot.TypeComplete:
+		return orgprovider.SnapshotComplete
+	default:
+		return orgprovider.SnapshotPartial
+	}
+}
+
+// Timing for persisted runs. Variables, not constants, so tests can shrink them.
+var (
+	// LockWaitTimeout bounds how long a run stays PENDING waiting for the lock.
+	LockWaitTimeout = 2 * time.Minute
+	// LockRetryInterval is the pause between lock attempts.
+	LockRetryInterval = 2 * time.Second
+	// RunTimeout bounds one whole run's execution.
+	RunTimeout = 10 * time.Minute
+	// stageUpdateTimeout bounds one progress write.
+	stageUpdateTimeout = 5 * time.Second
+	// StaleRunTTL is how long a run may go without a heartbeat before the
+	// recovery sweep fails it. It must exceed the longest gap between stage
+	// updates; a healthy run heartbeats at every stage change.
+	StaleRunTTL = 15 * time.Minute
+)
+
+// RunsEnabled reports whether persisted asynchronous runs are available.
+func (s *OrganizationSyncService) RunsEnabled() bool { return s.runs != nil }
+
+// StartRun records a PENDING run and executes it in the background. It returns
+// as soon as the PENDING row is persisted, never after the sync itself. If a run
+// is already active it returns that run with ErrActiveRunExists instead of
+// starting a second one. A repeated idempotencyKey returns the original run.
+func (s *OrganizationSyncService) StartRun(ctx context.Context, opts SyncOptions, idempotencyKey string) (*orgsyncrun.Run, error) {
+	if s.runs == nil {
+		return nil, errors.New("persisted sync runs are not configured")
+	}
+	if s.fetcher == nil {
+		return nil, ErrProviderNotConfigured
+	}
+
+	// Clears runs a crashed worker left PENDING/RUNNING so they cannot block
+	// admission forever. Best-effort: a failed sweep must not block a request.
+	if n, err := s.runs.RecoverStale(ctx, StaleRunTTL); err != nil {
+		logger.Get().WithError(err).Warn("stale sync run recovery failed")
+	} else if n > 0 {
+		logger.Get().WithFields(map[string]interface{}{"recovered": n}).Warn("recovered stale sync runs")
+	}
+
+	actor := opts.ActorUserID
+	if actor == "" {
+		actor = "scheduler"
+	}
+	id, err := newRunID()
+	if err != nil {
+		return nil, err
+	}
+	run, created, err := s.runs.CreatePending(ctx, orgsyncrun.NewParams{
+		ID: id, InitiatedBy: actor, IdempotencyKey: idempotencyKey, SnapshotType: orgprovider.SnapshotComplete,
+	})
+	if err != nil {
+		return run, err
+	}
+	if !created {
+		return run, nil // idempotent replay: already scheduled by the first request
+	}
+
+	// Detached from the request: the admin may close the tab, and the work must
+	// still finish or fail visibly.
+	go s.executeRun(context.WithoutCancel(ctx), run.ID, opts)
+	return run, nil
+}
+
+func newRunID() (string, error) {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate run id: %w", err)
+	}
+	return "sync_" + hex.EncodeToString(b), nil
+}
+
+// executeRun drives one run PENDING -> RUNNING -> SUCCESS|FAILED. SUCCESS is
+// written by ApplySnapshot inside the data transaction, so it can only exist
+// after a commit; this function only ever records FAILED.
+func (s *OrganizationSyncService) executeRun(ctx context.Context, runID string, opts SyncOptions) {
+	log := logger.Get().WithFields(map[string]interface{}{"runId": runID})
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, RunTimeout)
+	defer cancel()
+
+	currentStage := orgsyncrun.StageAcquiringLock
+	fail := func(stage orgsyncrun.Stage, code, message string, hold json.RawMessage) {
+		err := s.runs.Fail(context.WithoutCancel(ctx), runID, orgsyncrun.Failure{
+			Stage: stage, Code: code, Message: message, HoldReport: hold,
+		})
+		if errors.Is(err, orgsyncrun.ErrNotTransitionable) {
+			log.Warn("run already finished elsewhere; not overwriting its result")
+			return
+		}
+		if err != nil {
+			log.WithError(err).Error("failed to record sync run failure")
+		}
+		log.WithFields(map[string]interface{}{
+			"status": orgsyncrun.StatusFailed, "stage": stage, "code": code,
+			"durationMs": time.Since(started).Milliseconds(),
+		}).Warn("organization sync run failed")
+	}
+	setStage := func(st orgsyncrun.Stage) {
+		currentStage = st
+		// Progress is best-effort: a bounded wait means a blocked progress write
+		// can never hang the sync itself.
+		stageCtx, stageCancel := context.WithTimeout(ctx, stageUpdateTimeout)
+		defer stageCancel()
+		if err := s.runs.SetStage(stageCtx, runID, st); err != nil && !errors.Is(err, orgsyncrun.ErrNotTransitionable) {
+			log.WithError(err).Warn("failed to record sync stage")
+		}
+	}
+
+	// In-process admission still guards this replica's threshold-lock state.
+	if !s.running.CompareAndSwap(false, true) {
+		fail(orgsyncrun.StageAcquiringLock, orgsyncrun.CodeLockUnavailable, "Another synchronization is running on this server.", nil)
+		return
+	}
+	defer s.running.Store(false)
+
+	// PENDING while waiting for the lock: a busy lock is retried, not failed.
+	release, err := s.acquireLock(ctx, setStage)
+	if err != nil {
+		fail(orgsyncrun.StageAcquiringLock, orgsyncrun.CodeLockUnavailable, err.Error(), nil)
+		return
+	}
+	defer release()
+
+	if err := s.runs.MarkRunning(ctx, runID, workerID()); err != nil {
+		// Someone (the recovery sweep) already failed this run: do not run it.
+		log.WithError(err).Warn("run could not be moved to RUNNING; abandoning")
+		return
+	}
+	log.Info("organization sync run started")
+
+	_, err = s.syncCore(ctx, opts, runID, func(st orgsyncrun.Stage) { setStage(st) })
+	if err == nil {
+		log.WithFields(map[string]interface{}{
+			"status": orgsyncrun.StatusSuccess, "durationMs": time.Since(started).Milliseconds(),
+		}).Info("organization sync run succeeded")
+		return
+	}
+	code, message, hold := classifyRunError(err)
+	fail(currentStage, code, message, hold)
+}
+
+// acquireLock retries the cross-instance lock until LockWaitTimeout.
+func (s *OrganizationSyncService) acquireLock(ctx context.Context, setStage func(orgsyncrun.Stage)) (func(), error) {
+	setStage(orgsyncrun.StageAcquiringLock)
+	deadline := time.Now().Add(LockWaitTimeout)
+	for {
+		release, ok, err := s.runs.TryLock(ctx)
+		if err != nil {
+			return nil, errors.New("could not reach the database to take the synchronization lock")
+		}
+		if ok {
+			return release, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, errors.New("another synchronization is holding the lock; try again shortly")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, errors.New("synchronization was cancelled while waiting for the lock")
+		case <-time.After(LockRetryInterval):
+		}
+	}
+}
+
+func workerID() string {
+	host, _ := os.Hostname()
+	return fmt.Sprintf("%s:%d", host, os.Getpid())
+}
+
+// classifyRunError maps an internal error onto a stable code and a message that
+// is safe to show an administrator. Raw database errors are replaced by a
+// generic sentence: they can carry identifiers and are logged, not stored.
+func classifyRunError(err error) (code, message string, hold json.RawMessage) {
+	var holdErr *orgprovider.MassDeletionHoldError
+	switch {
+	case errors.As(err, &holdErr):
+		report, _ := json.Marshal(holdErr.Report)
+		return orgsyncrun.CodeMassDeactivationHold,
+			"This sync would deactivate an unusually large share of users or teams. No changes were made. Review the counts, then fix the provider data or re-run with an explicit override.",
+			report
+	case errors.Is(err, ErrProviderNotConfigured):
+		return orgsyncrun.CodeProviderNotConfigured, "The organization provider is not configured.", nil
+	case errors.Is(err, ErrInvalidSnapshot):
+		// Validation messages name records, not credentials; they are the only
+		// way to diagnose a bad payload.
+		return orgsyncrun.CodeInvalidSnapshot, err.Error(), nil
+	case errors.Is(err, ErrProviderFetchFailed):
+		return orgsyncrun.CodeProviderFetchFailed, "The organization provider could not be reached or returned an unusable response.", nil
+	case errors.Is(err, orgprovider.ErrStaleSnapshot):
+		return orgsyncrun.CodeStaleSnapshot, "The provider snapshot is older than the one already applied, so it was not applied.", nil
+	case errors.Is(err, ErrMaxDeletePercentNotConfigured):
+		return orgsyncrun.CodeInternal, "The saved deactivation threshold is outside the allowed 1-100% range.", nil
+	default:
+		logger.Get().WithError(err).Error("organization sync run failed")
+		return orgsyncrun.CodeDatabase, "The synchronization failed while saving changes. Nothing was changed. Check the server logs and try again.", nil
+	}
+}
+
+// LatestRun and GetRun back the status endpoints.
+func (s *OrganizationSyncService) LatestRun(ctx context.Context) (*orgsyncrun.Run, error) {
+	if s.runs == nil {
+		return nil, nil
+	}
+	return s.runs.Latest(ctx)
+}
+
+func (s *OrganizationSyncService) GetRun(ctx context.Context, id string) (*orgsyncrun.Run, error) {
+	if s.runs == nil {
+		return nil, orgsyncrun.ErrNotFound
+	}
+	return s.runs.Get(ctx, id)
 }

@@ -78,6 +78,13 @@ func (s Snapshot) Validate() ValidationErrors {
 			Message: "generatedAt is required",
 		})
 	}
+	if s.SnapshotType != "" && s.SnapshotType != TypeComplete && s.SnapshotType != TypePartial {
+		errs = append(errs, ValidationError{
+			Entity:  EntitySnapshot,
+			Field:   "snapshotType",
+			Message: fmt.Sprintf("snapshotType must be %q or %q when present", TypeComplete, TypePartial),
+		})
+	}
 	if len(s.Users) == 0 {
 		errs = append(errs, ValidationError{
 			Entity:  EntitySnapshot,

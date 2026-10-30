@@ -10,7 +10,7 @@
  * All endpoints require admin privileges.
  */
 
-import { API_BASE_URL, APIError, APIRequestError, createApiClient } from './client';
+import { API_BASE_URL, APIError, APIRequestError, apiRequest, createApiClient, handleResponse } from './client';
 
 // Re-export shared error types
 export type { APIError };
@@ -67,6 +67,9 @@ export interface AdminUser {
   authType: 'local' | 'sso';
   createdAt: string;
   updatedAt: string;
+  /** False for a soft-deactivated person, who stays listed for history. */
+  isActive: boolean;
+  deactivatedAt?: string | null;
 }
 
 export interface CreateUserRequest {
@@ -109,6 +112,8 @@ export interface ListUsersParams {
   pageSize?: number;
   search?: string;
   role?: string;
+  /** Limit to active or inactive people. Omit for everyone (inactive included). */
+  status?: 'active' | 'inactive';
   signal?: AbortSignal;
 }
 
@@ -137,6 +142,9 @@ export interface AdminTeam {
   memberCount: number;
   createdAt: string;
   updatedAt: string;
+  /** False for a soft-deactivated team, which stays listed for history. */
+  isActive: boolean;
+  deactivatedAt?: string | null;
   // Future OAuth/groups support
   externalGroupId?: string;
 }
@@ -358,12 +366,13 @@ export async function deleteHierarchyLevel(levelId: string): Promise<void> {
  * @returns The requested page of users plus pagination metadata
  */
 export async function listUsers(params: ListUsersParams = {}): Promise<UsersListResponse> {
-  const { page, pageSize, search, role, signal } = params;
+  const { page, pageSize, search, role, status, signal } = params;
   const query = new URLSearchParams();
   if (page !== undefined) query.set('page', String(page));
   if (pageSize !== undefined) query.set('pageSize', String(pageSize));
   if (search) query.set('search', search);
   if (role) query.set('role', role);
+  if (status) query.set('status', status);
 
   const qs = query.toString();
   return createApiClient<UsersListResponse>(
@@ -817,30 +826,43 @@ export interface SkippedProviderUser {
   reason: string;
 }
 
-/** The outcome of one synchronization run. */
-export interface OrganizationSyncResult {
-  status: string;
-  teamsSynced: number;
-  usersSynced: number;
-  membershipsSynced: number;
-  membershipsRemoved: number;
-  healthChecksDisabled: number;
-  healthChecksEnabled: number;
-  usersDeleted: number;
-  teamsDeleted: number;
-  /** Action items removed as a side effect of the deletions above (cascaded, not held back). */
-  actionItemsDeleted: number;
-  usersSkipped: number;
-  skippedUsers?: SkippedProviderUser[];
-  managerLinksCleared: number;
-  teamLeadsCleared: number;
-  membershipsDiscarded: number;
-  /** True when this run only completed because an admin waived the mass-deletion hold. */
-  massDeletionOverridden?: boolean;
-  /** The counts that were waived, present only alongside massDeletionOverridden. */
+/** Persisted lifecycle state of one organization sync run. */
+export type SyncRunStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED';
+
+/**
+ * One organization sync run as the backend persists it. This is the single
+ * source of truth for the Sync Now screen, so a refreshed page re-reads it
+ * instead of guessing.
+ */
+export interface SyncRun {
+  runId: string;
+  status: SyncRunStatus;
+  /** Current step, e.g. UPSERTING_USERS; FAILED once the run has failed. */
+  stage: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  /** Added = newly inserted. Updated = existing and a business field really changed. */
+  insertedUsers: number;
+  updatedUsers: number;
+  /** Existing and identical: never counted as updated. */
+  unchangedUsers: number;
+  insertedTeams: number;
+  updatedTeams: number;
+  unchangedTeams: number;
+  /** Real membership additions, reactivations and removals only. */
+  membershipChanges: number;
+  /** People and teams marked inactive. Nothing is ever hard-deleted. */
+  deactivatedRecords: number;
+  errorCode: string | null;
+  /** Safe to show an administrator; never contains credentials. */
+  errorMessage: string | null;
+  /** The stage that failed, present only when status is FAILED. */
+  failedStage: string | null;
+  /** Counts behind a mass-deactivation hold, when that is why the run failed. */
   massDeletion?: MassDeletionReport;
-  startedAt: string;
-  completedAt: string;
+  /** True when a start request was answered with a run already in flight. */
+  alreadyActive?: boolean;
 }
 
 /**
@@ -959,21 +981,16 @@ export interface MassDeletionReport {
   memberships?: DeletionMetric;
 }
 
-/** The typed `code` the backend sets on a held sync. */
-export const MASS_DELETION_HOLD_CODE = 'mass_deletion_hold';
+/** The typed `errorCode` a run carries when the mass-deactivation guard held it. */
+export const MASS_DEACTIVATION_HOLD_CODE = 'MASS_DEACTIVATION_HOLD';
 
 /**
- * Extracts the mass-deletion report from a failed sync, or null if the failure
- * was something else.
- *
- * Recognition is by the typed `code` field, not by matching message text.
+ * The counts behind a held run, or null if the run failed for another reason.
+ * Recognition is by the typed errorCode, not by matching message text.
  */
-export function getMassDeletionHold(error: unknown): MassDeletionReport | null {
-  const apiError = (error as APIRequestError | undefined)?.apiError as
-    | { code?: string; massDeletion?: MassDeletionReport }
-    | undefined;
-  if (!apiError || apiError.code !== MASS_DELETION_HOLD_CODE) return null;
-  return apiError.massDeletion ?? null;
+export function getMassDeletionHold(run: SyncRun | null | undefined): MassDeletionReport | null {
+  if (!run || run.status !== 'FAILED' || run.errorCode !== MASS_DEACTIVATION_HOLD_CODE) return null;
+  return run.massDeletion ?? null;
 }
 
 /** The four counts an admin reviewed on a held sync's response, echoed back
@@ -1006,7 +1023,7 @@ export interface ConfirmedMassDeletion {
  */
 export async function syncOrganizationProvider(
   options: { overrideMassDeletion?: boolean; confirmedMassDeletion?: ConfirmedMassDeletion } = {}
-): Promise<OrganizationSyncResult> {
+): Promise<SyncRun> {
   const request: RequestInit = { method: 'POST' };
   if (options.overrideMassDeletion) {
     request.body = JSON.stringify({
@@ -1014,8 +1031,27 @@ export async function syncOrganizationProvider(
       confirmedMassDeletion: options.confirmedMassDeletion,
     });
   }
-  return createApiClient<OrganizationSyncResult>(
+  // The backend answers 202 with the PENDING run; the work itself continues in
+  // the background and is followed with getSyncRun.
+  return createApiClient<SyncRun>(
     `${API_BASE_URL}/api/v1/admin/organization-provider/sync`,
     request
   );
+}
+
+/** Reads one run's persisted state. */
+export async function getSyncRun(runId: string): Promise<SyncRun> {
+  return createApiClient<SyncRun>(
+    `${API_BASE_URL}/api/v1/admin/organization-provider/sync/runs/${encodeURIComponent(runId)}`
+  );
+}
+
+/**
+ * The most recent run, or null if no sync has ever run (the backend answers
+ * 204 with no body, which the shared JSON helper cannot parse).
+ */
+export async function getLatestSyncRun(): Promise<SyncRun | null> {
+  const response = await apiRequest(`${API_BASE_URL}/api/v1/admin/organization-provider/sync/runs/latest`);
+  if (response.status === 204) return null;
+  return handleResponse<SyncRun>(response);
 }

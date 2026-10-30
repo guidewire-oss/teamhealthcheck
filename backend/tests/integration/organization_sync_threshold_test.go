@@ -273,7 +273,8 @@ var _ = Describe("Integration: Organization Sync Deletion Threshold", func() {
 
 			w := request(http.MethodPost, syncPath, adminToken, string(override))
 			Expect(w.Code).To(Equal(http.StatusOK), w.Body.String())
-			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'threshold-user-%'`)).To(Equal(0))
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'threshold-user-%' AND is_active`)).To(Equal(0), "deactivated, never deleted")
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'threshold-user-%'`)).To(Equal(5))
 
 			Expect(decode(request(http.MethodGet, thresholdPath, adminToken, "")).Locked).To(BeFalse())
 			Expect(request(http.MethodPut, thresholdPath, adminToken, `{"maxDeletePercent": 50}`).Code).
@@ -300,7 +301,8 @@ var _ = Describe("Integration: Organization Sync Deletion Threshold", func() {
 		w := request(http.MethodPost, "/api/v1/admin/organization-provider/sync", adminToken, "")
 		Expect(w.Code).To(Equal(http.StatusOK), w.Body.String())
 
-		Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'threshold-user-%'`)).To(Equal(0))
+		Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'threshold-user-%' AND is_active`)).To(Equal(0), "deactivated, never deleted")
+		Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'threshold-user-%'`)).To(Equal(5))
 		Expect(countRows(`SELECT COUNT(*) FROM teams WHERE id = 'threshold-team'`)).To(Equal(1))
 	})
 })

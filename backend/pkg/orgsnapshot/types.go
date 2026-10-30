@@ -6,6 +6,12 @@ import "time"
 // ContractVersion is the current snapshot contract version.
 const ContractVersion = "1.0"
 
+// Snapshot types.
+const (
+	TypeComplete = "COMPLETE"
+	TypePartial  = "PARTIAL"
+)
+
 // User represents a person from an external organization data source.
 type User struct {
 	ID               string  `json:"id"`
@@ -32,9 +38,13 @@ type Membership struct {
 
 // Snapshot is a complete provider organization snapshot.
 type Snapshot struct {
-	ContractVersion string       `json:"contractVersion"`
-	GeneratedAt     time.Time    `json:"generatedAt"`
-	Teams           []Team       `json:"teams"`
-	Users           []User       `json:"users"`
-	Memberships     []Membership `json:"memberships"`
+	ContractVersion string    `json:"contractVersion"`
+	GeneratedAt     time.Time `json:"generatedAt"`
+	// SnapshotType is "COMPLETE" or "PARTIAL". Omitted means COMPLETE, which is
+	// what contract v1.0 documents ("the snapshot is complete for its provider").
+	// Only COMPLETE lets a sync deactivate records absent from the payload.
+	SnapshotType string       `json:"snapshotType,omitempty"`
+	Teams        []Team       `json:"teams"`
+	Users        []User       `json:"users"`
+	Memberships  []Membership `json:"memberships"`
 }

@@ -26,6 +26,13 @@ type Team struct {
 	Tags               []string  `json:"tags,omitempty"`
 	CreatedAt          time.Time `json:"createdAt,omitempty"`
 	UpdatedAt          time.Time `json:"updatedAt,omitempty"`
+
+	// IsActive is false for a soft-deactivated team. A team is never deleted:
+	// its surveys, responses and action items keep pointing at it. It becomes
+	// inactive only when it is removed from a complete provider snapshot or an
+	// admin deactivates it -- never because its members or lead changed.
+	IsActive      bool       `json:"isActive"`
+	DeactivatedAt *time.Time `json:"deactivatedAt,omitempty"`
 }
 
 // TeamMember represents a member of a team
@@ -90,6 +97,10 @@ type Repository interface {
 	Save(ctx context.Context, team *Team) error
 	Update(ctx context.Context, team *Team) error
 	Delete(ctx context.Context, id string) error
+	// Deactivate soft-deactivates a team: it is marked inactive and its
+	// memberships end, but the team row and everything referencing it stay.
+	// Deactivating an already inactive team is a no-op.
+	Deactivate(ctx context.Context, id string) error
 	AddMember(ctx context.Context, teamID, userID string) error
 	RemoveMember(ctx context.Context, teamID, userID string) error
 	UpdateSupervisorChain(ctx context.Context, teamID string, chain []*SupervisorLink) error

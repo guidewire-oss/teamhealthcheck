@@ -43,5 +43,6 @@ func SetupOrganizationProviderRoutes(
 		// Manual trigger. There is deliberately no scheduler: a sync can
 		// hard-delete org structure, so a human decides when it happens.
 		admin.POST("/organization-provider/sync", handler.Sync)
+		admin.GET("/organization-provider/sync/runs/:runId", handler.GetSyncRun)
 	}
 }

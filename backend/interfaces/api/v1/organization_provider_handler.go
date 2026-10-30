@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"context"
 	"errors"
 	"io"
 	"math"
@@ -10,6 +11,7 @@ import (
 	"github.com/agopalakrishnan/teams360/backend/application/services"
 	"github.com/agopalakrishnan/teams360/backend/domain/organization"
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
+	"github.com/agopalakrishnan/teams360/backend/domain/orgsyncrun"
 	"github.com/agopalakrishnan/teams360/backend/infrastructure/dataprovider"
 	"github.com/agopalakrishnan/teams360/backend/interfaces/dto"
 	"github.com/agopalakrishnan/teams360/backend/interfaces/middleware"
@@ -44,17 +46,18 @@ func NewOrganizationProviderHandler(
 
 // lockState reports the current threshold lock, tolerating a nil sync service
 // (which only happens in tests that exercise the settings endpoints alone).
-func (h *OrganizationProviderHandler) lockState() services.SyncLockState {
+func (h *OrganizationProviderHandler) lockState(ctx context.Context) services.SyncLockState {
 	if h.syncService == nil {
 		return services.SyncLockState{}
 	}
-	return h.syncService.LockState()
+	return h.syncService.LockState(ctx)
 }
 
 // thresholdResponse builds the settings body, including why the threshold is
 // frozen and at what value, so a tab that has just loaded knows to disable its
 // controls without a second request.
 func (h *OrganizationProviderHandler) thresholdResponse(
+	ctx context.Context,
 	saved *float64,
 	value float64,
 	source string,
@@ -67,7 +70,7 @@ func (h *OrganizationProviderHandler) thresholdResponse(
 		MaxPercent:       services.MaxConfigurableDeletePercent,
 	}
 
-	state := h.lockState()
+	state := h.lockState(ctx)
 	body.Locked = state.Locked()
 	switch {
 	case state.Syncing:
@@ -110,7 +113,7 @@ func (h *OrganizationProviderHandler) GetDeletionThreshold(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, h.thresholdResponse(saved, value, source))
+	c.JSON(http.StatusOK, h.thresholdResponse(c.Request.Context(), saved, value, source))
 }
 
 // UpdateDeletionThreshold handles
@@ -126,7 +129,7 @@ func (h *OrganizationProviderHandler) GetDeletionThreshold(c *gin.Context) {
 func (h *OrganizationProviderHandler) UpdateDeletionThreshold(c *gin.Context) {
 	// Checked before the body is even read, so a request from another tab is
 	// refused on the same grounds as one from this tab.
-	if state := h.lockState(); state.Locked() {
+	if state := h.lockState(c.Request.Context()); state.Locked() {
 		c.JSON(http.StatusConflict, dto.ErrorResponse{
 			Error:   "Deletion threshold is locked",
 			Message: thresholdLockMessage(state),
@@ -166,7 +169,7 @@ func (h *OrganizationProviderHandler) UpdateDeletionThreshold(c *gin.Context) {
 	// Re-checked after validation and immediately before the write: a sync that
 	// started while this request was being parsed must not have its threshold
 	// moved out from under it.
-	if state := h.lockState(); state.Locked() {
+	if state := h.lockState(c.Request.Context()); state.Locked() {
 		c.JSON(http.StatusConflict, dto.ErrorResponse{
 			Error:   "Deletion threshold is locked",
 			Message: thresholdLockMessage(state),
@@ -183,7 +186,7 @@ func (h *OrganizationProviderHandler) UpdateDeletionThreshold(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, h.thresholdResponse(&percent, percent, services.ThresholdSourceAdmin))
+	c.JSON(http.StatusOK, h.thresholdResponse(c.Request.Context(), &percent, percent, services.ThresholdSourceAdmin))
 }
 
 // DismissMassDeletionHold handles
@@ -202,7 +205,7 @@ func (h *OrganizationProviderHandler) DismissMassDeletionHold(c *gin.Context) {
 	}
 
 	// A hold cannot be dismissed out from under a running sync.
-	if h.syncService.LockState().Syncing {
+	if h.syncService.LockState(c.Request.Context()).Syncing {
 		c.JSON(http.StatusConflict, dto.ErrorResponse{
 			Error:   "A synchronization is already running",
 			Message: "Wait for the running synchronization to finish, then try again.",
@@ -230,7 +233,7 @@ func (h *OrganizationProviderHandler) DismissMassDeletionHold(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, h.thresholdResponse(saved, value, source))
+	c.JSON(http.StatusOK, h.thresholdResponse(c.Request.Context(), saved, value, source))
 }
 
 // thresholdLockMessage explains a refusal in the terms the admin is looking at.
@@ -318,11 +321,32 @@ func (h *OrganizationProviderHandler) Sync(c *gin.Context) {
 		}
 	}
 
-	result, err := h.syncService.SyncWithOptions(c.Request.Context(), services.SyncOptions{
+	syncOpts := services.SyncOptions{
 		OverrideMassDeletion:  request.OverrideMassDeletion,
 		ConfirmedMassDeletion: confirmed,
 		ActorUserID:           actorID,
-	})
+	}
+
+	// Persisted runs: accept, record PENDING, and let the client poll. The
+	// synchronous path below remains for deployments without a run store.
+	if h.syncService.RunsEnabled() {
+		run, err := h.syncService.StartRun(c.Request.Context(), syncOpts, c.GetHeader("Idempotency-Key"))
+		switch {
+		case errors.Is(err, orgsyncrun.ErrActiveRunExists) && run != nil:
+			// Follow the run already in flight instead of starting an overlapping one.
+			body := dto.NewSyncRunDTO(run)
+			body.AlreadyActive = true
+			c.JSON(http.StatusAccepted, body)
+		case err != nil:
+			status, response := mapSyncError(err)
+			c.JSON(status, response)
+		default:
+			c.JSON(http.StatusAccepted, dto.NewSyncRunDTO(run))
+		}
+		return
+	}
+
+	result, err := h.syncService.SyncWithOptions(c.Request.Context(), syncOpts)
 	if err != nil {
 		status, response := mapSyncError(err)
 		c.JSON(status, response)
@@ -431,5 +455,37 @@ func deletionMetricDTO(metric orgprovider.DeletionMetric) dto.DeletionMetricDTO 
 		Threshold:         metric.Threshold,
 		ExceedsThreshold:  metric.ExceedsThreshold,
 		ContributesToHold: metric.ContributesToHold,
+	}
+}
+
+// GetSyncRun handles GET /api/v1/admin/organization-provider/sync/runs/:runId.
+// "latest" returns the most recent run, so a refreshed page can restore state
+// without knowing an id; a 204 means no sync has ever run.
+func (h *OrganizationProviderHandler) GetSyncRun(c *gin.Context) {
+	if h.syncService == nil || !h.syncService.RunsEnabled() {
+		c.JSON(http.StatusNotFound, dto.ErrorResponse{Error: "Sync runs are not available"})
+		return
+	}
+	id := c.Param("runId")
+
+	var run *orgsyncrun.Run
+	var err error
+	if id == "latest" {
+		run, err = h.syncService.LatestRun(c.Request.Context())
+		if err == nil && run == nil {
+			c.Status(http.StatusNoContent)
+			return
+		}
+	} else {
+		run, err = h.syncService.GetRun(c.Request.Context(), id)
+	}
+	switch {
+	case errors.Is(err, orgsyncrun.ErrNotFound):
+		c.JSON(http.StatusNotFound, dto.ErrorResponse{Error: "Sync run not found"})
+	case err != nil:
+		logger.Get().WithError(err).Error("failed to load sync run")
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to load sync run"})
+	default:
+		c.JSON(http.StatusOK, dto.NewSyncRunDTO(run))
 	}
 }

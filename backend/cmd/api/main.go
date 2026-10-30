@@ -221,7 +221,8 @@ func main() {
 	// orgRepo also serves the admin-configured mass-deletion threshold; without
 	// it the guard would silently fall back to the environment variable.
 	orgSyncService := services.NewOrganizationSyncService(orgProviderRepo, dataProviderFetcher, userRepo, teamRepo,
-		services.WithDeleteThresholdStore(orgRepo))
+		services.WithDeleteThresholdStore(orgRepo),
+		services.WithRunStore(postgres.NewOrgSyncRunRepository(db)))
 
 	// Initialize router (use gin.New() instead of gin.Default() to disable default logger)
 	router := gin.New()

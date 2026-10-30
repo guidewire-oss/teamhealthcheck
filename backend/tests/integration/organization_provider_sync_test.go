@@ -399,8 +399,8 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 			Expect(json.Unmarshal(w.Body.Bytes(), &result)).To(Succeed())
 			Expect(result.UsersSynced).To(Equal(2))
 			Expect(result.MembershipsRemoved).To(BeZero(), "a repeat sync should not churn membership rows")
-			Expect(result.UsersDeleted).To(BeZero(), "nothing outside the snapshot is missing on a repeat run")
-			Expect(result.TeamsDeleted).To(BeZero())
+			Expect(result.UsersDeactivated).To(BeZero(), "nothing outside the snapshot is missing on a repeat run")
+			Expect(result.TeamsDeactivated).To(BeZero())
 
 			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'sync-user-%'`)).To(Equal(2))
 			Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE team_id LIKE 'sync-team-%'`)).To(Equal(first))
@@ -453,8 +453,7 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 
 				var result services.SyncResult
 				Expect(json.Unmarshal(w.Body.Bytes(), &result)).To(Succeed())
-				Expect(result.UsersDeleted).To(BeZero(), "a re-keyed user is the same person, not a departure")
-				Expect(result.ActionItemsDeleted).To(BeZero())
+				Expect(result.UsersDeactivated).To(BeZero(), "a re-keyed user is the same person, not a departure")
 
 				Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'syncalice'`)).To(Equal(0))
 				Expect(countRows(`SELECT COUNT(*) FROM users WHERE email ILIKE 'syncalice@test.com'`)).To(Equal(1), "no duplicate row")
@@ -608,8 +607,11 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 			Expect(result.MembershipsRemoved).To(Equal(1))
 
 			Expect(countRows(
-				`SELECT COUNT(*) FROM team_members WHERE team_id = 'sync-team-1' AND user_id = 'sync-stale'`,
-			)).To(Equal(0), "a member the provider dropped should be removed")
+				`SELECT COUNT(*) FROM team_members WHERE team_id = 'sync-team-1' AND user_id = 'sync-stale' AND is_active`,
+			)).To(Equal(0), "a member the provider dropped should no longer be active")
+			Expect(countRows(
+				`SELECT COUNT(*) FROM team_members WHERE team_id = 'sync-team-1' AND user_id = 'sync-stale' AND is_active = false`,
+			)).To(Equal(1), "...but the membership row is kept as history")
 
 			Expect(countRows(
 				`SELECT COUNT(*) FROM team_members WHERE team_id = 'sync-team-1' AND user_id = 'sync-exec'`,
@@ -638,10 +640,258 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 			}`
 
 			Expect(doSync(adminToken).Code).To(Equal(http.StatusOK))
-			Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE team_id IN ('sync-team-1','sync-team-2')`)).To(Equal(0), "an explicit empty membership list must clear existing rows, not be ignored")
+			Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE team_id IN ('sync-team-1','sync-team-2') AND is_active`)).To(Equal(0), "an explicit empty membership list must end every active membership")
 		})
 
-		It("should hard-delete a non-protected user missing from the complete snapshot", func() {
+		It("keeps Himani's Hopefarm history when she moves to SRE, and assigns future surveys only through SRE", func() {
+			snapshot := func(generatedAt string, himaniTeam string) string {
+				return `{"contractVersion":"1.0","generatedAt":"` + generatedAt + `",
+					"teams":[{"id":"sync-hopefarm","name":"Hopefarm"},{"id":"sync-sre","name":"SRE"}],
+					"users":[
+						{"id":"sync-himani","username":"synchimani","displayName":"Himani","email":"synchimani@test.com","hierarchyLevelId":"level-5"},
+						{"id":"sync-other","username":"syncother","displayName":"Other","email":"syncother@test.com","hierarchyLevelId":"level-5"}],
+					"memberships":[{"userId":"sync-himani","teamId":"` + himaniTeam + `"},{"userId":"sync-other","teamId":"sync-hopefarm"}]}`
+			}
+
+			providerBody = snapshot("2026-01-10T00:00:00Z", "sync-hopefarm")
+			Expect(doSync(adminToken).Code).To(Equal(http.StatusOK))
+
+			// Himani completes a Q1 Hopefarm survey, with a response and an action item.
+			_, err := db.Exec(`
+				INSERT INTO health_check_sessions (id, team_id, user_id, date, assessment_period, completed)
+				VALUES ('sync-q1-session', 'sync-hopefarm', 'sync-himani', '2026-02-01', '2026 - 1st Half', true)`)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = db.Exec(`INSERT INTO health_check_responses (session_id, dimension_id, score, trend) VALUES ('sync-q1-session','mission',3,'stable')`)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = db.Exec(`INSERT INTO action_items (id, team_id, created_by, title) VALUES ('sync-q1-action','sync-hopefarm','sync-himani','Q1 follow-up')`)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Later the provider says she is in SRE (and no longer in Hopefarm).
+			providerBody = snapshot("2026-04-10T00:00:00Z", "sync-sre")
+			Expect(doSync(adminToken).Code).To(Equal(http.StatusOK))
+
+			Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE user_id='sync-himani' AND team_id='sync-hopefarm' AND is_active = false AND deactivated_at IS NOT NULL`)).
+				To(Equal(1), "the Hopefarm membership is kept as inactive history, not deleted")
+			Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE user_id='sync-himani' AND team_id='sync-sre' AND is_active`)).To(Equal(1))
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id='sync-himani' AND is_active`)).To(Equal(1), "she still has an active membership, so she can sign in")
+
+			Expect(countRows(`SELECT COUNT(*) FROM health_check_sessions WHERE id='sync-q1-session' AND team_id='sync-hopefarm' AND user_id='sync-himani'`)).
+				To(Equal(1), "the Q1 survey stays under Hopefarm")
+			Expect(countRows(`SELECT COUNT(*) FROM health_check_responses WHERE session_id='sync-q1-session'`)).To(Equal(1))
+			Expect(countRows(`SELECT COUNT(*) FROM action_items WHERE id='sync-q1-action' AND team_id='sync-hopefarm'`)).To(Equal(1))
+
+			teamRepo := postgres.NewTeamRepository(db)
+			eligible, err := teamRepo.FindEligibleMemberIDs(context.Background())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(eligible["sync-sre"]).To(ContainElement("sync-himani"), "future surveys go to SRE")
+			Expect(eligible["sync-hopefarm"]).NotTo(ContainElement("sync-himani"), "...and not to Hopefarm")
+
+			// An older snapshot arriving late must not move her back.
+			providerBody = snapshot("2026-01-10T00:00:00Z", "sync-hopefarm")
+			Expect(doSync(adminToken).Code).NotTo(Equal(http.StatusOK))
+			Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE user_id='sync-himani' AND team_id='sync-hopefarm' AND is_active`)).To(Equal(0))
+		})
+
+		It("reports only real changes: an identical re-sync is 0 added, 0 updated, all unchanged, 0 membership changes", func() {
+			syncResult := func() services.SyncResult {
+				w := doSync(adminToken)
+				Expect(w.Code).To(Equal(http.StatusOK), w.Body.String())
+				var r services.SyncResult
+				Expect(json.Unmarshal(w.Body.Bytes(), &r)).To(Succeed())
+				return r
+			}
+
+			first := syncResult()
+			Expect(first.InsertedUsers).To(BeNumerically(">", 0), "the first sync adds the fixture people")
+			Expect(first.InsertedTeams).To(BeNumerically(">", 0))
+
+			var updatedAtBefore string
+			Expect(db.QueryRow(`SELECT updated_at::text FROM users WHERE id = 'sync-user-1'`).Scan(&updatedAtBefore)).To(Succeed())
+
+			second := syncResult()
+			Expect(second.InsertedUsers).To(BeZero())
+			Expect(second.UpdatedUsers).To(BeZero(), "reading a record is not updating it")
+			Expect(second.UnchangedUsers).To(Equal(first.InsertedUsers))
+			Expect(second.InsertedTeams).To(BeZero())
+			Expect(second.UpdatedTeams).To(BeZero())
+			Expect(second.UnchangedTeams).To(Equal(first.InsertedTeams))
+			Expect(second.MembershipChanges).To(BeZero())
+			Expect(second.UsersDeactivated).To(BeZero())
+			Expect(second.TeamsDeactivated).To(BeZero())
+
+			var updatedAtAfter string
+			Expect(db.QueryRow(`SELECT updated_at::text FROM users WHERE id = 'sync-user-1'`).Scan(&updatedAtAfter)).To(Succeed())
+			Expect(updatedAtAfter).To(Equal(updatedAtBefore), "an unchanged record must not even have its timestamp touched")
+		})
+
+		It("counts a record as updated only when a business field really changed, and ignores case and whitespace noise", func() {
+			firstResp := doSync(adminToken)
+			Expect(firstResp.Code).To(Equal(http.StatusOK))
+			var initial services.SyncResult
+			Expect(json.Unmarshal(firstResp.Body.Bytes(), &initial)).To(Succeed())
+			// Some fixture users are skipped for an unknown hierarchy level, so the
+			// imported count -- not the payload size -- is what "unchanged" is out of.
+			imported := initial.InsertedUsers
+			Expect(imported).To(BeNumerically(">", 1))
+
+			var snap map[string]any
+			Expect(json.Unmarshal([]byte(providerBody), &snap)).To(Succeed())
+			users := snap["users"].([]any)
+			first := users[0].(map[string]any)
+			first["email"] = strings.ToUpper(first["email"].(string))          // same address, different case
+			first["displayName"] = "  " + first["displayName"].(string) + "  " // same name, extra spaces
+			b, _ := json.Marshal(snap)
+			providerBody = string(b)
+
+			w := doSync(adminToken)
+			Expect(w.Code).To(Equal(http.StatusOK), w.Body.String())
+			var noise services.SyncResult
+			Expect(json.Unmarshal(w.Body.Bytes(), &noise)).To(Succeed())
+			Expect(noise.UpdatedUsers).To(BeZero(), "case/whitespace-only differences are not a change")
+
+			first["displayName"] = "Renamed Person"
+			b, _ = json.Marshal(snap)
+			providerBody = string(b)
+
+			w = doSync(adminToken)
+			Expect(w.Code).To(Equal(http.StatusOK), w.Body.String())
+			var changed services.SyncResult
+			Expect(json.Unmarshal(w.Body.Bytes(), &changed)).To(Succeed())
+			Expect(changed.UpdatedUsers).To(Equal(1))
+			Expect(changed.InsertedUsers).To(BeZero())
+			Expect(changed.UnchangedUsers).To(Equal(imported-1), "everyone imported except the one renamed person is unchanged")
+		})
+
+		Describe("team status follows the provider snapshot, not member or lead changes", func() {
+			// teamSnapshot builds a complete snapshot with two teams (Hopefarm, SRE)
+			// and two people. lead is Hopefarm's team lead id ("" omits it);
+			// hopefarmMembers/sreMembers are the member ids of each team; includeSRE
+			// controls whether SRE appears in the snapshot at all.
+			teamSnapshot := func(generatedAt, lead string, hopefarmMembers, sreMembers []string, includeSRE bool) string {
+				hopefarm := `{"id":"ts-hopefarm","name":"Hopefarm"`
+				if lead != "" {
+					hopefarm += `,"teamLeadId":"` + lead + `"`
+				}
+				hopefarm += `}`
+				teams := hopefarm
+				memberships := ""
+				add := func(teamID string, ids []string) {
+					for _, id := range ids {
+						if memberships != "" {
+							memberships += ","
+						}
+						memberships += `{"userId":"` + id + `","teamId":"` + teamID + `"}`
+					}
+				}
+				add("ts-hopefarm", hopefarmMembers)
+				if includeSRE {
+					teams += `,{"id":"ts-sre","name":"SRE"}`
+					add("ts-sre", sreMembers)
+				}
+				return `{"contractVersion":"1.0","generatedAt":"` + generatedAt + `",
+					"teams":[` + teams + `],
+					"users":[
+						{"id":"ts-a","username":"tsalpha","displayName":"Alpha","email":"tsalpha@test.com","hierarchyLevelId":"level-5"},
+						{"id":"ts-b","username":"tsbeta","displayName":"Beta","email":"tsbeta@test.com","hierarchyLevelId":"level-5"}],
+					"memberships":[` + memberships + `]}`
+			}
+			teamActive := func(id string) int {
+				return countRows(`SELECT COUNT(*) FROM teams WHERE id = $1 AND is_active AND deactivated_at IS NULL`, id)
+			}
+			runSync := func() services.SyncResult {
+				w := doSync(adminToken)
+				Expect(w.Code).To(Equal(http.StatusOK), w.Body.String())
+				var r services.SyncResult
+				Expect(json.Unmarshal(w.Body.Bytes(), &r)).To(Succeed())
+				return r
+			}
+
+			It("keeps a team active when only its team lead and members change", func() {
+				providerBody = teamSnapshot("2026-01-10T00:00:00Z", "", []string{"ts-a", "ts-b"}, nil, true)
+				runSync()
+				Expect(teamActive("ts-hopefarm")).To(Equal(1))
+
+				// Lead appears, one member leaves, the other joins SRE.
+				providerBody = teamSnapshot("2026-02-10T00:00:00Z", "ts-a", []string{"ts-a"}, []string{"ts-b"}, true)
+				second := runSync()
+
+				Expect(second.TeamsDeactivated).To(BeZero(), "a lead or membership change is not a team removal")
+				Expect(teamActive("ts-hopefarm")).To(Equal(1))
+				Expect(teamActive("ts-sre")).To(Equal(1))
+				Expect(countRows(`SELECT COUNT(*) FROM teams WHERE id='ts-hopefarm' AND team_lead_id='ts-a'`)).To(Equal(1), "the lead change itself is applied")
+				Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE team_id='ts-hopefarm' AND user_id='ts-b' AND is_active = false`)).To(Equal(1),
+					"the member who left keeps an inactive membership")
+			})
+
+			It("keeps a team active when its members are emptied but the provider still reports the team", func() {
+				providerBody = teamSnapshot("2026-01-10T00:00:00Z", "", []string{"ts-a", "ts-b"}, nil, true)
+				runSync()
+				providerBody = teamSnapshot("2026-02-10T00:00:00Z", "", nil, []string{"ts-a", "ts-b"}, true)
+				Expect(runSync().TeamsDeactivated).To(BeZero())
+				Expect(teamActive("ts-hopefarm")).To(Equal(1), "still reported, so still active, even with no members")
+			})
+
+			It("marks a team inactive only when it is missing from a COMPLETE snapshot, and never deletes it", func() {
+				providerBody = teamSnapshot("2026-01-10T00:00:00Z", "", []string{"ts-a"}, []string{"ts-b"}, true)
+				runSync()
+
+				providerBody = teamSnapshot("2026-02-10T00:00:00Z", "", []string{"ts-a"}, nil, false) // SRE removed
+				removed := runSync()
+
+				Expect(removed.TeamsDeactivated).To(Equal(1))
+				Expect(countRows(`SELECT COUNT(*) FROM teams WHERE id='ts-sre'`)).To(Equal(1), "never hard-deleted")
+				Expect(countRows(`SELECT COUNT(*) FROM teams WHERE id='ts-sre' AND is_active = false AND deactivated_at IS NOT NULL`)).To(Equal(1))
+				Expect(teamActive("ts-hopefarm")).To(Equal(1), "teams still in the snapshot are untouched")
+			})
+
+			It("reactivates a team the provider reports again", func() {
+				providerBody = teamSnapshot("2026-01-10T00:00:00Z", "", []string{"ts-a"}, []string{"ts-b"}, true)
+				runSync()
+				providerBody = teamSnapshot("2026-02-10T00:00:00Z", "", []string{"ts-a"}, nil, false)
+				runSync()
+				Expect(teamActive("ts-sre")).To(BeZero())
+
+				providerBody = teamSnapshot("2026-03-10T00:00:00Z", "", []string{"ts-a"}, []string{"ts-b"}, true)
+				back := runSync()
+
+				Expect(teamActive("ts-sre")).To(Equal(1), "reported again, so active again")
+				Expect(back.UpdatedTeams).To(BeNumerically(">=", 1), "a reactivation is a real change")
+			})
+
+			It("leaves a team untouched when it is missing from a PARTIAL snapshot", func() {
+				providerBody = teamSnapshot("2026-01-10T00:00:00Z", "", []string{"ts-a"}, []string{"ts-b"}, true)
+				runSync()
+
+				var snap map[string]any
+				Expect(json.Unmarshal([]byte(teamSnapshot("2026-02-10T00:00:00Z", "", []string{"ts-a"}, nil, false)), &snap)).To(Succeed())
+				snap["snapshotType"] = "PARTIAL"
+				b, _ := json.Marshal(snap)
+				providerBody = string(b)
+
+				Expect(runSync().TeamsDeactivated).To(BeZero())
+				Expect(teamActive("ts-sre")).To(Equal(1), "a partial payload says nothing about who is absent")
+			})
+		})
+
+		It("leaves records absent from a PARTIAL snapshot untouched", func() {
+			Expect(doSync(adminToken).Code).To(Equal(http.StatusOK))
+			_, err := db.Exec(`
+				INSERT INTO users (id, username, email, full_name, hierarchy_level_id, password_hash)
+				VALUES ('sync-absent', 'syncabsent', 'syncabsent@test.com', 'Absent', 'level-5', '')`)
+			Expect(err).NotTo(HaveOccurred())
+
+			var snap map[string]any
+			Expect(json.Unmarshal([]byte(providerBody), &snap)).To(Succeed())
+			snap["snapshotType"] = "PARTIAL"
+			snap["generatedAt"] = "2099-01-01T00:00:00Z"
+			b, _ := json.Marshal(snap)
+			providerBody = string(b)
+
+			Expect(doSync(adminToken).Code).To(Equal(http.StatusOK))
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id='sync-absent' AND is_active`)).To(Equal(1))
+		})
+
+		It("should soft-deactivate a non-protected user missing from the complete snapshot", func() {
 			Expect(doSync(adminToken).Code).To(Equal(http.StatusOK))
 
 			_, err := db.Exec(`
@@ -655,12 +905,13 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 
 			var result services.SyncResult
 			Expect(json.Unmarshal(w.Body.Bytes(), &result)).To(Succeed())
-			Expect(result.UsersDeleted).To(Equal(1))
+			Expect(result.UsersDeactivated).To(Equal(1))
 
-			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'sync-departed'`)).To(Equal(0))
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'sync-departed'`)).To(Equal(1), "people are never hard-deleted")
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'sync-departed' AND is_active = false`)).To(Equal(1))
 		})
 
-		It("should hard-delete a non-protected team missing from the complete snapshot, cascading its memberships", func() {
+		It("should deactivate a non-protected team missing from the complete snapshot and end its memberships, keeping the rows", func() {
 			_, err := db.Exec(`INSERT INTO teams (id, name) VALUES ('sync-gone-team', 'Gone Team')`)
 			Expect(err).NotTo(HaveOccurred())
 			_, err = db.Exec(`
@@ -676,13 +927,13 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 
 			var result services.SyncResult
 			Expect(json.Unmarshal(w.Body.Bytes(), &result)).To(Succeed())
-			Expect(result.TeamsDeleted).To(Equal(1))
+			Expect(result.TeamsDeactivated).To(Equal(1))
 
-			Expect(countRows(`SELECT COUNT(*) FROM teams WHERE id = 'sync-gone-team'`)).To(Equal(0))
-			Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE team_id = 'sync-gone-team'`)).To(Equal(0), "cascade must remove the deleted team's memberships")
+			Expect(countRows(`SELECT COUNT(*) FROM teams WHERE id = 'sync-gone-team' AND is_active = false`)).To(Equal(1))
+			Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE team_id = 'sync-gone-team' AND is_active = false`)).To(Equal(1), "membership is kept as inactive history")
 		})
 
-		It("should hard-delete a user or team that owns an action item, cascading it, and report the cascade count", func() {
+		It("should deactivate a user or team that owns an action item and keep the action item", func() {
 			// Per the approved design, the provider is authoritative and nothing about
 			// owning an action item exempts a record from deletion -- unlike
 			// health-check history, action_items has no FK-less escape hatch
@@ -708,16 +959,15 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 
 			var result services.SyncResult
 			Expect(json.Unmarshal(w.Body.Bytes(), &result)).To(Succeed())
-			Expect(result.UsersDeleted).To(BeNumerically(">=", 1))
-			Expect(result.TeamsDeleted).To(Equal(1))
-			Expect(result.ActionItemsDeleted).To(Equal(1), "the cascade must be counted and surfaced, since it can't be prevented")
+			Expect(result.UsersDeactivated).To(BeNumerically(">=", 1))
+			Expect(result.TeamsDeactivated).To(Equal(1))
 
-			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'sync-owner'`)).To(Equal(0), "the provider is authoritative -- owning an action item does not exempt a record from deletion")
-			Expect(countRows(`SELECT COUNT(*) FROM teams WHERE id = 'sync-owned-team'`)).To(Equal(0))
-			Expect(countRows(`SELECT COUNT(*) FROM action_items WHERE id = 'sync-action-1'`)).To(Equal(0), "cascaded away by the existing FK -- not something this sync can prevent without a schema change")
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'sync-owner' AND is_active = false`)).To(Equal(1))
+			Expect(countRows(`SELECT COUNT(*) FROM teams WHERE id = 'sync-owned-team' AND is_active = false`)).To(Equal(1))
+			Expect(countRows(`SELECT COUNT(*) FROM action_items WHERE id = 'sync-action-1'`)).To(Equal(1), "action items survive deactivation")
 		})
 
-		It("should never delete or alter health-check history when a user/team is hard-deleted", func() {
+		It("should never delete or alter health-check history when a user/team is deactivated", func() {
 			_, err := db.Exec(`
 				INSERT INTO users (id, username, email, full_name, hierarchy_level_id, password_hash)
 				VALUES ('sync-history-user', 'synchistoryuser', 'synchistoryuser@test.com', 'History User', 'level-5', '')
@@ -741,11 +991,11 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 
 			var result services.SyncResult
 			Expect(json.Unmarshal(w.Body.Bytes(), &result)).To(Succeed())
-			Expect(result.UsersDeleted).To(Equal(1))
-			Expect(result.TeamsDeleted).To(Equal(1))
+			Expect(result.UsersDeactivated).To(Equal(1))
+			Expect(result.TeamsDeactivated).To(Equal(1))
 
-			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'sync-history-user'`)).To(Equal(0))
-			Expect(countRows(`SELECT COUNT(*) FROM teams WHERE id = 'sync-history-team'`)).To(Equal(0))
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'sync-history-user' AND is_active = false`)).To(Equal(1))
+			Expect(countRows(`SELECT COUNT(*) FROM teams WHERE id = 'sync-history-team' AND is_active = false`)).To(Equal(1))
 
 			// The session/response rows themselves are untouched -- there is no
 			// foreign key from health_check_sessions to users/teams (deferred in
@@ -780,7 +1030,7 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 
 			var result services.SyncResult
 			Expect(json.Unmarshal(w.Body.Bytes(), &result)).To(Succeed())
-			Expect(result.UsersDeleted).To(BeZero(), "protected fixtures are excluded from the deletion scope entirely")
+			Expect(result.UsersDeactivated).To(BeZero(), "protected fixtures are excluded from the deletion scope entirely")
 
 			for _, id := range []string{"demo", "vp", "e2e_demo"} {
 				Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = $1`, id)).To(Equal(1), id+" must survive")
@@ -823,6 +1073,7 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 				_, err := db.Exec(`
 					INSERT INTO users (id, username, email, full_name, hierarchy_level_id, password_hash)
 					VALUES ($1, $1, $2, $1, 'level-5', '')
+					ON CONFLICT (id) DO UPDATE SET is_active = true, deactivated_at = NULL
 				`, name, name+"@test.com")
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -942,6 +1193,7 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 				_, err := db.Exec(`
 					INSERT INTO users (id, username, email, full_name, hierarchy_level_id, password_hash)
 					VALUES ($1, $1, $2, $1, 'level-5', '')
+					ON CONFLICT (id) DO UPDATE SET is_active = true, deactivated_at = NULL
 				`, name, name+"@test.com")
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -1037,7 +1289,9 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 			var result services.SyncResult
 			Expect(json.Unmarshal(w.Body.Bytes(), &result)).To(Succeed())
 			Expect(result.MembershipsRemoved).To(Equal(1))
-			Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE team_id = 'sync-team-1' AND user_id = 'sync-bulk-a'`)).To(BeZero())
+			Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE team_id = 'sync-team-1' AND user_id = 'sync-bulk-a' AND is_active`)).To(BeZero())
+			Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE team_id = 'sync-team-1' AND user_id = 'sync-bulk-a' AND is_active = false`)).To(Equal(1),
+				"the membership is kept as inactive history")
 		})
 
 		It("should write nothing at all while held", func() {
@@ -1070,9 +1324,10 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 			Expect(result.MassDeletionOverridden).To(BeTrue())
 			Expect(result.MassDeletion).NotTo(BeNil(), "an overridden run reports what it waived")
 			Expect(result.MassDeletion.Users.Deleting).To(Equal(5))
-			Expect(result.UsersDeleted).To(Equal(5))
+			Expect(result.UsersDeactivated).To(Equal(5))
 
-			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'sync-bulk-%'`)).To(BeZero())
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'sync-bulk-%' AND is_active`)).To(BeZero())
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'sync-bulk-%' AND is_active = false`)).To(Equal(5), "deactivated, never deleted")
 			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'sync-user-%'`)).To(Equal(2), "the snapshot's users are imported by the overridden run")
 		})
 
@@ -1133,7 +1388,7 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 
 			w2 := doSyncWithBody(adminToken, string(freshConfirmation))
 			Expect(w2.Code).To(Equal(http.StatusOK), w2.Body.String())
-			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'sync-bulk-%' OR id LIKE 'sync-more-%'`)).To(BeZero())
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE (id LIKE 'sync-bulk-%' OR id LIKE 'sync-more-%') AND is_active`)).To(BeZero())
 		})
 
 		It("should scope the override to the one request carrying it", func() {
@@ -1199,7 +1454,8 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 			for _, id := range []string{"team-phoenix", "e2e_team1"} {
 				Expect(countRows(`SELECT COUNT(*) FROM teams WHERE id = $1`, id)).To(Equal(1), id+" must survive an overridden sync")
 			}
-			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'sync-bulk-%'`)).To(BeZero(), "the override still deletes the non-protected records")
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'sync-bulk-%' AND is_active`)).To(BeZero(), "the override still deactivates the non-protected records")
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id LIKE 'sync-bulk-%'`)).To(Equal(5), "...but never deletes them")
 		})
 
 		It("should still preserve health-check history when overriding", func() {
