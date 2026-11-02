@@ -64,6 +64,8 @@ function useModalFocusTrap(active: boolean, containerRef: React.RefObject<HTMLDi
   useEffect(() => {
     if (!active) return;
 
+    const opener = document.activeElement as HTMLElement | null;
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -95,7 +97,12 @@ function useModalFocusTrap(active: boolean, containerRef: React.RefObject<HTMLDi
     };
 
     document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (opener && document.contains(opener)) {
+        opener.focus();
+      }
+    };
   }, [active, containerRef, onClose]);
 }
 
