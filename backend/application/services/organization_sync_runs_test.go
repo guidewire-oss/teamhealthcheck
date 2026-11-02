@@ -23,6 +23,8 @@ type memStore struct {
 	lockHeld  bool
 	lockFail  int   // number of TryLock calls to refuse before granting
 	activeErr error // when set, Active fails (to prove the lock state fails closed)
+	recovered int   // number of RecoverStale sweeps requested
+	markErr   error // when set, MarkRunning fails with it (to prove the run is failed, not left PENDING)
 }
 
 func newMemStore() *memStore {
@@ -113,6 +115,12 @@ func (m *memStore) SetStage(_ context.Context, id string, st orgsyncrun.Stage) e
 }
 
 func (m *memStore) MarkRunning(_ context.Context, id, _ string) error {
+	m.mu.Lock()
+	markErr := m.markErr
+	m.mu.Unlock()
+	if markErr != nil {
+		return markErr
+	}
 	return m.move(id, orgsyncrun.StatusRunning, func(*orgsyncrun.Run) {})
 }
 
@@ -129,7 +137,12 @@ func (m *memStore) succeed(id string) error {
 	return m.move(id, orgsyncrun.StatusSuccess, func(r *orgsyncrun.Run) { r.Stage = orgsyncrun.StageCompleted })
 }
 
-func (m *memStore) RecoverStale(context.Context, time.Duration) (int, error) { return 0, nil }
+func (m *memStore) RecoverStale(context.Context, time.Duration) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recovered++
+	return 0, nil
+}
 
 func (m *memStore) TryLock(context.Context) (func(), bool, error) {
 	m.mu.Lock()
@@ -541,5 +554,96 @@ func TestOldCompletedRunsNeverLockTheGuard(t *testing.T) {
 	svc := services.NewOrganizationSyncService(&runRepo{store: store}, typedFetcher{}, nil, nil, services.WithRunStore(store))
 	if svc.LockState(context.Background()).Locked() {
 		t.Fatal("terminal runs must never keep the guard locked")
+	}
+}
+
+// Polling the status endpoint must itself sweep for crashed runs, or a run
+// abandoned by a dead worker would be reported as in progress forever.
+func TestRunReadsRecoverStaleRunsFirst(t *testing.T) {
+	store := newMemStore()
+	svc := services.NewOrganizationSyncService(&runRepo{store: store}, typedFetcher{}, nil, nil, services.WithRunStore(store))
+	run, _, _ := store.CreatePending(context.Background(), orgsyncrun.NewParams{ID: "r1"})
+
+	if _, err := svc.GetRun(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if store.recovered != 1 {
+		t.Fatalf("GetRun must sweep stale runs before reading, sweeps=%d", store.recovered)
+	}
+	if _, err := svc.LatestRun(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.recovered != 2 {
+		t.Fatalf("LatestRun must sweep stale runs before reading, sweeps=%d", store.recovered)
+	}
+}
+
+// The synchronous path must honour the same cross-instance lock persisted runs
+// use, or it could apply at the same time as a run on another replica.
+func TestSynchronousSyncRespectsTheCrossInstanceLock(t *testing.T) {
+	store := newMemStore()
+	store.lockHeld = true // a persisted run on another replica holds the lock
+	svc := services.NewOrganizationSyncService(&runRepo{store: store}, typedFetcher{}, nil, nil, services.WithRunStore(store))
+
+	if _, err := svc.SyncWithOptions(context.Background(), services.SyncOptions{}); !errors.Is(err, services.ErrSyncInProgress) {
+		t.Fatalf("a held cross-instance lock must reject the synchronous path, got %v", err)
+	}
+
+	store.mu.Lock()
+	store.lockHeld = false
+	store.mu.Unlock()
+	if _, err := svc.SyncWithOptions(context.Background(), services.SyncOptions{}); errors.Is(err, services.ErrSyncInProgress) {
+		t.Fatal("a rejected attempt must not leave the in-process flag stuck")
+	}
+	store.mu.Lock()
+	held := store.lockHeld
+	store.mu.Unlock()
+	if held {
+		t.Fatal("the synchronous path must release the lock it took")
+	}
+}
+
+// A database error moving the run to RUNNING must fail the run, not strand it
+// PENDING where it would block new runs until the stale sweep.
+func TestMarkRunningDatabaseErrorFailsTheRun(t *testing.T) {
+	fastTiming(t)
+	store := newMemStore()
+	store.markErr = errors.New("pq: connection reset by peer")
+	svc := services.NewOrganizationSyncService(&runRepo{store: store}, typedFetcher{}, nil, nil, services.WithRunStore(store))
+
+	run, err := svc.StartRun(context.Background(), services.SyncOptions{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitTerminal(t, svc, run.ID)
+
+	if done.Status != orgsyncrun.StatusFailed {
+		t.Fatalf("want FAILED, got %s", done.Status)
+	}
+	if done.ErrorCode == nil || *done.ErrorCode != orgsyncrun.CodeDatabase {
+		t.Fatalf("want %s, got %v", orgsyncrun.CodeDatabase, done.ErrorCode)
+	}
+	if got := *done.ErrorMessage; contains(got, "pq:") {
+		t.Fatalf("error message must be safe, got %q", got)
+	}
+	if active, _ := store.Active(context.Background()); active != nil {
+		t.Fatal("a failed run must not stay active")
+	}
+}
+
+// The race with the recovery sweep is still handled quietly: the run was already
+// failed elsewhere, so it is neither run nor overwritten.
+func TestMarkRunningAlreadyFinishedElsewhereIsLeftAlone(t *testing.T) {
+	fastTiming(t)
+	store := newMemStore()
+	store.markErr = orgsyncrun.ErrNotTransitionable
+	svc := services.NewOrganizationSyncService(&runRepo{store: store}, typedFetcher{}, nil, nil, services.WithRunStore(store))
+
+	run, _ := svc.StartRun(context.Background(), services.SyncOptions{}, "")
+	time.Sleep(50 * time.Millisecond)
+
+	got, _ := svc.GetRun(context.Background(), run.ID)
+	if got.Status != orgsyncrun.StatusPending {
+		t.Fatalf("a run finished elsewhere must not be rewritten by this worker, got %s", got.Status)
 	}
 }

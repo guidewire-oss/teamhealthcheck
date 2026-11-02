@@ -3,12 +3,15 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
 	"github.com/agopalakrishnan/teams360/backend/domain/orgsyncrun"
+	"github.com/agopalakrishnan/teams360/backend/pkg/logger"
 	"github.com/lib/pq"
 )
 
@@ -18,6 +21,17 @@ const orgSyncLockKey int64 = 0x4f5247_53594e43
 
 // maxErrorMessage matches the org_sync_runs.error_message column.
 const maxErrorMessage = 500
+
+// truncateRunes cuts s to at most max characters without splitting a UTF-8
+// sequence. The error_message column is VARCHAR(500), which counts characters,
+// and Postgres rejects invalid UTF-8, so a byte-based cut could make the failure
+// update itself fail and leave the run active.
+func truncateRunes(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return string([]rune(s)[:max])
+}
 
 // OrgSyncRunRepository implements orgsyncrun.Store on PostgreSQL.
 type OrgSyncRunRepository struct {
@@ -32,7 +46,8 @@ func NewOrgSyncRunRepository(db *sql.DB) *OrgSyncRunRepository {
 const runColumns = `id, status, stage, initiated_by, snapshot_type, source_generated_at,
 	created_at, started_at, completed_at, heartbeat_at,
 	inserted_users, updated_users, inserted_teams, updated_teams, membership_changes,
-	unchanged_users, unchanged_teams, deactivated_records, retry_count, error_code, error_message, failed_stage, worker_id, hold_report`
+	unchanged_users, unchanged_teams, deactivated_records, retry_count, error_code, error_message, failed_stage, worker_id, hold_report,
+	health_checks_disabled, health_checks_enabled, mass_deletion_overridden`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -47,7 +62,8 @@ func scanRun(row rowScanner) (*orgsyncrun.Run, error) {
 	if err := row.Scan(&r.ID, &status, &stage, &r.InitiatedBy, &snapType, &srcAt,
 		&r.CreatedAt, &started, &completed, &heartbeat,
 		&r.InsertedUsers, &r.UpdatedUsers, &r.InsertedTeams, &r.UpdatedTeams, &r.MembershipChanges,
-		&r.UnchangedUsers, &r.UnchangedTeams, &r.DeactivatedRecords, &r.RetryCount, &errCode, &errMsg, &failedStage, &workerID, &hold); err != nil {
+		&r.UnchangedUsers, &r.UnchangedTeams, &r.DeactivatedRecords, &r.RetryCount, &errCode, &errMsg, &failedStage, &workerID, &hold,
+		&r.HealthChecksDisabled, &r.HealthChecksEnabled, &r.MassDeletionOverridden); err != nil {
 		return nil, err
 	}
 	r.Status = orgsyncrun.Status(status)
@@ -101,8 +117,8 @@ func (r *OrgSyncRunRepository) CreatePending(ctx context.Context, p orgsyncrun.N
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO org_sync_runs (id, status, stage, initiated_by, idempotency_key, snapshot_type)
-		VALUES ($1, 'PENDING', 'QUEUED', $2, $3, $4)
-	`, p.ID, p.InitiatedBy, key, string(p.SnapshotType))
+		VALUES ($1, 'PENDING', $5, $2, $3, $4)
+	`, p.ID, p.InitiatedBy, key, string(p.SnapshotType), string(orgsyncrun.StageQueued))
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
@@ -129,7 +145,8 @@ func (r *OrgSyncRunRepository) byIdempotencyKey(ctx context.Context, key string)
 
 func (r *OrgSyncRunRepository) active(ctx context.Context) (*orgsyncrun.Run, error) {
 	run, err := scanRun(r.db.QueryRowContext(ctx,
-		`SELECT `+runColumns+` FROM org_sync_runs WHERE status IN ('PENDING','RUNNING') ORDER BY created_at DESC LIMIT 1`))
+		`SELECT `+runColumns+` FROM org_sync_runs WHERE status = ANY($1) ORDER BY created_at DESC LIMIT 1`,
+		pq.Array(orgsyncrun.ActiveStatuses())))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, orgsyncrun.ErrActiveRunExists
 	}
@@ -139,7 +156,8 @@ func (r *OrgSyncRunRepository) active(ctx context.Context) (*orgsyncrun.Run, err
 // Active returns the PENDING or RUNNING run, or nil when no sync is in progress.
 func (r *OrgSyncRunRepository) Active(ctx context.Context) (*orgsyncrun.Run, error) {
 	run, err := scanRun(r.db.QueryRowContext(ctx,
-		`SELECT `+runColumns+` FROM org_sync_runs WHERE status IN ('PENDING','RUNNING') ORDER BY created_at DESC LIMIT 1`))
+		`SELECT `+runColumns+` FROM org_sync_runs WHERE status = ANY($1) ORDER BY created_at DESC LIMIT 1`,
+		pq.Array(orgsyncrun.ActiveStatuses())))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -168,7 +186,7 @@ func (r *OrgSyncRunRepository) Latest(ctx context.Context) (*orgsyncrun.Run, err
 func (r *OrgSyncRunRepository) SetStage(ctx context.Context, id string, stage orgsyncrun.Stage) error {
 	return r.expectOne(ctx, `
 		UPDATE org_sync_runs SET stage = $2, heartbeat_at = CURRENT_TIMESTAMP
-		WHERE id = $1 AND status IN ('PENDING','RUNNING')`, id, string(stage))
+		WHERE id = $1 AND status = ANY($3)`, id, string(stage), pq.Array(orgsyncrun.ActiveStatuses()))
 }
 
 // MarkRunning moves PENDING -> RUNNING.
@@ -176,37 +194,35 @@ func (r *OrgSyncRunRepository) MarkRunning(ctx context.Context, id, workerID str
 	return r.expectOne(ctx, `
 		UPDATE org_sync_runs SET status = 'RUNNING', started_at = CURRENT_TIMESTAMP,
 			heartbeat_at = CURRENT_TIMESTAMP, worker_id = $2
-		WHERE id = $1 AND status = 'PENDING'`, id, workerID)
+		WHERE id = $1 AND status = ANY($3)`, id, workerID, pq.Array(orgsyncrun.StatusesBefore(orgsyncrun.StatusRunning)))
 }
 
 // Fail moves a non-terminal run to FAILED, recording the stage it failed in.
 func (r *OrgSyncRunRepository) Fail(ctx context.Context, id string, f orgsyncrun.Failure) error {
-	msg := f.Message
-	if len(msg) > maxErrorMessage {
-		msg = msg[:maxErrorMessage]
-	}
+	msg := truncateRunes(f.Message, maxErrorMessage)
 	var hold any
 	if len(f.HoldReport) > 0 {
 		hold = []byte(f.HoldReport)
 	}
 	return r.expectOne(ctx, `
-		UPDATE org_sync_runs SET status = 'FAILED', stage = 'FAILED', failed_stage = $2,
+		UPDATE org_sync_runs SET status = 'FAILED', stage = $7, failed_stage = $2,
 			error_code = $3, error_message = $4, hold_report = $5,
 			completed_at = CURRENT_TIMESTAMP, heartbeat_at = CURRENT_TIMESTAMP
-		WHERE id = $1 AND status IN ('PENDING','RUNNING')`,
-		id, string(f.Stage), f.Code, msg, hold)
+		WHERE id = $1 AND status = ANY($6)`,
+		id, string(f.Stage), f.Code, msg, hold, pq.Array(orgsyncrun.StatusesBefore(orgsyncrun.StatusFailed)),
+		string(orgsyncrun.StageFailed))
 }
 
 // RecoverStale fails runs abandoned by a crashed worker so the single-active
 // index frees up and the UI stops showing them as in progress.
 func (r *OrgSyncRunRepository) RecoverStale(ctx context.Context, ttl time.Duration) (int, error) {
 	res, err := r.db.ExecContext(ctx, `
-		UPDATE org_sync_runs SET status = 'FAILED', failed_stage = stage, stage = 'FAILED',
+		UPDATE org_sync_runs SET status = 'FAILED', failed_stage = stage, stage = $3,
 			error_code = $2, error_message = 'The synchronization stopped responding and was marked failed. It is safe to run it again.',
 			completed_at = CURRENT_TIMESTAMP
 		WHERE (status = 'RUNNING' AND COALESCE(heartbeat_at, started_at, created_at) < NOW() - make_interval(secs => $1))
 		   OR (status = 'PENDING' AND created_at < NOW() - make_interval(secs => $1))
-	`, ttl.Seconds(), orgsyncrun.CodeStaleRun)
+	`, ttl.Seconds(), orgsyncrun.CodeStaleRun, string(orgsyncrun.StageFailed))
 	if err != nil {
 		return 0, fmt.Errorf("failed to recover stale sync runs: %w", err)
 	}
@@ -236,7 +252,17 @@ func (r *OrgSyncRunRepository) TryLock(ctx context.Context) (func(), bool, error
 		// A fresh context: release must still run when the request context is gone.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_, _ = conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, orgSyncLockKey)
+		var unlocked bool
+		err := conn.QueryRowContext(ctx, `SELECT pg_advisory_unlock($1)`, orgSyncLockKey).Scan(&unlocked)
+		if err != nil || !unlocked {
+			// The lock belongs to this database session, so returning the
+			// connection to the pool would keep it held and block every other
+			// replica until the connection happens to close. Report the
+			// connection as bad so database/sql closes it instead; ending the
+			// session releases the lock.
+			logger.Get().WithError(err).Error("could not release the sync advisory lock; discarding its connection")
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
 		conn.Close()
 	}
 	return release, true, nil

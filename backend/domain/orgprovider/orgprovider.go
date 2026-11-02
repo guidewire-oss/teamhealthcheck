@@ -200,10 +200,17 @@ type ApplyResult struct {
 	HealthChecksDisabled int `json:"healthChecksDisabled"`
 	HealthChecksEnabled  int `json:"healthChecksEnabled"`
 
-	// UsersDeactivated/TeamsDeactivated count non-protected records absent from
-	// a verified COMPLETE snapshot that were marked inactive. Nothing is ever
-	// hard-deleted by a sync: survey sessions, responses and action items keep
-	// resolving, and a record the provider sends again is reactivated.
+	// UsersDeactivated/TeamsDeactivated count non-protected records marked
+	// inactive by this sync. That covers records absent from a verified COMPLETE
+	// snapshot, and (for users, in any snapshot type) people the snapshot still
+	// lists but who ended up with no active membership.
+	//
+	// A sync never removes a person or team because they are missing: survey
+	// sessions, responses and action items keep resolving, and a record the
+	// provider sends again is reactivated. The one hard delete is the SSO rekey,
+	// which replaces a user's old id with the provider's id: it inserts the new
+	// row and repoints every reference first, then deletes the old row, so no
+	// history is lost.
 	UsersDeactivated int `json:"usersDeactivated"`
 	TeamsDeactivated int `json:"teamsDeactivated"`
 

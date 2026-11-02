@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -116,10 +117,28 @@ func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, e
 
 // FindAll retrieves all teams
 func (r *TeamRepository) FindAll(ctx context.Context) ([]*team.Team, error) {
+	return r.findByStatus(ctx, team.StatusAll)
+}
+
+// findByStatus loads teams, restricted in the query to the given status so rows
+// the caller does not want are never read or scanned.
+func (r *TeamRepository) findByStatus(ctx context.Context, status string) ([]*team.Team, error) {
+	var filter string
+	switch status {
+	case team.StatusAll:
+	case team.StatusActive:
+		filter = "WHERE t.is_active"
+	case team.StatusInactive:
+		filter = "WHERE NOT t.is_active"
+	default:
+		return nil, fmt.Errorf("unknown team status filter %q", status)
+	}
+
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name, t.is_active, t.deactivated_at
 		FROM teams t
 		LEFT JOIN users u ON t.team_lead_id = u.id
+		`+filter+`
 		ORDER BY t.name
 	`)
 	if err != nil {
@@ -132,7 +151,13 @@ func (r *TeamRepository) FindAll(ctx context.Context) ([]*team.Team, error) {
 
 // FindAllWithDetails retrieves all teams with enriched details
 func (r *TeamRepository) FindAllWithDetails(ctx context.Context) ([]team.Team, error) {
-	teams, err := r.FindAll(ctx)
+	return r.FindWithDetailsByStatus(ctx, team.StatusAll)
+}
+
+// FindWithDetailsByStatus retrieves teams with enriched details, filtering by
+// active status in the query.
+func (r *TeamRepository) FindWithDetailsByStatus(ctx context.Context, status string) ([]team.Team, error) {
+	teams, err := r.findByStatus(ctx, status)
 	if err != nil {
 		return nil, err
 	}
@@ -272,14 +297,16 @@ func (r *TeamRepository) FindSurveyCompletionTeams(ctx context.Context) ([]team.
 // the INNER JOIN to users: a team_members row whose user no longer exists
 // never survives the join (the users FK's ON DELETE CASCADE means such a
 // row cannot outlive its user in practice, but this query does not rely on
-// that alone either).
+// that alone either). A soft-deactivated team is excluded too, so an Inactive
+// team never receives surveys even if a member row is attached to it.
 func (r *TeamRepository) FindEligibleMemberIDs(ctx context.Context) (map[string][]string, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT DISTINCT tm.team_id, tm.user_id
 		FROM team_members tm
+		JOIN teams t ON t.id = tm.team_id
 		JOIN users u ON u.id = tm.user_id
 		JOIN hierarchy_levels hl ON hl.id = u.hierarchy_level_id
-		WHERE hl.position IN (4, 5) AND tm.is_active AND u.is_active
+		WHERE hl.position IN (4, 5) AND tm.is_active AND u.is_active AND t.is_active
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query eligible team members: %w", err)
@@ -461,6 +488,10 @@ func (r *TeamRepository) Save(ctx context.Context, t *team.Team) error {
 	`, t.ID, t.Name, teamLeadID, cadence, distributionListEmail, t.CreatedAt, t.UpdatedAt)
 
 	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return fmt.Errorf("%w: %s", team.ErrDuplicateTeam, t.ID)
+		}
 		return fmt.Errorf("failed to save team: %w", err)
 	}
 
@@ -618,25 +649,6 @@ func (r *TeamRepository) Deactivate(ctx context.Context, id string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit team deactivation: %w", err)
 	}
-	return nil
-}
-
-// Delete removes a team
-func (r *TeamRepository) Delete(ctx context.Context, id string) error {
-	result, err := r.db.ExecContext(ctx, "DELETE FROM teams WHERE id = $1", id)
-	if err != nil {
-		return fmt.Errorf("failed to delete team: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	if rowsAffected == 0 {
-		return fmt.Errorf("team not found: %s", id)
-	}
-
 	return nil
 }
 

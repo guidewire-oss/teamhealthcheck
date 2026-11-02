@@ -3,10 +3,12 @@ package v1
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"os"
+	"unicode/utf8"
 
 	"github.com/agopalakrishnan/teams360/backend/application/services"
 	"github.com/agopalakrishnan/teams360/backend/domain/organization"
@@ -214,7 +216,7 @@ func (h *OrganizationProviderHandler) DismissMassDeletionHold(c *gin.Context) {
 		return
 	}
 
-	h.syncService.DismissHold()
+	h.syncService.DismissHold(c.Request.Context())
 
 	saved, err := h.settingsRepo.GetOrgSyncMaxDeletePercent(c.Request.Context())
 	if err != nil {
@@ -330,18 +332,26 @@ func (h *OrganizationProviderHandler) Sync(c *gin.Context) {
 	// Persisted runs: accept, record PENDING, and let the client poll. The
 	// synchronous path below remains for deployments without a run store.
 	if h.syncService.RunsEnabled() {
-		run, err := h.syncService.StartRun(c.Request.Context(), syncOpts, c.GetHeader("Idempotency-Key"))
+		idempotencyKey := c.GetHeader("Idempotency-Key")
+		if utf8.RuneCountInString(idempotencyKey) > maxIdempotencyKeyLength {
+			c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+				Error:   "Invalid Idempotency-Key",
+				Message: fmt.Sprintf("The Idempotency-Key header must be at most %d characters", maxIdempotencyKeyLength),
+			})
+			return
+		}
+		run, err := h.syncService.StartRun(c.Request.Context(), syncOpts, idempotencyKey)
 		switch {
 		case errors.Is(err, orgsyncrun.ErrActiveRunExists) && run != nil:
 			// Follow the run already in flight instead of starting an overlapping one.
-			body := dto.NewSyncRunDTO(run)
+			body := syncRunDTO(run)
 			body.AlreadyActive = true
 			c.JSON(http.StatusAccepted, body)
 		case err != nil:
 			status, response := mapSyncError(err)
 			c.JSON(status, response)
 		default:
-			c.JSON(http.StatusAccepted, dto.NewSyncRunDTO(run))
+			c.JSON(http.StatusAccepted, syncRunDTO(run))
 		}
 		return
 	}
@@ -430,6 +440,11 @@ func mapSyncError(err error) (int, any) {
 	}
 }
 
+// maxIdempotencyKeyLength matches the org_sync_runs.idempotency_key column. A
+// longer key would fail the insert and surface as a 500, so it is rejected up
+// front with a 400.
+const maxIdempotencyKeyLength = 128
+
 // massDeletionReportDTO maps the domain report onto the transport shape. The
 // dto package imports no domain package, so the translation lives here.
 func massDeletionReportDTO(report orgprovider.MassDeletionReport) *dto.MassDeletionReportDTO {
@@ -486,6 +501,27 @@ func (h *OrganizationProviderHandler) GetSyncRun(c *gin.Context) {
 		logger.Get().WithError(err).Error("failed to load sync run")
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to load sync run"})
 	default:
-		c.JSON(http.StatusOK, dto.NewSyncRunDTO(run))
+		c.JSON(http.StatusOK, syncRunDTO(run))
 	}
+}
+
+// syncRunDTO maps a persisted run onto its transport shape. The dto package
+// imports no domain package, so the translation lives here.
+func syncRunDTO(r *orgsyncrun.Run) dto.SyncRunDTO {
+	d := dto.SyncRunDTO{
+		RunID: r.ID, Status: string(r.Status), Stage: string(r.Stage),
+		StartedAt: r.StartedAt, CompletedAt: r.CompletedAt, CreatedAt: r.CreatedAt,
+		InsertedUsers: r.InsertedUsers, UpdatedUsers: r.UpdatedUsers,
+		InsertedTeams: r.InsertedTeams, UpdatedTeams: r.UpdatedTeams,
+		UnchangedUsers: r.UnchangedUsers, UnchangedTeams: r.UnchangedTeams,
+		MembershipChanges: r.MembershipChanges, DeactivatedRecords: r.DeactivatedRecords,
+		HealthChecksDisabled: r.HealthChecksDisabled, HealthChecksEnabled: r.HealthChecksEnabled,
+		MassDeletionOverridden: r.MassDeletionOverridden,
+		ErrorCode:              r.ErrorCode, ErrorMessage: r.ErrorMessage, MassDeletion: r.HoldReport,
+	}
+	if r.FailedStage != nil {
+		fs := string(*r.FailedStage)
+		d.FailedStage = &fs
+	}
+	return d
 }

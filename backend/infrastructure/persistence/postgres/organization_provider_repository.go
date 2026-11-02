@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
+	"github.com/agopalakrishnan/teams360/backend/domain/orgsyncrun"
 	"github.com/agopalakrishnan/teams360/backend/pkg/orgsnapshot"
 	"github.com/lib/pq"
 )
@@ -223,22 +224,22 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 
 	track := newChangeTracker()
 
-	stage("UPSERTING_USERS")
+	stage(string(orgsyncrun.StageUpsertingUsers))
 	if err := upsertSnapshotUsers(ctx, tx, in, currentProtectedUserIDSet, track); err != nil {
 		return nil, err
 	}
 	if err := applySnapshotReportsTo(ctx, tx, in, currentProtectedUserIDSet, track); err != nil {
 		return nil, err
 	}
-	stage("UPSERTING_TEAMS")
+	stage(string(orgsyncrun.StageUpsertingTeams))
 	if err := upsertSnapshotTeams(ctx, tx, in, track); err != nil {
 		return nil, err
 	}
-	stage("SYNCING_MEMBERSHIPS")
+	stage(string(orgsyncrun.StageSyncingMemberships))
 	if err := reconcileSnapshotMemberships(ctx, tx, in, currentProtectedUserIDs, complete, result); err != nil {
 		return nil, err
 	}
-	stage("RECONCILING_REMOVALS")
+	stage(string(orgsyncrun.StageReconcilingRemovals))
 	if complete {
 		if err := deactivateMissingTeams(ctx, tx, missingTeamIDs, result); err != nil {
 			return nil, err
@@ -259,7 +260,7 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 	// different connection and needs that same row, so announcing it after
 	// markRunSucceeded would wait on this very transaction while this
 	// transaction waits for the announcement: a self-deadlock.
-	stage("COMMITTING")
+	stage(string(orgsyncrun.StageCommitting))
 	if in.RunID != "" {
 		if err := markRunSucceeded(ctx, tx, in, result); err != nil {
 			return nil, err
@@ -1056,22 +1057,28 @@ func protectedTeamSupervisorUserIDs(ctx context.Context, tx *sql.Tx) (map[string
 }
 
 // markRunSucceeded writes the run's terminal SUCCESS state in the apply
-// transaction. The WHERE clause is the stale-worker guard: only a RUNNING run
+// transaction, including the snapshot type actually applied: the run row is
+// created before the snapshot is fetched, so it starts out as COMPLETE. The WHERE clause is the stale-worker guard: only a RUNNING run
 // can succeed, so if a recovery sweep already failed it the update matches no
 // row, this returns an error, and the whole apply rolls back.
 func markRunSucceeded(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, r *orgprovider.ApplyResult) error {
 	res, err := tx.ExecContext(ctx, `
 		UPDATE org_sync_runs SET
-			status = 'SUCCESS', stage = 'COMPLETED', completed_at = CURRENT_TIMESTAMP, heartbeat_at = CURRENT_TIMESTAMP,
+			status = 'SUCCESS', stage = $16, completed_at = CURRENT_TIMESTAMP, heartbeat_at = CURRENT_TIMESTAMP,
 			source_generated_at = $2,
 			inserted_users = $3, updated_users = $4, inserted_teams = $5, updated_teams = $6,
 			membership_changes = $7, deactivated_records = $8,
-			unchanged_users = $9, unchanged_teams = $10
-		WHERE id = $1 AND status = 'RUNNING'
+			unchanged_users = $9, unchanged_teams = $10,
+			health_checks_disabled = $11, health_checks_enabled = $12, mass_deletion_overridden = $13,
+			snapshot_type = $14
+		WHERE id = $1 AND status = ANY($15)
 	`, in.RunID, in.Snapshot.GeneratedAt.UTC(),
 		r.InsertedUsers, r.UpdatedUsers, r.InsertedTeams, r.UpdatedTeams,
 		r.MembershipsAdded+r.MembershipsRemoved, r.UsersDeactivated+r.TeamsDeactivated,
-		r.UnchangedUsers, r.UnchangedTeams)
+		r.UnchangedUsers, r.UnchangedTeams,
+		r.HealthChecksDisabled, r.HealthChecksEnabled, r.MassDeletionOverride != nil,
+		string(in.SnapshotType), pq.Array(orgsyncrun.StatusesBefore(orgsyncrun.StatusSuccess)),
+		string(orgsyncrun.StageCompleted))
 	if err != nil {
 		return fmt.Errorf("failed to record run success: %w", err)
 	}

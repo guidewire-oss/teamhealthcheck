@@ -35,6 +35,8 @@ func (s Status) Terminal() bool { return s == StatusSuccess || s == StatusFailed
 //
 // Terminal states have no outgoing edge, which is what stops a stale worker
 // from overwriting a result another worker (or the recovery sweep) recorded.
+// The Postgres store builds its UPDATE guards from StatusesBefore, so this
+// function is the single definition of the legal moves.
 func CanTransition(from, to Status) bool {
 	switch from {
 	case StatusPending:
@@ -43,6 +45,35 @@ func CanTransition(from, to Status) bool {
 		return to == StatusSuccess || to == StatusFailed
 	}
 	return false
+}
+
+// allStatuses lists every status, in lifecycle order.
+var allStatuses = []Status{StatusPending, StatusRunning, StatusSuccess, StatusFailed}
+
+// StatusesBefore returns, as strings, every status a run may move to `to` from.
+// It is derived from CanTransition, so a store that uses it in its UPDATE ...
+// WHERE clauses enforces exactly the moves CanTransition allows, and the two
+// cannot drift apart.
+func StatusesBefore(to Status) []string {
+	var from []string
+	for _, s := range allStatuses {
+		if CanTransition(s, to) {
+			from = append(from, string(s))
+		}
+	}
+	return from
+}
+
+// ActiveStatuses returns, as strings, the non-terminal statuses: the states in
+// which a run is still in progress.
+func ActiveStatuses() []string {
+	var active []string
+	for _, s := range allStatuses {
+		if !s.Terminal() {
+			active = append(active, string(s))
+		}
+	}
+	return active
 }
 
 // Stage is the step a run is on, reported to the UI and recorded on failure.
@@ -98,6 +129,13 @@ type Run struct {
 	MembershipChanges  int
 	DeactivatedRecords int
 	RetryCount         int
+
+	// HealthChecksDisabled and HealthChecksEnabled count teams whose health
+	// checks this run switched off or on. MassDeletionOverridden is true when the
+	// run applied after an administrator waived the mass-deletion hold.
+	HealthChecksDisabled   int
+	HealthChecksEnabled    int
+	MassDeletionOverridden bool
 
 	ErrorCode    *string
 	ErrorMessage *string
@@ -176,4 +214,24 @@ type Store interface {
 	// TryLock takes the cross-instance sync lock without blocking. ok is false
 	// when another holder has it. release must be called exactly once when ok.
 	TryLock(ctx context.Context) (release func(), ok bool, err error)
+}
+
+// Hold is an unresolved mass-deletion hold: the sync the guard stopped, the
+// threshold it was judged against, and when that happened.
+type Hold struct {
+	Threshold float64
+	Report    orgprovider.MassDeletionReport
+	HeldAt    time.Time
+}
+
+// HoldStore persists the single unresolved hold in the shared database, so
+// every API replica sees the same frozen threshold. A hold kept in one
+// process's memory would be invisible to the others and lost on restart.
+type HoldStore interface {
+	// GetHold returns the current hold, or nil, nil when there is none.
+	GetHold(ctx context.Context) (*Hold, error)
+	// SaveHold records a hold, replacing any earlier one.
+	SaveHold(ctx context.Context, h Hold) error
+	// ClearHold removes the hold and reports whether there was one.
+	ClearHold(ctx context.Context) (bool, error)
 }

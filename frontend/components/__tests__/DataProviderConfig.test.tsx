@@ -37,7 +37,8 @@ const READY = { provider: 'data-provider', baseUrlConfigured: true, tokenConfigu
 const makeRun = (over: Record<string, any> = {}) => ({
   runId: 'sync_1', status: 'PENDING', stage: 'QUEUED', startedAt: null, completedAt: null,
   createdAt: '2026-08-31T05:00:00Z', insertedUsers: 0, updatedUsers: 0, unchangedUsers: 0, insertedTeams: 0, updatedTeams: 0, unchangedTeams: 0,
-  membershipChanges: 0, deactivatedRecords: 0, errorCode: null, errorMessage: null, failedStage: null,
+  membershipChanges: 0, deactivatedRecords: 0, healthChecksDisabled: 0, healthChecksEnabled: 0, massDeletionOverridden: false,
+  errorCode: null, errorMessage: null, failedStage: null,
   ...over,
 });
 
@@ -78,6 +79,24 @@ describe('Sync Now: status and progress', () => {
     expect(button()).toHaveAccessibleName('Sync organization data from provider');
     expect(stepStates()).toEqual(Array(6).fill('pending'));
     expect(screen.queryByLabelText(/token/i)).toBeNull();
+  });
+
+  it('keeps Sync Now disabled until the latest run has loaded, without showing Syncing', async () => {
+    let resolveLatest!: (v: any) => void;
+    getSettings.mockResolvedValue(READY);
+    getLatest.mockReturnValue(new Promise((res) => { resolveLatest = res; }));
+    render(<DataProviderConfig />);
+    await flush();
+
+    expect(button()).toBeDisabled();
+    expect(button()).toHaveTextContent('Sync Now');
+    fireEvent.click(button());
+    await flush();
+    expect(startSync).not.toHaveBeenCalled();
+
+    resolveLatest(null);
+    await flush();
+    expect(button()).toBeEnabled();
   });
 
   it('shows Pending immediately on click, using the returned run id, and disables the button', async () => {
@@ -136,6 +155,24 @@ describe('Sync Now: status and progress', () => {
     await renderReady(makeRun({ status: 'SUCCESS', stage: 'COMPLETED', deactivatedRecords: 4 }));
     expect(screen.getByTestId('sync-deactivated')).toHaveTextContent('4 user(s) or team(s) marked inactive');
     expect(screen.getByTestId('sync-deactivated')).toHaveTextContent('history is kept');
+  });
+
+  it('warns when the sync switched team health checks off or on', async () => {
+    await renderReady(makeRun({ status: 'SUCCESS', stage: 'COMPLETED', healthChecksDisabled: 3, healthChecksEnabled: 2 }));
+    expect(screen.getByTestId('sync-health-checks-disabled')).toHaveTextContent('switched off for 3 team(s)');
+    expect(screen.getByTestId('sync-health-checks-enabled')).toHaveTextContent('switched on for 2 team(s)');
+  });
+
+  it('reports that a mass-deletion override was applied', async () => {
+    await renderReady(makeRun({ status: 'SUCCESS', stage: 'COMPLETED', massDeletionOverridden: true }));
+    expect(screen.getByTestId('sync-override-applied')).toHaveTextContent('overridden');
+  });
+
+  it('shows no health-check or override notices for an ordinary sync', async () => {
+    await renderReady(makeRun({ status: 'SUCCESS', stage: 'COMPLETED' }));
+    expect(screen.queryByTestId('sync-health-checks-disabled')).toBeNull();
+    expect(screen.queryByTestId('sync-health-checks-enabled')).toBeNull();
+    expect(screen.queryByTestId('sync-override-applied')).toBeNull();
   });
 
   it('shows the failed step in red with the safe message and stage, leaving later steps incomplete', async () => {

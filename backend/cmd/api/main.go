@@ -222,7 +222,8 @@ func main() {
 	// it the guard would silently fall back to the environment variable.
 	orgSyncService := services.NewOrganizationSyncService(orgProviderRepo, dataProviderFetcher, userRepo, teamRepo,
 		services.WithDeleteThresholdStore(orgRepo),
-		services.WithRunStore(postgres.NewOrgSyncRunRepository(db)))
+		services.WithRunStore(postgres.NewOrgSyncRunRepository(db)),
+		services.WithHoldStore(postgres.NewOrgSyncHoldRepository(db)))
 
 	// Initialize router (use gin.New() instead of gin.Default() to disable default logger)
 	router := gin.New()

@@ -782,6 +782,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/ErrorResponse"
                         }
                     },
+                    "409": {
+                        "description": "A team with this ID already exists, possibly an inactive one that only a provider sync can reactivate",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
                     "500": {
                         "description": "Failed to create team",
                         "schema": {
@@ -994,6 +1000,12 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Team not found or user not found",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Team is inactive",
                         "schema": {
                             "$ref": "#/definitions/ErrorResponse"
                         }

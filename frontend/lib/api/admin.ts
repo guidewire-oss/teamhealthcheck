@@ -854,6 +854,11 @@ export interface SyncRun {
   membershipChanges: number;
   /** People and teams marked inactive. Nothing is ever hard-deleted. */
   deactivatedRecords: number;
+  /** Teams whose health checks this sync switched off / on. */
+  healthChecksDisabled: number;
+  healthChecksEnabled: number;
+  /** True when an administrator waived the mass-deletion hold for this run. */
+  massDeletionOverridden: boolean;
   errorCode: string | null;
   /** Safe to show an administrator; never contains credentials. */
   errorMessage: string | null;

@@ -73,6 +73,10 @@ export default function DataProviderConfig() {
   const [dismissedRunId, setDismissedRunId] = useState<string | null>(null);
 
   const syncing = starting || isActive(run);
+  // A sync must not be started until the latest persisted run is known: until
+  // then an already-active run is invisible, so a click could start a duplicate.
+  // This only blocks starting; it is not "syncing", so the label stays "Sync Now".
+  const startBlocked = syncing || runLoading;
   const rawHold = getMassDeletionHold(run);
   const hold = rawHold && run && run.runId !== dismissedRunId ? rawHold : null;
 
@@ -110,7 +114,7 @@ export default function DataProviderConfig() {
    */
   const handleSync = async (overrideMassDeletion = false, confirmedReport?: MassDeletionReport) => {
     // Guard as well as disable: a double-submit must not reach the backend.
-    if (syncing) return;
+    if (startBlocked) return;
     setConfirmingOverride(false);
     setDismissError(null);
 
@@ -168,7 +172,7 @@ export default function DataProviderConfig() {
         <button
           data-testid="sync-now-btn"
           onClick={() => handleSync()}
-          disabled={syncing || !readyToSync || !!settingsLoadError}
+          disabled={startBlocked || !readyToSync || !!settingsLoadError}
           aria-label="Sync organization data from provider"
           aria-busy={syncing}
           className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -369,6 +373,22 @@ export default function DataProviderConfig() {
               <p className="text-sm text-green-700 mt-1" data-testid="sync-deactivated">
                 {run.deactivatedRecords} user(s) or team(s) marked inactive (no longer reported by the provider).
                 Their history is kept.
+              </p>
+            )}
+            {run.healthChecksDisabled > 0 && (
+              <p className="text-sm text-amber-700 mt-1" data-testid="sync-health-checks-disabled">
+                Health checks were switched off for {run.healthChecksDisabled} team(s). They will stop receiving
+                surveys until the provider enables them again.
+              </p>
+            )}
+            {run.healthChecksEnabled > 0 && (
+              <p className="text-sm text-green-700 mt-1" data-testid="sync-health-checks-enabled">
+                Health checks were switched on for {run.healthChecksEnabled} team(s).
+              </p>
+            )}
+            {run.massDeletionOverridden && (
+              <p className="text-sm text-amber-700 mt-1" data-testid="sync-override-applied">
+                Applied with the mass-deletion hold overridden.
               </p>
             )}
           </div>

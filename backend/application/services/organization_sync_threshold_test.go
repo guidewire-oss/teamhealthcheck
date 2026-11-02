@@ -9,6 +9,7 @@ import (
 
 	"github.com/agopalakrishnan/teams360/backend/application/services"
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
+	"github.com/agopalakrishnan/teams360/backend/domain/orgsyncrun"
 	"github.com/agopalakrishnan/teams360/backend/pkg/orgsnapshot"
 )
 
@@ -332,7 +333,7 @@ func TestDismissHoldUnlocksWithoutApplying(t *testing.T) {
 	}
 	callsWhenHeld := repo.calls
 
-	if !service.DismissHold() {
+	if !service.DismissHold(context.Background()) {
 		t.Fatal("expected a hold to dismiss")
 	}
 	if service.LockState(context.Background()).Locked() {
@@ -341,7 +342,7 @@ func TestDismissHoldUnlocksWithoutApplying(t *testing.T) {
 	if repo.calls != callsWhenHeld {
 		t.Fatal("dismissing must not apply anything")
 	}
-	if service.DismissHold() {
+	if service.DismissHold(context.Background()) {
 		t.Fatal("a second dismissal has nothing to clear")
 	}
 }
@@ -357,7 +358,7 @@ func TestThresholdIsResolvedFreshOnceNoHoldRemains(t *testing.T) {
 	if _, err := service.Sync(context.Background()); err == nil {
 		t.Fatal("expected the first attempt to be held")
 	}
-	service.DismissHold()
+	service.DismissHold(context.Background())
 
 	repo.stopHolding = true
 	if _, err := service.Sync(context.Background()); err != nil {
@@ -383,4 +384,47 @@ func (s *shiftingStore) GetOrgSyncMaxDeletePercent(_ context.Context) (*float64,
 	s.reads++
 	value := s.values[index]
 	return &value, nil
+}
+
+// sharedHoldStore stands in for the database table every replica shares.
+type sharedHoldStore struct{ hold *orgsyncrun.Hold }
+
+func (s *sharedHoldStore) GetHold(context.Context) (*orgsyncrun.Hold, error) { return s.hold, nil }
+func (s *sharedHoldStore) SaveHold(_ context.Context, h orgsyncrun.Hold) error {
+	s.hold = &h
+	return nil
+}
+func (s *sharedHoldStore) ClearHold(context.Context) (bool, error) {
+	existed := s.hold != nil
+	s.hold = nil
+	return existed, nil
+}
+
+func TestHoldIsSharedAcrossReplicas(t *testing.T) {
+	t.Setenv(services.EnvMaxDeletePercent, "")
+
+	shared := &sharedHoldStore{}
+	repo := &holdingRepo{}
+	newReplica := func() *services.OrganizationSyncService {
+		return services.NewOrganizationSyncService(repo, thresholdFetcher{}, nil, nil,
+			services.WithDeleteThresholdStore(&thresholdStore{saved: floatPtr(20)}),
+			services.WithHoldStore(shared))
+	}
+	replicaA, replicaB := newReplica(), newReplica()
+
+	if _, err := replicaA.Sync(context.Background()); err == nil {
+		t.Fatal("expected replica A's attempt to be held")
+	}
+
+	state := replicaB.LockState(context.Background())
+	if !state.Held || state.Threshold != 20 {
+		t.Fatalf("replica B must see A's hold at the frozen threshold, got %+v", state)
+	}
+
+	if !replicaB.DismissHold(context.Background()) {
+		t.Fatal("replica B should be able to dismiss the shared hold")
+	}
+	if replicaA.LockState(context.Background()).Locked() {
+		t.Fatal("dismissing on B must unlock A as well")
+	}
 }

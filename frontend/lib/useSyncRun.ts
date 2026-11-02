@@ -91,7 +91,20 @@ export function useSyncRun(pollMs: number = SYNC_POLL_INTERVAL_MS) {
         const created = await syncOrganizationProvider(options);
         if (mounted.current) setRun((prev) => (prev && prev.runId === created.runId ? mergeRun(prev, created) : created));
       } catch (err: any) {
-        // Nothing was accepted, so the previous run is left exactly as it was.
+        if (!mounted.current) return;
+        // A failed request does not prove nothing started: the backend saves the
+        // run and starts it before it replies, so a lost reply can leave a live
+        // run this page never heard about. Look at the latest run and follow it
+        // if it is still active; otherwise the previous run stays as it was.
+        try {
+          const latest = await getLatestSyncRun();
+          if (mounted.current && latest && isActive(latest)) {
+            setRun((prev) => (prev && prev.runId === latest.runId ? mergeRun(prev, latest) : latest));
+            return;
+          }
+        } catch {
+          // Could not check either; fall through and report the start failure.
+        }
         if (mounted.current) setStartError(err?.message || "Could not start the synchronization");
       } finally {
         if (mounted.current) setStarting(false);

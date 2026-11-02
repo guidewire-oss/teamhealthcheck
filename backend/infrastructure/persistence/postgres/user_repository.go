@@ -107,10 +107,11 @@ func (r *UserRepository) FindByUsername(ctx context.Context, username string) (*
 	var email, hierarchyLevelID, reportsTo sql.NullString
 	var createdAt, updatedAt sql.NullTime
 	var passwordHash, authType sql.NullString
+	var deactivatedAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
 		FROM users
 		WHERE username = $1 AND is_active
 	`, username).Scan(
@@ -124,6 +125,8 @@ func (r *UserRepository) FindByUsername(ctx context.Context, username string) (*
 		&authType,
 		&createdAt,
 		&updatedAt,
+		&u.IsActive,
+		&deactivatedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -159,6 +162,8 @@ func (r *UserRepository) FindByUsername(ctx context.Context, username string) (*
 		u.UpdatedAt = updatedAt.Time
 	}
 
+	applyDeactivation(&u, deactivatedAt)
+
 	// Fetch team IDs
 	teamIDs, err := r.fetchTeamIDs(ctx, u.ID)
 	if err != nil {
@@ -178,10 +183,11 @@ func (r *UserRepository) FindByEmail(ctx context.Context, emailParam string) (*u
 	var emailVal, hierarchyLevelID, reportsTo sql.NullString
 	var createdAt, updatedAt sql.NullTime
 	var passwordHash, authType sql.NullString
+	var deactivatedAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
 		FROM users
 		WHERE email = $1 AND is_active
 	`, emailParam).Scan(
@@ -195,6 +201,8 @@ func (r *UserRepository) FindByEmail(ctx context.Context, emailParam string) (*u
 		&authType,
 		&createdAt,
 		&updatedAt,
+		&u.IsActive,
+		&deactivatedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -230,6 +238,8 @@ func (r *UserRepository) FindByEmail(ctx context.Context, emailParam string) (*u
 		u.UpdatedAt = updatedAt.Time
 	}
 
+	applyDeactivation(&u, deactivatedAt)
+
 	// Fetch team IDs
 	teamIDs, err := r.fetchTeamIDs(ctx, u.ID)
 	if err != nil {
@@ -247,7 +257,7 @@ func (r *UserRepository) FindByEmail(ctx context.Context, emailParam string) (*u
 func (r *UserRepository) FindAll(ctx context.Context) ([]*user.User, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
 		FROM users
 		ORDER BY username
 	`)
@@ -263,6 +273,7 @@ func (r *UserRepository) FindAll(ctx context.Context) ([]*user.User, error) {
 		var email, hierarchyLevelID, reportsTo sql.NullString
 		var createdAt, updatedAt sql.NullTime
 		var passwordHash, authType sql.NullString
+		var deactivatedAt sql.NullTime
 
 		err := rows.Scan(
 			&u.ID,
@@ -275,6 +286,8 @@ func (r *UserRepository) FindAll(ctx context.Context) ([]*user.User, error) {
 			&authType,
 			&createdAt,
 			&updatedAt,
+			&u.IsActive,
+			&deactivatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user: %w", err)
@@ -305,6 +318,8 @@ func (r *UserRepository) FindAll(ctx context.Context) ([]*user.User, error) {
 		if updatedAt.Valid {
 			u.UpdatedAt = updatedAt.Time
 		}
+
+		applyDeactivation(&u, deactivatedAt)
 
 		// Check if user is admin
 		u.IsAdmin = u.Username == "admin"
@@ -549,7 +564,7 @@ func (r *UserRepository) scanUsersWithoutTeamIDs(rows *sql.Rows) ([]*user.User, 
 func (r *UserRepository) FindByHierarchyLevel(ctx context.Context, levelID string) ([]*user.User, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
 		FROM users
 		WHERE hierarchy_level_id = $1
 		ORDER BY username
@@ -573,7 +588,7 @@ func (r *UserRepository) FindSubordinates(ctx context.Context, supervisorID stri
 		WITH RECURSIVE subordinates AS (
 			-- Base case: direct reports
 			SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-			       password_hash, auth_type, created_at, updated_at,
+			       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at,
 			       1 AS depth, ARRAY[$1::text, id::text] AS visited
 			FROM users
 			WHERE reports_to = $1
@@ -583,7 +598,7 @@ func (r *UserRepository) FindSubordinates(ctx context.Context, supervisorID stri
 			-- Recursive case: reports of reports
 			-- Stops on cycle (visited array) or max depth (20 levels)
 			SELECT u.id, u.username, u.full_name, u.email, u.hierarchy_level_id, u.reports_to,
-			       u.password_hash, u.auth_type, u.created_at, u.updated_at,
+			       u.password_hash, u.auth_type, u.created_at, u.updated_at, u.is_active, u.deactivated_at,
 			       s.depth + 1, s.visited || u.id::text
 			FROM users u
 			INNER JOIN subordinates s ON u.reports_to = s.id
@@ -591,7 +606,7 @@ func (r *UserRepository) FindSubordinates(ctx context.Context, supervisorID stri
 			  AND NOT (u.id::text = ANY(s.visited))
 		)
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
 		FROM subordinates
 		ORDER BY username
 	`, supervisorID)
@@ -608,11 +623,14 @@ func (r *UserRepository) FindSubordinates(ctx context.Context, supervisorID stri
 		var email, hierarchyLevelID, reportsTo sql.NullString
 		var createdAt, updatedAt sql.NullTime
 		var passwordHash, authType sql.NullString
+		var deactivatedAt sql.NullTime
 
 		err := rows.Scan(
 			&u.ID, &u.Username, &u.Name, &email,
 			&hierarchyLevelID, &reportsTo, &passwordHash,
 			&authType, &createdAt, &updatedAt,
+			&u.IsActive,
+			&deactivatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user: %w", err)
@@ -642,6 +660,8 @@ func (r *UserRepository) FindSubordinates(ctx context.Context, supervisorID stri
 		if updatedAt.Valid {
 			u.UpdatedAt = updatedAt.Time
 		}
+
+		applyDeactivation(&u, deactivatedAt)
 		u.IsAdmin = u.Username == "admin"
 		u.TeamIDs = []string{} // populated below in batch
 
@@ -695,7 +715,7 @@ func (r *UserRepository) FindSupervisorChainUp(ctx context.Context, userID strin
 		WITH RECURSIVE supervisors AS (
 			-- Base case: direct supervisor of the given user
 			SELECT u.id, u.username, u.full_name, u.email, u.hierarchy_level_id, u.reports_to,
-			       u.password_hash, u.auth_type, u.created_at, u.updated_at,
+			       u.password_hash, u.auth_type, u.created_at, u.updated_at, u.is_active, u.deactivated_at,
 			       1 AS depth, ARRAY[$1::text, u.id::text] AS visited
 			FROM users u
 			WHERE u.id = (SELECT reports_to FROM users WHERE id = $1)
@@ -705,14 +725,14 @@ func (r *UserRepository) FindSupervisorChainUp(ctx context.Context, userID strin
 			-- Recursive case: supervisor's supervisor
 			-- Stops on cycle (visited array) or max depth (20 levels)
 			SELECT u.id, u.username, u.full_name, u.email, u.hierarchy_level_id, u.reports_to,
-			       u.password_hash, u.auth_type, u.created_at, u.updated_at,
+			       u.password_hash, u.auth_type, u.created_at, u.updated_at, u.is_active, u.deactivated_at,
 			       s.depth + 1, s.visited || u.id::text
 			FROM users u
 			INNER JOIN supervisors s ON u.id = s.reports_to
 			WHERE s.depth < 20 AND NOT (u.id::text = ANY(s.visited))
 		)
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
 		FROM supervisors
 		ORDER BY depth
 	`, userID)
@@ -1127,6 +1147,7 @@ func (r *UserRepository) scanUsers(ctx context.Context, rows *sql.Rows) ([]*user
 		var email, hierarchyLevelID, reportsTo sql.NullString
 		var createdAt, updatedAt sql.NullTime
 		var passwordHash, authType sql.NullString
+		var deactivatedAt sql.NullTime
 
 		err := rows.Scan(
 			&u.ID,
@@ -1139,6 +1160,8 @@ func (r *UserRepository) scanUsers(ctx context.Context, rows *sql.Rows) ([]*user
 			&authType,
 			&createdAt,
 			&updatedAt,
+			&u.IsActive,
+			&deactivatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user: %w", err)
@@ -1169,6 +1192,8 @@ func (r *UserRepository) scanUsers(ctx context.Context, rows *sql.Rows) ([]*user
 		if updatedAt.Valid {
 			u.UpdatedAt = updatedAt.Time
 		}
+
+		applyDeactivation(&u, deactivatedAt)
 
 		// Fetch team IDs
 		teamIDs, err := r.fetchTeamIDs(ctx, u.ID)
@@ -1228,4 +1253,12 @@ func (r *UserRepository) VerifyPassword(ctx context.Context, username, password 
 	}
 
 	return u, nil
+}
+
+// applyDeactivation records when a soft-deactivated user was deactivated.
+func applyDeactivation(u *user.User, deactivatedAt sql.NullTime) {
+	if deactivatedAt.Valid {
+		t := deactivatedAt.Time
+		u.DeactivatedAt = &t
+	}
 }

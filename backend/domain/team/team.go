@@ -2,8 +2,21 @@ package team
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// Team status filters accepted by FindWithDetailsByStatus.
+const (
+	StatusAll      = ""
+	StatusActive   = "active"
+	StatusInactive = "inactive"
+)
+
+// ErrDuplicateTeam means a team with the same ID already exists. A
+// soft-deactivated team keeps its ID, so it counts: only a provider sync can
+// reactivate it.
+var ErrDuplicateTeam = errors.New("a team with this ID already exists")
 
 // Team represents a team in the organization
 // This is an aggregate root in DDD terms
@@ -96,7 +109,6 @@ type Repository interface {
 	FindSupervisorChain(ctx context.Context, teamID string) ([]*SupervisorLink, error)
 	Save(ctx context.Context, team *Team) error
 	Update(ctx context.Context, team *Team) error
-	Delete(ctx context.Context, id string) error
 	// Deactivate soft-deactivates a team: it is marked inactive and its
 	// memberships end, but the team row and everything referencing it stay.
 	// Deactivating an already inactive team is a no-op.
@@ -108,6 +120,10 @@ type Repository interface {
 	FindTeamMembers(ctx context.Context, teamID string) ([]TeamMember, error)
 	CountTeamMembers(ctx context.Context, teamID string) (int, error)
 	FindAllWithDetails(ctx context.Context) ([]Team, error)
+	// FindWithDetailsByStatus is FindAllWithDetails limited in the query itself
+	// to active or inactive teams, so a filtered list never loads the rest.
+	// status is StatusActive, StatusInactive or StatusAll.
+	FindWithDetailsByStatus(ctx context.Context, status string) ([]Team, error)
 	// FindSurveyCompletionTeams returns the admin survey-completion projection
 	// for every team. Requires the health_check_enabled column on teams —
 	// only this method selects it, so every other team query keeps working

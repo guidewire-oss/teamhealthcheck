@@ -27,6 +27,19 @@ func (r *statusTeamRepo) FindAllWithDetails(_ context.Context) ([]team.Team, err
 	return r.teams, nil
 }
 
+// FindWithDetailsByStatus mirrors the repository: the filter is applied here, at
+// the "query", so the handler under test must not filter again.
+func (r *statusTeamRepo) FindWithDetailsByStatus(_ context.Context, status string) ([]team.Team, error) {
+	var out []team.Team
+	for _, t := range r.teams {
+		if (status == team.StatusActive && !t.IsActive) || (status == team.StatusInactive && t.IsActive) {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 func (r *statusTeamRepo) Deactivate(_ context.Context, id string) error {
 	if r.deactivateErr != nil {
 		return r.deactivateErr

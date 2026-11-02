@@ -194,6 +194,26 @@ var _ = Describe("Organization Provider Handler: persisted sync runs", func() {
 		Expect(decode(do(http.MethodGet, "/api/v1/admin/organization-provider/sync/runs/latest"))["runId"]).To(Equal(runID))
 	})
 
+	It("rejects an Idempotency-Key longer than the column with a 400 instead of failing the insert", func() {
+		post := func(key string) *httptest.ResponseRecorder {
+			req, err := http.NewRequest(http.MethodPost, "/api/v1/admin/organization-provider/sync", nil)
+			Expect(err).NotTo(HaveOccurred())
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Idempotency-Key", key)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			return w
+		}
+
+		tooLong := post(strings.Repeat("k", 129))
+		Expect(tooLong.Code).To(Equal(http.StatusBadRequest))
+		Expect(tooLong.Body.String()).To(ContainSubstring("Idempotency-Key"))
+		Expect(store.runs).To(BeEmpty(), "a rejected request must not create a run")
+
+		Expect(post(strings.Repeat("k", 128)).Code).To(Equal(http.StatusAccepted), "the limit itself is allowed")
+		close(repo.gate)
+	})
+
 	It("locks the deactivation threshold while a run is active and unlocks it as soon as the run succeeds", func() {
 		const thresholdPath = "/api/v1/admin/settings/organization-provider/deletion-threshold"
 		put := func() *httptest.ResponseRecorder {

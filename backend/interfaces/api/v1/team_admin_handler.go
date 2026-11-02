@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -41,8 +42,8 @@ func (h *TeamAdminHandler) ListTeams(c *gin.Context) {
 	status := strings.ToLower(strings.TrimSpace(c.Query("status")))
 	switch status {
 	case "", "all":
-		status = "" // every team, inactive ones included
-	case "active", "inactive":
+		status = team.StatusAll // every team, inactive ones included
+	case team.StatusActive, team.StatusInactive:
 	default:
 		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
 			Error:   "Invalid status filter",
@@ -51,7 +52,9 @@ func (h *TeamAdminHandler) ListTeams(c *gin.Context) {
 		return
 	}
 
-	teams, err := h.teamRepo.FindAllWithDetails(c.Request.Context())
+	// The status filter is applied in the query, so a filtered list never loads
+	// the teams it would discard.
+	teams, err := h.teamRepo.FindWithDetailsByStatus(c.Request.Context(), status)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
 			Error:   "Failed to query teams",
@@ -60,13 +63,10 @@ func (h *TeamAdminHandler) ListTeams(c *gin.Context) {
 		return
 	}
 
-	// Convert to DTOs, applying the optional status filter. Without one, inactive
-	// teams stay in the list: they are history, not removed data.
+	// Without a filter, inactive teams stay in the list: they are history, not
+	// removed data.
 	teamDTOs := make([]dto.AdminTeamDTO, 0, len(teams))
 	for _, tm := range teams {
-		if (status == "active" && !tm.IsActive) || (status == "inactive" && tm.IsActive) {
-			continue
-		}
 		teamDTOs = append(teamDTOs, dto.AdminTeamDTO{
 			ID:                    tm.ID,
 			Name:                  tm.Name,
@@ -98,6 +98,7 @@ func (h *TeamAdminHandler) ListTeams(c *gin.Context) {
 // @Param body body dto.CreateTeamRequest true "Team to create"
 // @Success 201 {object} dto.AdminTeamDTO
 // @Failure 400 {object} dto.ErrorResponse "Invalid request body"
+// @Failure 409 {object} dto.ErrorResponse "A team with this ID already exists, possibly an inactive one that only a provider sync can reactivate"
 // @Failure 500 {object} dto.ErrorResponse "Failed to create team"
 // @Security BearerAuth
 // @Router /admin/teams [post]
@@ -126,6 +127,13 @@ func (h *TeamAdminHandler) CreateTeam(c *gin.Context) {
 
 	// Save using repository
 	if err := h.teamRepo.Save(c.Request.Context(), tm); err != nil {
+		if errors.Is(err, team.ErrDuplicateTeam) {
+			c.JSON(http.StatusConflict, dto.ErrorResponse{
+				Error:   "Team already exists",
+				Message: "A team with this ID already exists. It may be inactive: inactive teams keep their ID and can only be reactivated by an organization sync.",
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
 			Error:   "Failed to create team",
 			Message: err.Error(),
@@ -363,6 +371,7 @@ func (h *TeamAdminHandler) GetTeamMembers(c *gin.Context) {
 // @Success 201 {object} dto.MessageResponse
 // @Failure 400 {object} dto.ErrorResponse "Invalid request body"
 // @Failure 404 {object} dto.ErrorResponse "Team not found or user not found"
+// @Failure 409 {object} dto.ErrorResponse "Team is inactive"
 // @Failure 500 {object} dto.ErrorResponse "Failed to add team member"
 // @Security BearerAuth
 // @Router /admin/teams/{id}/members [post]
@@ -376,9 +385,19 @@ func (h *TeamAdminHandler) AddTeamMember(c *gin.Context) {
 	}
 
 	// Verify team exists
-	_, err := h.teamRepo.FindByID(c.Request.Context(), teamID)
+	existing, err := h.teamRepo.FindByID(c.Request.Context(), teamID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, dto.ErrorResponse{Error: "Team not found"})
+		return
+	}
+
+	// An inactive team stays in the system for history and must not gain new
+	// members; only an organization sync can reactivate it.
+	if !existing.IsActive {
+		c.JSON(http.StatusConflict, dto.ErrorResponse{
+			Error:   "Team is inactive",
+			Message: "Members cannot be added to an inactive team. Only an organization sync can reactivate it.",
+		})
 		return
 	}
 

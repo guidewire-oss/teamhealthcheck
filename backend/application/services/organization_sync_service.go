@@ -96,6 +96,16 @@ func WithRunStore(store orgsyncrun.Store) Option {
 	}
 }
 
+// WithHoldStore persists the unresolved mass-deletion hold in the shared
+// database so every API replica sees the same frozen threshold. Without it the
+// hold lives in this process's memory only, which is correct for a single
+// instance but invisible to other replicas and lost on restart.
+func WithHoldStore(store orgsyncrun.HoldStore) Option {
+	return func(s *OrganizationSyncService) {
+		s.holds = store
+	}
+}
+
 // SnapshotFetcher fetches a complete organization snapshot from an external
 // provider. The sync service depends on this interface, not a concrete
 // client, so a second provider can be added without touching orchestration.
@@ -168,9 +178,9 @@ type SyncOptions struct {
 	ActorUserID string
 }
 
-// heldSync is the server-side memory of an unresolved mass-deletion hold. It
-// lives in the process rather than the database deliberately: a hold belongs to
-// a sync attempt, and a restart ends every attempt in flight along with it.
+// heldSync is the in-process record of an unresolved mass-deletion hold. It is
+// only used when no HoldStore is wired (single instance, tests); otherwise the
+// hold lives in the database so all replicas share it.
 type heldSync struct {
 	// threshold is the value the held attempt was judged against, and the value
 	// every further attempt uses until the hold is resolved.
@@ -211,6 +221,10 @@ type OrganizationSyncService struct {
 	// runs persists run status and provides the cross-instance lock. Nil in
 	// deployments/tests that only use the synchronous path.
 	runs orgsyncrun.Store
+
+	// holds persists the unresolved hold across replicas. Nil falls back to the
+	// in-process held record below.
+	holds orgsyncrun.HoldStore
 
 	// mu guards held. It is not the sync admission lock -- that is running,
 	// below -- only the small record describing an unresolved hold.
@@ -276,6 +290,21 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 		return nil, ErrSyncInProgress
 	}
 	defer s.running.Store(false)
+
+	// With a run store, persisted runs on any replica serialize on the
+	// cross-instance advisory lock. This synchronous path must take the same
+	// lock, or it could apply concurrently with one of them. A busy lock is
+	// rejected rather than waited for, like the in-process flag above.
+	if s.runs != nil {
+		release, ok, err := s.runs.TryLock(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("could not take the synchronization lock: %w", err)
+		}
+		if !ok {
+			return nil, ErrSyncInProgress
+		}
+		defer release()
+	}
 
 	return s.syncCore(ctx, opts, "", nil)
 }
@@ -356,14 +385,14 @@ func (s *OrganizationSyncService) syncCore(ctx context.Context, opts SyncOptions
 		// the counts an admin reviews are the counts any override applies to.
 		var hold *orgprovider.MassDeletionHoldError
 		if errors.As(err, &hold) {
-			s.recordHold(maxDeletePercent, hold.Report)
+			s.recordHold(ctx, maxDeletePercent, hold.Report)
 		}
 		return nil, err
 	}
 
 	// The attempt applied, so whatever hold preceded it is resolved and the
 	// threshold is editable again.
-	s.DismissHold()
+	s.DismissHold(ctx)
 
 	// The supervisor chain is a denormalized cache derived from reports_to.
 	// Rebuilding it is best-effort and deliberately outside the transaction:
@@ -459,7 +488,13 @@ func formatCascade(m *orgprovider.DeletionMetric) string {
 // Without a run store (the synchronous path) the in-process flag is the only
 // signal there is.
 func (s *OrganizationSyncService) LockState(ctx context.Context) SyncLockState {
-	state := s.heldState()
+	state, err := s.heldState(ctx)
+	if err != nil {
+		// Fail closed, like syncing: if the hold cannot be read, do not let the
+		// threshold change underneath a hold that may exist.
+		logger.Get().WithError(err).Warn("could not read the sync hold; treating the threshold as locked")
+		state = SyncLockState{Held: true}
+	}
 	state.Syncing = s.syncing(ctx)
 	return state
 }
@@ -469,9 +504,7 @@ func (s *OrganizationSyncService) syncing(ctx context.Context) bool {
 	if s.runs == nil {
 		return s.running.Load()
 	}
-	if _, err := s.runs.RecoverStale(ctx, StaleRunTTL); err != nil {
-		logger.Get().WithError(err).Warn("stale sync run recovery failed")
-	}
+	s.recoverStaleRuns(ctx)
 	active, err := s.runs.Active(ctx)
 	if err != nil {
 		// Fail closed: if the answer cannot be read, do not let the threshold be
@@ -482,10 +515,31 @@ func (s *OrganizationSyncService) syncing(ctx context.Context) bool {
 	return active != nil
 }
 
-// heldState reports only the unresolved-hold part of the lock, which lives in
-// memory and needs no database read.
-func (s *OrganizationSyncService) heldState() SyncLockState {
+// heldState reports only the unresolved-hold part of the lock. It reads the
+// shared database when a HoldStore is wired, so every replica agrees; an
+// expired hold is cleared on read rather than lingering.
+func (s *OrganizationSyncService) heldState(ctx context.Context) (SyncLockState, error) {
 	var state SyncLockState
+
+	if s.holds != nil {
+		h, err := s.holds.GetHold(ctx)
+		if err != nil {
+			return state, err
+		}
+		if h == nil {
+			return state, nil
+		}
+		if time.Since(h.HeldAt) > MassDeletionHoldTTL {
+			if _, err := s.holds.ClearHold(ctx); err != nil {
+				return state, err
+			}
+			return state, nil
+		}
+		state.Held = true
+		state.Threshold = h.Threshold
+		state.HeldAt = h.HeldAt
+		return state, nil
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -498,14 +552,22 @@ func (s *OrganizationSyncService) heldState() SyncLockState {
 			state.HeldAt = s.held.heldAt
 		}
 	}
-	return state
+	return state, nil
 }
 
 // DismissHold clears an unresolved hold, which re-enables threshold editing.
 // It is what an administrator does after deciding to fix the provider data
 // instead of overriding, and what a completed sync does implicitly. It reports
 // whether there was anything to clear.
-func (s *OrganizationSyncService) DismissHold() bool {
+func (s *OrganizationSyncService) DismissHold(ctx context.Context) bool {
+	if s.holds != nil {
+		existed, err := s.holds.ClearHold(ctx)
+		if err != nil {
+			logger.Get().WithError(err).Error("could not clear the sync hold")
+			return false
+		}
+		return existed
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existed := s.held != nil
@@ -515,16 +577,27 @@ func (s *OrganizationSyncService) DismissHold() bool {
 
 // recordHold remembers a tripped guard, together with the threshold it was
 // judged against.
-func (s *OrganizationSyncService) recordHold(threshold float64, report orgprovider.MassDeletionReport) {
+func (s *OrganizationSyncService) recordHold(ctx context.Context, threshold float64, report orgprovider.MassDeletionReport) {
+	heldAt := time.Now().UTC()
+	if s.holds != nil {
+		if err := s.holds.SaveHold(ctx, orgsyncrun.Hold{Threshold: threshold, Report: report, HeldAt: heldAt}); err != nil {
+			logger.Get().WithError(err).Error("could not persist the sync hold")
+		}
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.held = &heldSync{threshold: threshold, report: report, heldAt: time.Now().UTC()}
+	s.held = &heldSync{threshold: threshold, report: report, heldAt: heldAt}
 }
 
 // thresholdForRun returns the threshold this attempt is judged against: the
 // frozen value while a hold is unresolved, otherwise the configured one.
 func (s *OrganizationSyncService) thresholdForRun(ctx context.Context) (float64, error) {
-	if state := s.heldState(); state.Held {
+	state, err := s.heldState(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read sync hold: %w", err)
+	}
+	if state.Held {
 		return state.Threshold, nil
 	}
 	return s.maxDeletePercent(ctx)
@@ -705,13 +778,7 @@ func (s *OrganizationSyncService) StartRun(ctx context.Context, opts SyncOptions
 		return nil, ErrProviderNotConfigured
 	}
 
-	// Clears runs a crashed worker left PENDING/RUNNING so they cannot block
-	// admission forever. Best-effort: a failed sweep must not block a request.
-	if n, err := s.runs.RecoverStale(ctx, StaleRunTTL); err != nil {
-		logger.Get().WithError(err).Warn("stale sync run recovery failed")
-	} else if n > 0 {
-		logger.Get().WithFields(map[string]interface{}{"recovered": n}).Warn("recovered stale sync runs")
-	}
+	s.recoverStaleRuns(ctx)
 
 	actor := opts.ActorUserID
 	if actor == "" {
@@ -798,8 +865,16 @@ func (s *OrganizationSyncService) executeRun(ctx context.Context, runID string, 
 	defer release()
 
 	if err := s.runs.MarkRunning(ctx, runID, workerID()); err != nil {
-		// Someone (the recovery sweep) already failed this run: do not run it.
-		log.WithError(err).Warn("run could not be moved to RUNNING; abandoning")
+		if errors.Is(err, orgsyncrun.ErrNotTransitionable) {
+			// Someone (the recovery sweep) already failed this run: do not run it.
+			log.WithError(err).Warn("run could not be moved to RUNNING; abandoning")
+			return
+		}
+		// Any other error (a database problem, say) must not leave the run
+		// PENDING: that would block new runs and the threshold lock until the
+		// recovery sweep fails it 15 minutes later. Fail it now.
+		code, message, hold := classifyRunError(err)
+		fail(currentStage, code, message, hold)
 		return
 	}
 	log.Info("organization sync run started")
@@ -872,17 +947,34 @@ func classifyRunError(err error) (code, message string, hold json.RawMessage) {
 	}
 }
 
-// LatestRun and GetRun back the status endpoints.
+// recoverStaleRuns fails runs a crashed worker left PENDING/RUNNING, so they
+// cannot block admission forever or be reported as in progress indefinitely.
+// Best-effort: a failed sweep must not block the request that triggered it.
+func (s *OrganizationSyncService) recoverStaleRuns(ctx context.Context) {
+	if n, err := s.runs.RecoverStale(ctx, StaleRunTTL); err != nil {
+		logger.Get().WithError(err).Warn("stale sync run recovery failed")
+	} else if n > 0 {
+		logger.Get().WithFields(map[string]interface{}{"recovered": n}).Warn("recovered stale sync runs")
+	}
+}
+
+// LatestRun returns the most recent run, after failing any that a crashed
+// worker abandoned, so the status the UI polls can always reach a final state.
+// It and GetRun back the status endpoints.
 func (s *OrganizationSyncService) LatestRun(ctx context.Context) (*orgsyncrun.Run, error) {
 	if s.runs == nil {
 		return nil, nil
 	}
+	s.recoverStaleRuns(ctx)
 	return s.runs.Latest(ctx)
 }
 
+// GetRun returns one run by id, after failing any that a crashed worker
+// abandoned (see LatestRun).
 func (s *OrganizationSyncService) GetRun(ctx context.Context, id string) (*orgsyncrun.Run, error) {
 	if s.runs == nil {
 		return nil, orgsyncrun.ErrNotFound
 	}
+	s.recoverStaleRuns(ctx)
 	return s.runs.Get(ctx, id)
 }

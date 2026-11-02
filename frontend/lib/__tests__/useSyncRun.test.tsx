@@ -102,6 +102,27 @@ describe('useSyncRun', () => {
     expect(result.current.run?.status).toBe('PENDING');
   });
 
+  it('follows a live run the backend started when the start request itself failed', async () => {
+    startSync.mockRejectedValue(new Error('network dropped'));
+    const { result } = renderHook(() => useSyncRun());
+    await tick();
+    getLatest.mockResolvedValue(run({ runId: 'lost-reply', status: 'RUNNING', stage: 'UPSERTING_USERS' }));
+    await act(async () => { await result.current.start(); });
+    expect(result.current.run?.runId).toBe('lost-reply');
+    expect(result.current.startError).toBeNull();
+    expect(result.current.starting).toBe(false);
+  });
+
+  it('reports the start failure when no run is active after it', async () => {
+    startSync.mockRejectedValue(new Error('network dropped'));
+    const { result } = renderHook(() => useSyncRun());
+    await tick();
+    getLatest.mockResolvedValue(run({ runId: 'old', status: 'SUCCESS', stage: 'COMPLETED' }));
+    await act(async () => { await result.current.start(); });
+    expect(result.current.startError).toBe('network dropped');
+    expect(result.current.run?.runId).not.toBe('lost-reply');
+  });
+
   it('a late "latest" load cannot replace a run the admin already started', async () => {
     const late = deferred<any>();
     getLatest.mockReturnValue(late.promise);

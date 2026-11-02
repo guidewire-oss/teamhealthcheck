@@ -62,6 +62,7 @@ open-ended adapter surface.
 - `hierarchyLevelId` must identify a hierarchy level configured in the target Team Health Check deployment. Existence is checked during synchronization because the snapshot does not contain hierarchy-level definitions.
 - `teamLeadId` is optional. When present, it must reference a user who is also a member of that team. When omitted or `null`, synchronization preserves the existing Team Health Check value; v1.0 does not define an explicit clear operation.
 - `healthCheckEnabled` is optional. Omission preserves the existing Team Health Check value; explicit `true` or `false` replaces it.
+- `snapshotType` is optional and is either `"COMPLETE"` or `"PARTIAL"`. Omission means `"COMPLETE"`. Any other value is rejected by validation. See [Partial Snapshots](#partial-snapshots).
 
 ## Complete Snapshot Semantics
 
@@ -69,6 +70,38 @@ open-ended adapter surface.
 - `memberships` is the complete source of truth for externally managed team membership. Omitting a user-team pair removes that external membership during reconciliation.
 - The snapshot is complete for its configured provider. A later reconciliation service deactivates externally managed records absent from a successfully validated snapshot, but does not alter local records or Team Health Check-owned data.
 - Synchronization must track provider provenance so externally managed records can be distinguished from local records.
+
+## Partial Snapshots
+
+A provider that can only send part of its organization sets `"snapshotType": "PARTIAL"`:
+
+```json
+{
+  "contractVersion": "1.0",
+  "generatedAt": "2026-08-29T12:00:00Z",
+  "snapshotType": "PARTIAL",
+  "users": [
+    {
+      "id": "user-1",
+      "username": "alice",
+      "displayName": "Alice",
+      "email": "alice@example.com",
+      "hierarchyLevelId": "level-3"
+    }
+  ],
+  "teams": [
+    { "id": "team-1", "name": "Platform", "teamLeadId": "user-1" }
+  ],
+  "memberships": [
+    { "userId": "user-1", "teamId": "team-1" }
+  ]
+}
+```
+
+- `"COMPLETE"`, or omitting `snapshotType`, states that the snapshot is complete for its provider. Synchronization may mark externally managed records that are absent from the payload as inactive.
+- `"PARTIAL"` states that the payload is only a subset. Synchronization adds and updates the records it contains but never deactivates a record because it is absent.
+- Non-empty is never treated as evidence of completeness. Only an omitted or explicit `"COMPLETE"` value allows deactivation.
+- Empty `users` or `teams` are still rejected for a `PARTIAL` snapshot, as for any other snapshot.
 
 ## Validation and Synchronization Safety
 
