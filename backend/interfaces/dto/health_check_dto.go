@@ -75,7 +75,41 @@ type HealthCheckSessionsResponse struct {
 
 // ErrorResponse represents an error response
 type ErrorResponse struct {
-	Error   string `json:"error"`
+	Error string `json:"error"`
+	// Message is a human-readable description; for a rejected submission it is exactly the
+	// message shown to the user (see healthcheck.DuplicateSubmissionError.Error() /
+	// healthcheck.PeriodNotOpenError.Error()).
 	Message string `json:"message,omitempty"`
-	Code    string `json:"code,omitempty"`
+	// Code is a machine-readable reason, one of healthcheck.PeriodEligibilityReason's values
+	// ("duplicate", "future_period", "past_period", "invalid_period") when the rejection is
+	// period-related.
+	Code string `json:"code,omitempty"`
+	// SubmittedPeriod and NextEligiblePeriod are populated for a duplicate-submission (409)
+	// error. Both are user-facing period labels, e.g. "H1 2026" for a half-yearly team,
+	// "Mar 2026" for a monthly one -- never a quarter and never a day-level date. The survey
+	// experience never exposes exact submission or eligibility dates to the client.
+	// NextEligiblePeriod is omitted when there is no later period to point to.
+	SubmittedPeriod    string `json:"submittedPeriod,omitempty"`
+	NextEligiblePeriod string `json:"nextEligiblePeriod,omitempty"`
 } //@name ErrorResponse
+
+// SurveyEligibilityResponse represents the result of a pre-submission eligibility check: can
+// the caller's scope (user for Individual Survey, team for Post-Workshop Survey) submit the
+// requested assessment period right now? It cannot if the scope already has a completed
+// submission for that exact period ("duplicate"), if the period is not currently open
+// ("future_period" / "past_period"), or if the value is not a supported period at all --
+// empty, or not a half-yearly, monthly or yearly label ("invalid_period"). See
+// healthcheck.CheckPeriodEligibility.
+type SurveyEligibilityResponse struct {
+	Eligible bool `json:"eligible"`
+	// Reason is one of healthcheck.PeriodEligibilityReason's values, populated when Eligible
+	// is false.
+	Reason string `json:"reason,omitempty"`
+	// SubmittedPeriod is the user-facing label of the already-submitted period, populated only
+	// when Reason is "duplicate".
+	SubmittedPeriod string `json:"submittedPeriod,omitempty"`
+	// NextEligiblePeriod is the user-facing label (e.g. "H2 2026") the caller next becomes
+	// eligible for, populated only when Reason is "duplicate" and there is a later period to
+	// point to. Never a day-level date.
+	NextEligiblePeriod string `json:"nextEligiblePeriod,omitempty"`
+} //@name SurveyEligibilityResponse

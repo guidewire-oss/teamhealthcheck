@@ -44,8 +44,8 @@ var _ = Describe("E2E: Multi-Team Switcher", Label("e2e"), func() {
 		// Seed health check sessions for each team
 		_, err = db.Exec(`
 			INSERT INTO health_check_sessions (id, team_id, user_id, date, assessment_period, completed) VALUES
-			('e2e_multi_s1', $1, 'e2e_member1', '2024-10-01', '2024 - 2nd Half', true),
-			('e2e_multi_s2', $2, 'e2e_member2', '2024-10-02', '2024 - 2nd Half', true)
+			('e2e_multi_s1', $1, 'e2e_member1', '2022-01-15', '2021 - 2nd Half', true),
+			('e2e_multi_s2', $2, 'e2e_member2', '2022-01-16', '2021 - 2nd Half', true)
 			ON CONFLICT (id) DO NOTHING
 		`, teamAID, teamBID)
 		Expect(err).NotTo(HaveOccurred())

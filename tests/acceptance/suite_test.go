@@ -420,10 +420,67 @@ var _ = SynchronizedAfterSuite(
 	},
 )
 
+// waitForThankYouPage waits for the page the survey shows after a successful submission. The
+// survey no longer redirects automatically: the user leaves through the page's button.
+func waitForThankYouPage(page playwright.Page) {
+	By("Waiting for the Thank You page")
+	err := page.Locator("[data-testid='thank-you-page']").WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(10000),
+	})
+	Expect(err).NotTo(HaveOccurred())
+}
+
+// continueFromThankYou waits for the Thank You page, leaves it with its navigation button
+// (home for a Team Member, the dashboard for a Team Lead) and waits to arrive at destinationGlob.
+func continueFromThankYou(page playwright.Page, destinationGlob string) {
+	waitForThankYouPage(page)
+	By("Leaving the Thank You page with its navigation button")
+	err := page.Locator("[data-testid='thank-you-nav-button']").Click()
+	Expect(err).NotTo(HaveOccurred())
+	err = page.WaitForURL(destinationGlob, playwright.PageWaitForURLOptions{Timeout: playwright.Float(10000)})
+	Expect(err).NotTo(HaveOccurred())
+}
+
+// clearRuntimeSubmissions deletes the sessions the app created during this run for the given
+// users: the backend names them "session-<nanos>", while every seeded row is named e2e_* or
+// demo-*, so seeded history is left alone.
+//
+// A user may submit each survey type once per assessment period, and the e2e users are shared
+// by many specs. Without this, whichever spec submits first makes the app refuse to open or
+// accept the survey for every later spec that uses the same user.
+// clearAllRuntimeSubmissions does the same for every user.
+func clearAllRuntimeSubmissions() {
+	_, _ = db.Exec(`DELETE FROM health_check_responses WHERE session_id IN (
+		SELECT id FROM health_check_sessions WHERE id LIKE 'session-%')`)
+	_, _ = db.Exec(`DELETE FROM health_check_sessions WHERE id LIKE 'session-%'`)
+}
+
+func clearRuntimeSubmissions(userIDs ...string) {
+	for _, userID := range userIDs {
+		_, _ = db.Exec(`DELETE FROM health_check_responses WHERE session_id IN (
+			SELECT id FROM health_check_sessions WHERE user_id = $1 AND id LIKE 'session-%')`, userID)
+		_, _ = db.Exec(`DELETE FROM health_check_sessions WHERE user_id = $1 AND id LIKE 'session-%'`, userID)
+	}
+}
+
+// sharedSubmissionContainer is the one Ordered container whose specs deliberately build on the
+// survey the first spec submits (see e2e_survey_submission_test.go).
+const sharedSubmissionContainer = "Complete survey submission workflow"
+
 // BeforeEach runs before EACH test spec
 var _ = BeforeEach(func() {
-	// Reset test data if needed
-	// This runs before each It() block
+	// A user may submit each survey type once per assessment period, and the e2e users are shared
+	// by many specs. Start every spec without the submissions earlier specs made, so that one
+	// spec submitting never makes the app refuse to open or accept the survey for another --
+	// whatever order the specs run in. The exception is the Ordered container whose specs share
+	// the first spec's submission; it clears once, in its own BeforeAll.
+	for _, container := range CurrentSpecReport().ContainerHierarchyTexts {
+		if container == sharedSubmissionContainer {
+			return
+		}
+	}
+	clearAllRuntimeSubmissions()
 })
 
 // AfterEach runs after EACH test spec
