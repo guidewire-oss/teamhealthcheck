@@ -406,6 +406,179 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 			Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE team_id LIKE 'sync-team-%'`)).To(Equal(first))
 		})
 
+		Describe("an existing SSO user stored under a different id than the provider sends", func() {
+			insertUser := func(id, username, email, authType string) {
+				_, err := db.Exec(`
+					INSERT INTO users (id, username, email, full_name, hierarchy_level_id, password_hash, auth_type)
+					VALUES ($1, $2, $3, 'Legacy', 'level-3', 'keep-hash', $4)
+				`, id, username, email, authType)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// expectNothingRekeyed runs a sync that must be refused and checks the
+			// given legacy rows are untouched and no row was created for sync-user-1.
+			expectNothingRekeyed := func(legacyIDs ...string) {
+				Expect(doSync(adminToken).Code).NotTo(Equal(http.StatusOK))
+				for _, id := range legacyIDs {
+					Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = $1`, id)).To(Equal(1))
+				}
+				Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'sync-user-1'`)).To(Equal(0))
+			}
+
+			It("should re-key the row to the provider id by email without deleting anything attached to it", func() {
+				// syncalice is stored with her username as the id; the snapshot sends sync-user-1.
+				insertUser("syncalice", "syncalice", "SyncAlice@test.com", "sso")
+				_, err := db.Exec(`INSERT INTO teams (id, name, team_lead_id) VALUES ('sync-team-1', 'Alcatraz', 'syncalice')`)
+				Expect(err).NotTo(HaveOccurred())
+				_, err = db.Exec(`INSERT INTO team_members (team_id, user_id) VALUES ('sync-team-1', 'syncalice')`)
+				Expect(err).NotTo(HaveOccurred())
+				_, err = db.Exec(`
+					INSERT INTO action_items (id, team_id, created_by, assigned_to, title)
+					VALUES ('sync-rekey-action', 'sync-team-1', 'syncalice', 'syncalice', 'Follow up')
+				`)
+				Expect(err).NotTo(HaveOccurred())
+				_, err = db.Exec(`
+					INSERT INTO team_supervisors (team_id, user_id, hierarchy_level_id, position)
+					VALUES ('sync-team-1', 'syncalice', 'level-3', 1)
+				`)
+				Expect(err).NotTo(HaveOccurred())
+				_, err = db.Exec(`
+					INSERT INTO health_check_sessions (id, team_id, user_id, date, assessment_period, completed)
+					VALUES ('sync-rekey-session', 'sync-team-1', 'syncalice', '2024-01-01', '2024 - 1st Half', true)
+				`)
+				Expect(err).NotTo(HaveOccurred())
+
+				w := doSync(adminToken)
+				Expect(w.Code).To(Equal(http.StatusOK), w.Body.String())
+
+				var result services.SyncResult
+				Expect(json.Unmarshal(w.Body.Bytes(), &result)).To(Succeed())
+				Expect(result.UsersDeleted).To(BeZero(), "a re-keyed user is the same person, not a departure")
+				Expect(result.ActionItemsDeleted).To(BeZero())
+
+				Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'syncalice'`)).To(Equal(0))
+				Expect(countRows(`SELECT COUNT(*) FROM users WHERE email ILIKE 'syncalice@test.com'`)).To(Equal(1), "no duplicate row")
+				Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'sync-user-1' AND password_hash = 'keep-hash' AND auth_type = 'sso'`)).To(Equal(1),
+					"the stored credentials and auth type must survive the re-key")
+
+				Expect(countRows(`SELECT COUNT(*) FROM team_members WHERE team_id = 'sync-team-1' AND user_id = 'sync-user-1'`)).To(Equal(1))
+				Expect(countRows(`SELECT COUNT(*) FROM teams WHERE id = 'sync-team-1' AND team_lead_id = 'sync-user-1'`)).To(Equal(1))
+				Expect(countRows(`SELECT COUNT(*) FROM action_items WHERE id = 'sync-rekey-action' AND created_by = 'sync-user-1' AND assigned_to = 'sync-user-1'`)).To(Equal(1),
+					"the action item must follow the user, not cascade away")
+				// The sync service rebuilds supervisor chains from the team lead's reports_to
+				// chain afterwards, and this lead has no manager, so the row is expected to
+				// be gone. What matters is that nothing is left under the old id.
+				Expect(countRows(`SELECT COUNT(*) FROM team_supervisors WHERE user_id = 'syncalice'`)).To(Equal(0),
+					"no supervisor link may be left on the old id")
+				Expect(countRows(`SELECT COUNT(*) FROM health_check_sessions WHERE id = 'sync-rekey-session' AND user_id = 'sync-user-1'`)).To(Equal(1),
+					"assessment history must follow the user")
+			})
+
+			It("should fall back to the username when the email differs", func() {
+				insertUser("syncalice", "syncalice", "old-alice@test.com", "sso")
+
+				Expect(doSync(adminToken).Code).To(Equal(http.StatusOK))
+
+				Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'syncalice'`)).To(Equal(0))
+				Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'sync-user-1' AND email = 'syncalice@test.com'`)).To(Equal(1))
+			})
+
+			It("should not re-key a local-login user, leaving the existing conflict error", func() {
+				insertUser("syncalice", "syncalice", "syncalice@test.com", "local")
+
+				expectNothingRekeyed("syncalice")
+			})
+
+			It("should re-key an SSO administrator by email and keep their administrator level", func() {
+				_, err := db.Exec(`
+					INSERT INTO users (id, username, email, full_name, hierarchy_level_id, password_hash, auth_type)
+					VALUES ('alice-admin', 'syncalice', 'syncalice@test.com', 'Alice Admin', 'level-admin', '', 'sso')
+				`)
+				Expect(err).NotTo(HaveOccurred())
+
+				w := doSync(adminToken)
+				Expect(w.Code).To(Equal(http.StatusOK), w.Body.String())
+
+				Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'alice-admin'`)).To(Equal(0))
+				Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'sync-user-1' AND hierarchy_level_id = 'level-admin'`)).To(Equal(1),
+					"the provider must not be able to change an administrator's level")
+				Expect(countRows(`SELECT COUNT(*) FROM users WHERE email ILIKE 'syncalice@test.com'`)).To(Equal(1))
+			})
+
+			It("should never re-key a fixture account, even when its email matches the provider", func() {
+				insertUser("e2e_demo", "syncalice", "syncalice@test.com", "sso")
+
+				expectNothingRekeyed("e2e_demo")
+			})
+
+			It("should not take over a user the provider still sends under their own id", func() {
+				// sync-user-2 is a live provider user, but still holds the username the
+				// provider has since given to sync-user-1. Matching on that username must
+				// not move sync-user-2's history onto sync-user-1.
+				insertUser("sync-user-2", "syncalice", "old-bob@test.com", "sso")
+				_, err := db.Exec(`
+					INSERT INTO health_check_sessions (id, team_id, user_id, date, assessment_period, completed)
+					VALUES ('sync-takeover-session', 'sync-team-1', 'sync-user-2', '2024-01-01', '2024 - 1st Half', true)
+				`)
+				Expect(err).NotTo(HaveOccurred())
+
+				doSync(adminToken)
+
+				Expect(countRows(`SELECT COUNT(*) FROM health_check_sessions WHERE id = 'sync-takeover-session' AND user_id = 'sync-user-2'`)).To(Equal(1),
+					"a live user's history must stay with them")
+				Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'sync-user-2'`)).To(Equal(1))
+			})
+
+			It("should repoint every column that has a foreign key to users(id)", func() {
+				// Re-keying deletes the old row, so a missed foreign key would cascade
+				// that data away. health_check_sessions.user_id is repointed too but has
+				// no foreign key, so it is not checked here.
+				rows, err := db.Query(`
+					SELECT c.conrelid::regclass::text, a.attname
+					FROM pg_constraint c
+					JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+					WHERE c.confrelid = 'users'::regclass AND c.contype = 'f'
+				`)
+				Expect(err).NotTo(HaveOccurred())
+				defer rows.Close()
+
+				covered := postgres.UserIDReferenceColumns()
+				for rows.Next() {
+					var table, column string
+					Expect(rows.Scan(&table, &column)).To(Succeed())
+					Expect(covered).To(ContainElement(table+"."+column),
+						"add %s.%s to userIDReferences so re-keying repoints it", table, column)
+				}
+				Expect(rows.Err()).NotTo(HaveOccurred())
+			})
+
+			It("should keep every repointed column wide enough to hold any users.id", func() {
+				var idWidth int
+				Expect(db.QueryRow(`
+					SELECT character_maximum_length FROM information_schema.columns
+					WHERE table_name = 'users' AND column_name = 'id'
+				`).Scan(&idWidth)).To(Succeed())
+
+				for _, ref := range postgres.UserIDReferenceColumns() {
+					table, column, _ := strings.Cut(ref, ".")
+					var width int
+					Expect(db.QueryRow(`
+						SELECT character_maximum_length FROM information_schema.columns
+						WHERE table_name = $1 AND column_name = $2
+					`, table, column).Scan(&width)).To(Succeed(), ref)
+					Expect(width).To(BeNumerically(">=", idWidth),
+						"%s is narrower than users.id, so re-keying to a long provider id would fail", ref)
+				}
+			})
+
+			It("should refuse to guess when the email and username match two different rows", func() {
+				insertUser("alice-by-email", "someoneelse", "syncalice@test.com", "sso")
+				insertUser("alice-by-username", "syncalice", "other@test.com", "sso")
+
+				expectNothingRekeyed("alice-by-email", "alice-by-username")
+			})
+		})
+
 		It("should make the provider authoritative for membership per team while protecting skipped users", func() {
 			Expect(doSync(adminToken).Code).To(Equal(http.StatusOK))
 

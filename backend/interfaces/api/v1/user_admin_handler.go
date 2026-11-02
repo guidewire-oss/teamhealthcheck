@@ -33,6 +33,19 @@ func NewUserAdminHandler(userRepo user.Repository, teamRepo team.Repository) *Us
 // ListUsers handles GET /api/v1/admin/users
 // Supports pagination (page, pageSize) and filtering (search, role) applied
 // at the database level.
+//
+// @Summary List users
+// @Description Returns a page of users, including their profile, hierarchy level, reports-to, team IDs, auth type, and timestamps. Supports pagination and filtering by search text and hierarchy level. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Users
+// @Produce json
+// @Param page query int false "Page number, starting at 1" default(1)
+// @Param pageSize query int false "Users per page (max 100)" default(25) maximum(100)
+// @Param search query string false "Case-insensitive substring match on username, full name or email"
+// @Param role query string false "Exact hierarchy level id, for example level-5"
+// @Success 200 {object} dto.UsersResponse
+// @Failure 500 {object} dto.ErrorResponse "Failed to query users"
+// @Security BearerAuth
+// @Router /admin/users [get]
 func (h *UserAdminHandler) ListUsers(c *gin.Context) {
 	page := parsePositiveIntParam(c, "page", 1)
 	pageSize := min(parsePositiveIntParam(c, "pageSize", defaultUsersPageSize), maxUsersPageSize)
@@ -132,6 +145,18 @@ func parsePositiveIntParam(c *gin.Context, name string, def int) int {
 }
 
 // CreateUser handles POST /api/v1/admin/users
+//
+// @Summary Create a user
+// @Description Creates a new user with a username, email, full name, hierarchy level, and optional reports-to supervisor. AuthType defaults to "local" when omitted; local users must supply a password of at least 4 characters, which is bcrypt-hashed before storage, while SSO users get no password hash. The user ID is auto-generated from the username when the caller does not supply one. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Users
+// @Accept json
+// @Produce json
+// @Param body body dto.CreateUserRequest true "User to create"
+// @Success 201 {object} dto.AdminUserDTO
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body or missing/short password for local user"
+// @Failure 500 {object} dto.ErrorResponse "Failed to hash password or create user"
+// @Security BearerAuth
+// @Router /admin/users [post]
 func (h *UserAdminHandler) CreateUser(c *gin.Context) {
 	var req dto.CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -207,6 +232,20 @@ func (h *UserAdminHandler) CreateUser(c *gin.Context) {
 }
 
 // UpdateUser handles PUT /api/v1/admin/users/:id
+//
+// @Summary Update a user
+// @Description Partially updates the user identified by the path ID; only the fields present in the request body are changed. AuthType, if provided, must be "local" or "sso"; switching an SSO user to local requires a new password in the same request, and a password cannot be set while the account remains SSO. When reportsTo or hierarchy level actually changes, the supervisor chains of every team this user leads or supervises are re-derived. Returns a 404 if no user exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Users
+// @Accept json
+// @Produce json
+// @Param id path string true "User ID"
+// @Param body body dto.UpdateUserRequest true "Fields to update"
+// @Success 200 {object} dto.AdminUserDTO
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body, invalid authType, cannot set password for SSO user, or password required when switching to local auth"
+// @Failure 404 {object} dto.ErrorResponse "User not found"
+// @Failure 500 {object} dto.ErrorResponse "Failed to hash password, update user, or update password"
+// @Security BearerAuth
+// @Router /admin/users/{id} [put]
 func (h *UserAdminHandler) UpdateUser(c *gin.Context) {
 	id := c.Param("id")
 	var req dto.UpdateUserRequest
@@ -329,6 +368,16 @@ func (h *UserAdminHandler) UpdateUser(c *gin.Context) {
 }
 
 // DeleteUser handles DELETE /api/v1/admin/users/:id
+//
+// @Summary Delete a user
+// @Description Permanently deletes the user identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Users
+// @Produce json
+// @Param id path string true "User ID"
+// @Success 200 {object} dto.MessageResponse
+// @Failure 500 {object} dto.ErrorResponse "Failed to delete user"
+// @Security BearerAuth
+// @Router /admin/users/{id} [delete]
 func (h *UserAdminHandler) DeleteUser(c *gin.Context) {
 	id := c.Param("id")
 

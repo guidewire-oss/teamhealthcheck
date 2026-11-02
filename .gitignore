@@ -239,8 +239,10 @@ claude-flow
 # Removed Windows wrapper files per user request
 hive-mind-prompt-*.txt
 
-# Documentation scaffolding
-backend/docs/
+# Documentation scaffolding (generated Swagger/OpenAPI docs ARE committed — see backend/docs/swagger/)
+backend/docs/*
+!backend/docs/swagger/
+!backend/docs/swagger/**
 
 # Internal analysis documents (do not commit)
 docs/FEATURE_ANALYSIS.md

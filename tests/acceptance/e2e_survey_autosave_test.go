@@ -85,7 +85,7 @@ var _ = Describe("E2E: Survey Autosave", Label("e2e"), func() {
 		_, err = page.Goto(frontendURL + "/survey")
 		Expect(err).NotTo(HaveOccurred())
 
-		err = page.WaitForURL("**/survey", playwright.PageWaitForURLOptions{
+		err = page.WaitForURL("**/survey**", playwright.PageWaitForURLOptions{
 			Timeout: playwright.Float(5000),
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -303,28 +303,19 @@ var _ = Describe("E2E: Survey Autosave", Label("e2e"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			err = submitButton.Click()
 			Expect(err).NotTo(HaveOccurred())
+			By("Confirming the submission in the confirmation modal")
+			err = page.Locator("[data-testid='submit-confirm-accept']").Click()
+			Expect(err).NotTo(HaveOccurred())
 
-			By("Waiting for redirect to home page")
-			err = page.WaitForURL("**/home", playwright.PageWaitForURLOptions{
-				Timeout: playwright.Float(10000),
-			})
+			waitForThankYouPage(page)
+
+			// The home page's Take Survey button is blocked once this period has been submitted
+			// (one submission per period), so reopen the survey page directly: what matters here
+			// is that the saved draft was cleared by the submission.
+			By("Reopening the survey page directly")
+			_, err = page.Goto(frontendURL + "/survey")
 			Expect(err).NotTo(HaveOccurred())
 			dismissOnboardingIfVisible(page)
-
-			By("Navigating back to survey")
-			surveyBtn := page.Locator("[data-testid='take-survey-btn']")
-			err = surveyBtn.WaitFor(playwright.LocatorWaitForOptions{
-				State:   playwright.WaitForSelectorStateVisible,
-				Timeout: playwright.Float(5000),
-			})
-			Expect(err).NotTo(HaveOccurred())
-			err = surveyBtn.Click()
-			Expect(err).NotTo(HaveOccurred())
-
-			err = page.WaitForURL("**/survey", playwright.PageWaitForURLOptions{
-				Timeout: playwright.Float(5000),
-			})
-			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying survey starts fresh (no draft banner)")
 			err = page.Locator("text=Mission").WaitFor(playwright.LocatorWaitForOptions{

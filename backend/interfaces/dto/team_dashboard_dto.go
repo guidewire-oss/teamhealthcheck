@@ -8,13 +8,13 @@ type TeamDashboardHealthSummary struct {
 	Dimensions       []DimensionSummary `json:"dimensions"`
 	OverallHealth    float64            `json:"overallHealth"`
 	SubmissionCount  int                `json:"submissionCount"`
-}
+} //@name TeamDashboardHealthSummary
 
 // ResponseDistribution represents score distribution per dimension (for bar chart)
 type ResponseDistribution struct {
 	TeamID       string                  `json:"teamId"`
 	Distribution []DimensionDistribution `json:"distribution"`
-}
+} //@name ResponseDistribution
 
 // DimensionDistribution represents red/yellow/green counts for a dimension
 type DimensionDistribution struct {
@@ -22,13 +22,13 @@ type DimensionDistribution struct {
 	Red         int    `json:"red"`    // score = 1
 	Yellow      int    `json:"yellow"` // score = 2
 	Green       int    `json:"green"`  // score = 3
-}
+} //@name DimensionDistribution
 
 // IndividualResponses represents individual team member responses
 type IndividualResponses struct {
 	TeamID    string                   `json:"teamId"`
 	Responses []IndividualUserResponse `json:"responses"`
-}
+} //@name IndividualResponses
 
 // IndividualUserResponse represents one user's full health check session
 type IndividualUserResponse struct {
@@ -38,28 +38,28 @@ type IndividualUserResponse struct {
 	Date       string                    `json:"date"`
 	SurveyType string                    `json:"surveyType"`
 	Dimensions []IndividualDimensionResp `json:"dimensions"`
-}
+} //@name IndividualUserResponse
 
 // IndividualDimensionResp represents a user's response for one dimension
 type IndividualDimensionResp struct {
 	DimensionID string `json:"dimensionId"`
-	Score       int    `json:"score"`
-	Trend       string `json:"trend"`
+	Score       int    `json:"score" minimum:"1" maximum:"3"`
+	Trend       string `json:"trend" enums:"improving,stable,declining"`
 	Comment     string `json:"comment,omitempty"`
-}
+} //@name IndividualDimensionResp
 
 // TrendData represents trend data across assessment periods
 type TrendData struct {
 	TeamID     string           `json:"teamId"`
 	Periods    []string         `json:"periods"`
 	Dimensions []DimensionTrend `json:"dimensions"`
-}
+} //@name TrendData
 
 // DimensionTrend represents trend scores for a dimension across periods
 type DimensionTrend struct {
 	DimensionID string    `json:"dimensionId"`
 	Scores      []float64 `json:"scores"` // matches periods array order
-}
+} //@name DimensionTrend
 
 // TeamInfoResponse represents detailed team information
 type TeamInfoResponse struct {
@@ -69,20 +69,20 @@ type TeamInfoResponse struct {
 	Members      []TeamMember `json:"members"`
 	TeamLeadID   string       `json:"teamLeadId,omitempty"`
 	TeamLeadName string       `json:"teamLeadName,omitempty"`
-}
+} //@name TeamInfoResponse
 
 // TeamMember represents a member of a team
 type TeamMember struct {
 	ID       string `json:"id"`
 	Username string `json:"username"`
 	FullName string `json:"fullName"`
-}
+} //@name TeamMember
 
 // TeamListResponse represents a list of teams
 type TeamListResponse struct {
 	Teams []TeamSummary `json:"teams"`
 	Total int           `json:"total"`
-}
+} //@name TeamListResponse
 
 // TeamSummary represents a summary of a team for list views
 type TeamSummary struct {
@@ -92,4 +92,4 @@ type TeamSummary struct {
 	MemberCount  int    `json:"memberCount"`
 	TeamLeadID   string `json:"teamLeadId,omitempty"`
 	TeamLeadName string `json:"teamLeadName,omitempty"`
-}
+} //@name TeamSummary

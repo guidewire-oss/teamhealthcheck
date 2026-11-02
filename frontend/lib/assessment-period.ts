@@ -3,16 +3,19 @@
  *
  * Assessment period format depends on team cadence:
  *   - Monthly:     "YYYY Mon"  (e.g., "2026 Mar")
- *   - Quarterly:   "YYYY Q1"   (e.g., "2026 Q1")
  *   - Half-yearly: "YYYY H1"   (e.g., "2026 H1")
  *   - Yearly:      "YYYY"      (e.g., "2026")
  *
- * Legacy format "YYYY - 1st/2nd Half" is still parsed for backward compatibility.
+ * Quarter-based periods ("YYYY Q1"-"YYYY Q4") and legacy "YYYY - 1st/2nd Half" periods are
+ * no longer produced by this codebase -- quarterly cadence has been removed -- but are still
+ * *parsed* so any pre-existing historical data can still be rendered correctly (always
+ * collapsed to a safe H1/H2 label; see `formatPeriodLabel`, and the eligibility model no
+ * longer depends on quarter buckets at all).
  */
 
-export type Cadence = 'monthly' | 'quarterly' | 'half-yearly' | 'yearly';
+export type Cadence = 'monthly' | 'half-yearly' | 'yearly';
 
-const VALID_CADENCES: ReadonlySet<string> = new Set(['monthly', 'quarterly', 'half-yearly', 'yearly']);
+const VALID_CADENCES: ReadonlySet<string> = new Set(['monthly', 'half-yearly', 'yearly']);
 
 /**
  * Validate and narrow a string to a Cadence type.
@@ -43,8 +46,6 @@ export function getAssessmentPeriod(date?: Date | string, cadence?: Cadence): st
   switch (cadence) {
     case 'monthly':
       return `${year} ${MONTH_NAMES[month]}`;
-    case 'quarterly':
-      return `${year} Q${Math.floor(month / 3) + 1}`;
     case 'yearly':
       return `${year}`;
     case 'half-yearly':
@@ -62,10 +63,13 @@ export function getCurrentAssessmentPeriod(cadence?: Cadence): string {
 
 /**
  * Parsed assessment period — discriminated union by type.
+ *
+ * 'quarterly' and 'legacy' are parsed only for backward compatibility with periods stored
+ * before quarterly cadence was removed; no new period of either type is ever produced.
  */
 export type ParsedPeriod =
   | { type: 'monthly'; year: number; month: number }       // month: 0-indexed
-  | { type: 'quarterly'; year: number; quarter: number }    // quarter: 1-4
+  | { type: 'quarterly'; year: number; quarter: number }    // quarter: 1-4 (legacy only)
   | { type: 'half-yearly'; year: number; half: number }     // half: 1-2
   | { type: 'yearly'; year: number }
   | { type: 'legacy'; year: number; half: '1st' | '2nd' };
@@ -106,6 +110,128 @@ export function parseAssessmentPeriod(period: string): ParsedPeriod | null {
   }
 
   return null;
+}
+
+/**
+ * Build a list of selectable periods for manual override, most recent first.
+ * Always includes the current auto-detected period, followed by `count - 1`
+ * preceding periods for the given cadence (e.g., previous half-years).
+ *
+ * @param cadence - Team cadence
+ * @param count - Number of periods to return (default 6)
+ * @param referenceDate - Date to anchor "current" (defaults to now)
+ */
+export function getSelectablePeriods(cadence: Cadence, count = 6, referenceDate?: Date): string[] {
+  const base = referenceDate ?? new Date();
+  let year = base.getFullYear();
+  let month = base.getMonth(); // 0-indexed
+
+  const stepSize = cadence === 'monthly' ? 1 : cadence === 'yearly' ? 12 : 6;
+
+  const periods: string[] = [];
+  for (let i = 0; i < count; i++) {
+    periods.push(getAssessmentPeriod(new Date(year, month, 1), cadence));
+    month -= stepSize;
+    while (month < 0) {
+      month += 12;
+      year -= 1;
+    }
+  }
+
+  return periods;
+}
+
+/**
+ * The selectable periods that can still be started: those in the current year.
+ *
+ * `getSelectablePeriods` walks back several years for history dropdowns, but the backend only
+ * ever treats the current year's periods as open for a new submission (see
+ * healthcheck.CheckPeriodEligibility) -- anything older is rejected as "past_period" whether or
+ * not it was ever submitted. Offering those older periods in a "take a survey" picker only sets
+ * the user up to choose something that can never succeed.
+ *
+ * @param cadence - Team cadence
+ * @param referenceDate - Date to anchor "current" (defaults to now)
+ */
+export function getCurrentYearPeriods(cadence: Cadence, count = 6, referenceDate?: Date): string[] {
+  const currentYear = (referenceDate ?? new Date()).getFullYear();
+  return getSelectablePeriods(cadence, count, referenceDate).filter((period) => {
+    const parsed = parseAssessmentPeriod(period);
+    return parsed ? parsed.year >= currentYear : true;
+  });
+}
+
+/**
+ * Render an assessment period as a user-facing label, in the dynamic format
+ * `H1 <year>` / `H2 <year>`.
+ *
+ * Quarter-derived periods (quarterly-cadence periods like "2026 Q1", and legacy
+ * "YYYY - 1st/2nd Half" periods) are never shown to users as quarter numbers —
+ * they are always collapsed into the half-year they fall in (Q1/Q2 -> H1,
+ * Q3/Q4 -> H2). Half-yearly periods are simply re-ordered from "YYYY H1" to
+ * "H1 YYYY". Monthly and yearly periods are not quarter/half labels and are
+ * returned unchanged.
+ *
+ * This is the single place quarter-to-half-year conversion happens for display;
+ * every UI surface (dropdowns, tables, charts, tooltips, exports, summaries,
+ * empty states) must render periods through this helper rather than the raw
+ * assessment period string.
+ */
+export function formatPeriodLabel(period: string): string {
+  const parsed = parseAssessmentPeriod(period);
+  if (!parsed) return period;
+
+  switch (parsed.type) {
+    case 'half-yearly':
+      return `H${parsed.half} ${parsed.year}`;
+    case 'quarterly':
+      return parsed.quarter <= 2 ? `H1 ${parsed.year}` : `H2 ${parsed.year}`;
+    case 'legacy':
+      // "YYYY - 1st Half" covers Jul-Dec of YYYY (= YYYY H2),
+      // "YYYY - 2nd Half" covers Jan-Jun of YYYY+1 (= (YYYY+1) H1)
+      return parsed.half === '1st' ? `H2 ${parsed.year}` : `H1 ${parsed.year + 1}`;
+    case 'monthly':
+    case 'yearly':
+      return period;
+  }
+}
+
+/**
+ * Labels for a list of period options, keeping equivalent periods apart.
+ *
+ * `formatPeriodLabel` folds old quarter labels into half-years, so "2026 Q1" and "2026 Q2"
+ * both render as "H1 2026". In a dropdown that makes two options indistinguishable even though
+ * each one filters on its own raw period. Where two or more options share a label, the raw
+ * period is appended -- "H1 2026 (2026 Q1)" -- so the user can tell them apart and knows
+ * exactly which records a choice shows.
+ *
+ * @returns A map from each raw period to the label to display for it
+ */
+export function describePeriodOptions(periods: string[]): Record<string, string> {
+  const counts = new Map<string, number>();
+  for (const period of periods) {
+    const label = formatPeriodLabel(period);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+
+  const labels: Record<string, string> = {};
+  for (const period of periods) {
+    const label = formatPeriodLabel(period);
+    labels[period] = (counts.get(label) ?? 0) > 1 && label !== period ? `${label} (${period})` : label;
+  }
+  return labels;
+}
+
+/**
+ * Render a date as a user-facing month + year value, e.g. "March 2026". The survey
+ * experience never displays day-, hour-, minute-, second-, or timezone-level precision --
+ * eligibility, duplicate checks, and history/last-updated displays are all based on the
+ * calendar month and year alone. Returns the input unchanged if it isn't a valid date.
+ */
+export function formatMonthYear(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  if (Number.isNaN(d.getTime())) return typeof date === 'string' ? date : '';
+  return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' });
 }
 
 /**
