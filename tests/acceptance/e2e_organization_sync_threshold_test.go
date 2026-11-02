@@ -362,14 +362,17 @@ var _ = Describe("E2E: Organization Sync Deletion Threshold", Serial, Ordered, L
 
 		By("Waiting for the sync to complete with the override applied")
 		Eventually(func() bool {
-			visible, _ := page.Locator("[data-testid='sync-override-applied']").IsVisible()
+			visible, _ := page.Locator("[data-testid='sync-result']").IsVisible()
 			return visible
 		}, 30*time.Second, 500*time.Millisecond).Should(BeTrue())
 
-		By("Verifying the seeded throwaway users were actually deleted this time")
+		By("Verifying the seeded throwaway users were deactivated, not deleted")
+		Expect(countRowsForThreshold(
+			`SELECT COUNT(*) FROM users WHERE id LIKE $1 AND is_active`, thresholdFixtureIDPrefix+"%",
+		)).To(Equal(0), "an explicit override applies the sync: people the provider no longer reports become inactive")
 		Expect(countRowsForThreshold(
 			`SELECT COUNT(*) FROM users WHERE id LIKE $1`, thresholdFixtureIDPrefix+"%",
-		)).To(Equal(0), "an explicit override applies the sync, including its deletions")
+		)).To(BeNumerically(">", 0), "sync never deletes people; their rows are kept for history")
 
 		By("Verifying the threshold is editable again")
 		Eventually(func() bool {

@@ -220,10 +220,10 @@ var _ = Describe("E2E: Organization Provider Sync", Serial, Ordered, Label("e2e"
 			"a successful sync should report its counts rather than an error")
 
 		By("Verifying the reported counts match the snapshot")
-		text, err := result.TextContent()
+		counts, err := page.Locator("[data-testid='sync-counts']").TextContent()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(text).To(ContainSubstring("2 users"))
-		Expect(text).To(ContainSubstring("2 team memberships"))
+		Expect(counts).To(ContainSubstring("Users: 2 added"))
+		Expect(counts).To(ContainSubstring("Membership changes: 2"))
 
 		// A safe sync must be exactly as it always was: no hold warning, no
 		// Sync Anyway affordance, and no override reported on the result. The
