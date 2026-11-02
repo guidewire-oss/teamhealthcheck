@@ -203,70 +203,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/admin/hierarchy-levels/{id}/position": {
-            "put": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Moves the hierarchy level identified by the path ID to the given position, shifting every level between its old and new position up or down by one. The requested position is not checked against the number of levels, so a position beyond the current maximum can leave a gap in the ordering. The reorder runs inside a single transaction that rolls back if any step fails. Access is restricted to authenticated users holding the Admin role (level-1 or level-admin).",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Admin Hierarchy"
-                ],
-                "summary": "Reorder a hierarchy level",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Hierarchy level ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "New position",
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/UpdateHierarchyPositionRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/MessageResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Invalid request body",
-                        "schema": {
-                            "$ref": "#/definitions/ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Hierarchy level not found",
-                        "schema": {
-                            "$ref": "#/definitions/ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Failed to start transaction, reorder levels, update position, or commit",
-                        "schema": {
-                            "$ref": "#/definitions/ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
         "/admin/settings/branding": {
             "get": {
                 "security": [
@@ -4625,19 +4561,6 @@ const docTemplate = `{
                     "$ref": "#/definitions/HierarchyPermissionsDTO"
                 }
             },
-            "type": "object"
-        },
-        "UpdateHierarchyPositionRequest": {
-            "properties": {
-                "newPosition": {
-                    "example": 2,
-                    "minimum": 1,
-                    "type": "integer"
-                }
-            },
-            "required": [
-                "newPosition"
-            ],
             "type": "object"
         },
         "UpdateNotificationSettingsRequest": {
