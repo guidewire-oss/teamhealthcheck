@@ -699,7 +699,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns every team in the organization with the full set of admin-facing details: ID, name, team lead ID and name, cadence, distribution list email, member count, and timestamps, along with the total team count. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
+                "description": "Returns every team in the organization -- active and inactive -- with the full set of admin-facing details: ID, name, active status, team lead ID and name, cadence, distribution list email, current (active) member count, and timestamps, along with the total team count. Inactive teams are soft-deactivated, never deleted, and stay listed for historical data; use the status filter to narrow the list. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
                 "produces": [
                     "application/json"
                 ],
@@ -707,11 +707,30 @@ const docTemplate = `{
                     "Admin Teams"
                 ],
                 "summary": "List all teams (admin)",
+                "parameters": [
+                    {
+                        "enum": [
+                            "active",
+                            "inactive",
+                            "all"
+                        ],
+                        "type": "string",
+                        "description": "Limit to active or inactive teams; omit or use all for every team",
+                        "name": "status",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/TeamsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid status filter",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
                         }
                     },
                     "500": {
@@ -841,14 +860,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Permanently deletes the team identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
+                "description": "Soft-deactivates the team identified by the path ID. The team is never deleted: it stays listed and searchable as Inactive, its surveys, responses and action items are kept, and its memberships end. Repeating the call for an already inactive team changes nothing. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Admin Teams"
                 ],
-                "summary": "Delete a team",
+                "summary": "Deactivate a team",
                 "parameters": [
                     {
                         "type": "string",
@@ -865,8 +884,14 @@ const docTemplate = `{
                             "$ref": "#/definitions/MessageResponse"
                         }
                     },
+                    "404": {
+                        "description": "Team not found",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
                     "500": {
-                        "description": "Failed to delete team",
+                        "description": "Failed to deactivate team",
                         "schema": {
                             "$ref": "#/definitions/ErrorResponse"
                         }
@@ -1185,6 +1210,17 @@ const docTemplate = `{
                         "description": "Exact hierarchy level id, for example level-5",
                         "name": "role",
                         "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "active",
+                            "inactive",
+                            "all"
+                        ],
+                        "type": "string",
+                        "description": "Limit to active or inactive people; omit or use all for everyone",
+                        "name": "status",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -1192,6 +1228,12 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/UsersResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid status filter",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
                         }
                     },
                     "500": {
@@ -1321,14 +1363,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Permanently deletes the user identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
+                "description": "Soft-deactivates the user identified by the path ID. The person is never deleted: they stay listed and searchable as Inactive, their surveys, responses and action items are kept, and their team memberships end. Repeating the call for an already inactive user changes nothing. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Admin Users"
                 ],
-                "summary": "Delete a user",
+                "summary": "Deactivate a user",
                 "parameters": [
                     {
                         "type": "string",
@@ -1345,8 +1387,14 @@ const docTemplate = `{
                             "$ref": "#/definitions/MessageResponse"
                         }
                     },
+                    "404": {
+                        "description": "User not found",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
                     "500": {
-                        "description": "Failed to delete user",
+                        "description": "Failed to deactivate user",
                         "schema": {
                             "$ref": "#/definitions/ErrorResponse"
                         }
@@ -3004,6 +3052,9 @@ const docTemplate = `{
                     "example": "2026-09-08T10:20:19.860027Z",
                     "type": "string"
                 },
+                "deactivatedAt": {
+                    "type": "string"
+                },
                 "distributionListEmail": {
                     "example": "phoenix-squad@teams360.demo",
                     "type": "string"
@@ -3011,6 +3062,10 @@ const docTemplate = `{
                 "id": {
                     "example": "team-phoenix",
                     "type": "string"
+                },
+                "isActive": {
+                    "description": "IsActive is false for a soft-deactivated team, which stays listed for history.",
+                    "type": "boolean"
                 },
                 "memberCount": {
                     "example": 4,
@@ -3045,6 +3100,9 @@ const docTemplate = `{
                     "example": "2026-09-08T10:20:19.860027Z",
                     "type": "string"
                 },
+                "deactivatedAt": {
+                    "type": "string"
+                },
                 "email": {
                     "example": "alice@teams360.demo",
                     "type": "string"
@@ -3060,6 +3118,10 @@ const docTemplate = `{
                 "id": {
                     "example": "alice",
                     "type": "string"
+                },
+                "isActive": {
+                    "description": "IsActive is false for a soft-deactivated person, who stays listed for history.",
+                    "type": "boolean"
                 },
                 "reportsTo": {
                     "example": "teamlead1",

@@ -99,6 +99,9 @@
                     "example": "2026-09-08T10:20:19.860027Z",
                     "type": "string"
                 },
+                "deactivatedAt": {
+                    "type": "string"
+                },
                 "distributionListEmail": {
                     "example": "phoenix-squad@teams360.demo",
                     "type": "string"
@@ -106,6 +109,10 @@
                 "id": {
                     "example": "team-phoenix",
                     "type": "string"
+                },
+                "isActive": {
+                    "description": "IsActive is false for a soft-deactivated team, which stays listed for history.",
+                    "type": "boolean"
                 },
                 "memberCount": {
                     "example": 4,
@@ -140,6 +147,9 @@
                     "example": "2026-09-08T10:20:19.860027Z",
                     "type": "string"
                 },
+                "deactivatedAt": {
+                    "type": "string"
+                },
                 "email": {
                     "example": "alice@teams360.demo",
                     "type": "string"
@@ -155,6 +165,10 @@
                 "id": {
                     "example": "alice",
                     "type": "string"
+                },
+                "isActive": {
+                    "description": "IsActive is false for a soft-deactivated person, who stays listed for history.",
+                    "type": "boolean"
                 },
                 "reportsTo": {
                     "example": "teamlead1",
@@ -2608,7 +2622,20 @@
         },
         "/admin/teams": {
             "get": {
-                "description": "Returns every team in the organization with the full set of admin-facing details: ID, name, team lead ID and name, cadence, distribution list email, member count, and timestamps, along with the total team count. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
+                "description": "Returns every team in the organization -- active and inactive -- with the full set of admin-facing details: ID, name, active status, team lead ID and name, cadence, distribution list email, current (active) member count, and timestamps, along with the total team count. Inactive teams are soft-deactivated, never deleted, and stay listed for historical data; use the status filter to narrow the list. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
+                "parameters": [
+                    {
+                        "description": "Limit to active or inactive teams; omit or use all for every team",
+                        "enum": [
+                            "active",
+                            "inactive",
+                            "all"
+                        ],
+                        "in": "query",
+                        "name": "status",
+                        "type": "string"
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -2617,6 +2644,12 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/TeamsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid status filter",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
                         }
                     },
                     "500": {
@@ -2688,7 +2721,7 @@
         },
         "/admin/teams/{id}": {
             "delete": {
-                "description": "Permanently deletes the team identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
+                "description": "Soft-deactivates the team identified by the path ID. The team is never deleted: it stays listed and searchable as Inactive, its surveys, responses and action items are kept, and its memberships end. Repeating the call for an already inactive team changes nothing. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
                 "parameters": [
                     {
                         "description": "Team ID",
@@ -2708,8 +2741,14 @@
                             "$ref": "#/definitions/MessageResponse"
                         }
                     },
+                    "404": {
+                        "description": "Team not found",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
                     "500": {
-                        "description": "Failed to delete team",
+                        "description": "Failed to deactivate team",
                         "schema": {
                             "$ref": "#/definitions/ErrorResponse"
                         }
@@ -2720,7 +2759,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "summary": "Delete a team",
+                "summary": "Deactivate a team",
                 "tags": [
                     "Admin Teams"
                 ]
@@ -3087,6 +3126,17 @@
                         "in": "query",
                         "name": "role",
                         "type": "string"
+                    },
+                    {
+                        "description": "Limit to active or inactive people; omit or use all for everyone",
+                        "enum": [
+                            "active",
+                            "inactive",
+                            "all"
+                        ],
+                        "in": "query",
+                        "name": "status",
+                        "type": "string"
                     }
                 ],
                 "produces": [
@@ -3097,6 +3147,12 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/UsersResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid status filter",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
                         }
                     },
                     "500": {
@@ -3168,7 +3224,7 @@
         },
         "/admin/users/{id}": {
             "delete": {
-                "description": "Permanently deletes the user identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
+                "description": "Soft-deactivates the user identified by the path ID. The person is never deleted: they stay listed and searchable as Inactive, their surveys, responses and action items are kept, and their team memberships end. Repeating the call for an already inactive user changes nothing. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
                 "parameters": [
                     {
                         "description": "User ID",
@@ -3188,8 +3244,14 @@
                             "$ref": "#/definitions/MessageResponse"
                         }
                     },
+                    "404": {
+                        "description": "User not found",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
                     "500": {
-                        "description": "Failed to delete user",
+                        "description": "Failed to deactivate user",
                         "schema": {
                             "$ref": "#/definitions/ErrorResponse"
                         }
@@ -3200,7 +3262,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "summary": "Delete a user",
+                "summary": "Deactivate a user",
                 "tags": [
                     "Admin Users"
                 ]
