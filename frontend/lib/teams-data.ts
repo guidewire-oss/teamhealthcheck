@@ -6,7 +6,7 @@ export const TEAMS_DATA: Team[] = [
   {
     id: 'team1',
     name: 'Phoenix Squad',
-    cadence: 'quarterly',
+    cadence: 'half-yearly',
     nextCheckDate: '2024-03-31',
     members: ['lead1', 'mem1', 'mem2', 'mem3', 'mem4', 'mem5'],
     supervisorChain: [
@@ -37,7 +37,7 @@ export const TEAMS_DATA: Team[] = [
   {
     id: 'team3',
     name: 'Titan Squad',
-    cadence: 'quarterly',
+    cadence: 'half-yearly',
     nextCheckDate: '2024-03-31',
     members: ['lead3', 'mem11', 'mem12', 'mem13', 'mem14', 'mem15'],
     supervisorChain: [
@@ -69,7 +69,7 @@ export const TEAMS_DATA: Team[] = [
   {
     id: 'team5',
     name: 'Eagle Squad',
-    cadence: 'quarterly',
+    cadence: 'half-yearly',
     nextCheckDate: '2024-03-31',
     members: ['lead5', 'mem21', 'mem22', 'mem23', 'mem24', 'mem25'],
     supervisorChain: [
@@ -101,7 +101,7 @@ export const TEAMS_DATA: Team[] = [
   {
     id: 'team7',
     name: 'Raven Squad',
-    cadence: 'quarterly',
+    cadence: 'half-yearly',
     nextCheckDate: '2024-03-20',
     members: ['lead7', 'mem31', 'mem32', 'mem33', 'mem34', 'mem35'],
     supervisorChain: [

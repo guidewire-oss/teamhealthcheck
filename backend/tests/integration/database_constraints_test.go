@@ -229,7 +229,7 @@ var _ = Describe("Database Constraints", func() {
 		})
 
 		It("should accept valid cadence values", func() {
-			for i, cadence := range []string{"monthly", "quarterly", "half-yearly", "yearly"} {
+			for i, cadence := range []string{"monthly", "half-yearly", "yearly"} {
 				_, err := db.Exec(`
 					INSERT INTO teams (id, name, team_lead_id, cadence)
 					VALUES ($1, $2, 'cadence-test-user', $3)
@@ -255,8 +255,8 @@ var _ = Describe("Database Constraints", func() {
 			Expect(err.Error()).To(ContainSubstring("chk_teams_cadence_values"))
 		})
 
-		It("should reject legacy cadence values (weekly, biweekly)", func() {
-			for _, cadence := range []string{"weekly", "biweekly"} {
+		It("should reject legacy cadence values (weekly, biweekly, quarterly)", func() {
+			for _, cadence := range []string{"weekly", "biweekly", "quarterly"} {
 				_, err := db.Exec(`
 					INSERT INTO teams (id, name, team_lead_id, cadence)
 					VALUES ($1, $2, 'cadence-test-user', $3)

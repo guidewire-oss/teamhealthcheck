@@ -3203,7 +3203,6 @@ const docTemplate = `{
                 "cadence": {
                     "enum": [
                         "monthly",
-                        "quarterly",
                         "half-yearly",
                         "yearly"
                     ],
@@ -3362,6 +3361,7 @@ const docTemplate = `{
         "ErrorResponse": {
             "properties": {
                 "code": {
+                    "description": "Code is a machine-readable reason, one of healthcheck.PeriodEligibilityReason's values\n(\"duplicate\", \"future_period\", \"past_period\", \"invalid_period\") when the rejection is\nperiod-related.",
                     "example": "TEAM_NOT_FOUND",
                     "type": "string"
                 },
@@ -3370,7 +3370,15 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "message": {
+                    "description": "Message is a human-readable description; for a rejected submission it is exactly the\nmessage shown to the user (see healthcheck.DuplicateSubmissionError.Error() /\nhealthcheck.PeriodNotOpenError.Error()).",
                     "example": "No team exists with id team-unknown",
+                    "type": "string"
+                },
+                "nextEligiblePeriod": {
+                    "type": "string"
+                },
+                "submittedPeriod": {
+                    "description": "SubmittedPeriod and NextEligiblePeriod are populated for a duplicate-submission (409)\nerror. Both are user-facing period labels, e.g. \"H1 2026\" for a half-yearly team,\n\"Mar 2026\" for a monthly one -- never a quarter and never a day-level date. The survey\nexperience never exposes exact submission or eligibility dates to the client.\nNextEligiblePeriod is omitted when there is no later period to point to.",
                     "type": "string"
                 }
             },
@@ -4678,7 +4686,6 @@ const docTemplate = `{
                 "cadence": {
                     "enum": [
                         "monthly",
-                        "quarterly",
                         "half-yearly",
                         "yearly"
                     ],
