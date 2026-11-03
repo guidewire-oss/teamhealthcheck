@@ -236,7 +236,11 @@ func TestSyncAdmissionAndAdminOperations_AreRaceFree(t *testing.T) {
 			defer wg.Done()
 			_ = service.UpdateMaxDeletePercent(context.Background(), 25, func(context.Context, float64) error { return nil })
 		}()
-		go func() { defer wg.Done(); _, _ = service.DismissHoldIfIdle(context.Background()); _ = service.LockState(context.Background()) }()
+		go func() {
+			defer wg.Done()
+			_, _ = service.DismissHoldIfIdle(context.Background())
+			_ = service.LockState(context.Background())
+		}()
 	}
 	wg.Wait()
 }
