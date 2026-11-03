@@ -15,7 +15,7 @@ BEGIN
 
     IF inactive_users > 0 OR inactive_teams > 0 OR inactive_members > 0 THEN
         RAISE EXCEPTION
-            'cannot roll back 000026: % inactive user(s), % inactive team(s) and % inactive membership(s) exist; rolling back would reactivate them',
+            'cannot roll back 000027: % inactive user(s), % inactive team(s) and % inactive membership(s) exist; rolling back would reactivate them',
             inactive_users, inactive_teams, inactive_members;
     END IF;
 END $$;

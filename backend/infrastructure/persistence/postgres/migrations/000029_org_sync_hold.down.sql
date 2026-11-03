@@ -3,7 +3,7 @@
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM org_sync_hold) THEN
-        RAISE EXCEPTION 'cannot roll back 000028: an unresolved org sync mass-deletion hold exists; dismiss or override it first';
+        RAISE EXCEPTION 'cannot roll back 000029: an unresolved org sync mass-deletion hold exists; dismiss or override it first';
     END IF;
 END $$;
 
