@@ -369,8 +369,10 @@ describe('MassDeletionThresholdSettings', () => {
   describe('overlapping reads resolve in the wrong order', () => {
     const deferred = <T,>() => {
       let resolve!: (v: T) => void;
-      const promise = new Promise<T>((r) => { resolve = r; });
-      return { promise, resolve };
+      let reject!: (e: unknown) => void;
+      const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+      promise.catch(() => {}); // a rejected-but-ignored deferred must not raise an unhandled rejection
+      return { promise, resolve, reject };
     };
 
     it('ignores an older response that arrives after a newer one', async () => {
@@ -455,7 +457,7 @@ describe('MassDeletionThresholdSettings', () => {
       await waitFor(() => expect(input().value).toBe('35'));
 
       getThreshold.mockReset();
-      older.resolve(threshold()); // resolves fine but is stale -- and ignored
+      older.reject(new Error('stale read failed')); // fails late but is stale -- must not surface
       await new Promise((r) => setTimeout(r, 30));
 
       expect(screen.queryByTestId('threshold-load-error')).toBeNull();
