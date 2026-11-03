@@ -222,7 +222,11 @@ var _ = Describe("E2E: Organization Provider Sync", Serial, Ordered, Label("e2e"
 		By("Verifying the reported counts match the snapshot")
 		counts, err := page.Locator("[data-testid='sync-counts']").TextContent()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(counts).To(ContainSubstring("Users: 2 added"))
+		// The threshold suite also syncs this same fixture, and Ginkgo shuffles
+		// top-level containers, so the two users may already exist and be
+		// reported as unchanged instead of added. Pin the report's shape here;
+		// the exact rows are verified in the database below.
+		Expect(counts).To(MatchRegexp(`Users: \d+ added, \d+ updated, \d+ unchanged`))
 		// The membership total also counts removals of rows other specs left in the
 		// shared database, so only its presence is pinned here; the exact rows are
 		// verified against team_members below.
