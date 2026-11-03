@@ -9,6 +9,7 @@ import {
   refreshSyncLease,
   startSyncHeartbeat,
   SYNC_HEARTBEAT_MS,
+  SYNC_MAX_LEASE_MS,
   SYNC_STALE_TIMEOUT_MS,
   type AdminSyncState,
 } from '../admin-sync-state';
@@ -127,15 +128,48 @@ describe.each([
     expect(readSyncState()?.requestId).toBe(first);
   });
 
-  it('reclaims a finished, stale, or corrupt record', async () => {
+  // Each case must do more than return an id: the slot another tab reads has
+  // to now hold that id, in progress, replacing whatever was there.
+  const expectClaimed = (requestId: string | null, replaced: string | null) => {
+    expect(requestId).not.toBeNull();
+    expect(requestId).not.toBe(replaced);
+    const state = readSyncState();
+    expect(state?.requestId).toBe(requestId);
+    expect(state?.status).toBe('in_progress');
+  };
+
+  it('reclaims a finished record and replaces it in the slot', async () => {
     seed({ requestId: 'done', status: 'completed' });
-    expect(await acquireSyncLease()).not.toBeNull();
 
-    seed({ requestId: 'old', startedAt: Date.now() - 10 * SYNC_STALE_TIMEOUT_MS, updatedAt: Date.now() - 10 * SYNC_STALE_TIMEOUT_MS });
-    expect(await acquireSyncLease()).not.toBeNull();
+    expectClaimed(await acquireSyncLease(), 'done');
+  });
 
+  it('reclaims a stale record and replaces it in the slot', async () => {
+    const old = Date.now() - 10 * SYNC_STALE_TIMEOUT_MS;
+    seed({ requestId: 'old', startedAt: old, updatedAt: old });
+
+    expectClaimed(await acquireSyncLease(), 'old');
+  });
+
+  it('reclaims a failed record and replaces it in the slot', async () => {
+    seed({ requestId: 'failed-run', status: 'failed' });
+
+    expectClaimed(await acquireSyncLease(), 'failed-run');
+  });
+
+  it('reclaims a corrupt record and replaces it with a readable one', async () => {
     localStorage.setItem(KEY, '{not json');
-    expect(await acquireSyncLease()).not.toBeNull();
+    expect(readSyncState()).toBeNull(); // unreadable before
+
+    expectClaimed(await acquireSyncLease(), null);
+  });
+
+  it('the reclaimed lease then excludes other tabs', async () => {
+    seed({ requestId: 'done', status: 'completed' });
+    const mine = await acquireSyncLease();
+
+    expect(await acquireSyncLease()).toBeNull();
+    expect(readSyncState()?.requestId).toBe(mine);
   });
 
   it('clears the record when the requestId still matches', async () => {
@@ -175,11 +209,58 @@ describe.each([
     expect(readSyncState()?.requestId).toBe('someone-else');
   });
 
-  it('refresh restores the record if another tab\'s stale recovery cleared it mid-sync', async () => {
+  it('refresh reports a lost lease, and writes nothing, when the record has vanished', async () => {
     const id = (await acquireSyncLease())!;
     localStorage.removeItem(KEY);
+
+    expect(await refreshSyncLease(id)).toBe(false);
+    expect(readSyncState()).toBeNull(); // not resurrected
+  });
+
+  it('refresh reports a lost lease for an unreadable record and leaves it alone', async () => {
+    const id = (await acquireSyncLease())!;
+    localStorage.setItem(KEY, '{not json');
+
+    expect(await refreshSyncLease(id)).toBe(false);
+    expect(localStorage.getItem(KEY)).toBe('{not json');
+  });
+
+  it('refresh reports a lost lease when this request\'s own record is no longer in progress', async () => {
+    const id = (await acquireSyncLease())!;
+    seed({ requestId: id, status: 'completed' });
+
+    expect(await refreshSyncLease(id)).toBe(false);
+    expect(readSyncState()?.status).toBe('completed'); // not flipped back to in_progress
+  });
+
+  it('refresh preserves startedAt and every other field of the record it renews', async () => {
+    vi.useFakeTimers();
+    const id = (await acquireSyncLease())!;
+    const before = readSyncState()!;
+    vi.advanceTimersByTime(3_000);
+
     expect(await refreshSyncLease(id)).toBe(true);
-    expect(readSyncState()?.requestId).toBe(id);
+
+    expect(readSyncState()).toEqual({ ...before, updatedAt: before.updatedAt + 3_000 });
+  });
+
+  it('an old request cannot resurrect its lease after a newer tab acquired and cleared the slot', async () => {
+    vi.useFakeTimers();
+    const old = (await acquireSyncLease())!; // tab A, its heartbeat is throttled
+    vi.advanceTimersByTime(SYNC_STALE_TIMEOUT_MS + 1_000);
+
+    const newer = (await acquireSyncLease())!; // tab B reclaims the stale lease
+    expect(newer).not.toBe(old);
+    await clearSyncState(newer); // ...and finishes, clearing the slot
+    expect(readSyncState()).toBeNull();
+
+    expect(await refreshSyncLease(old)).toBe(false); // A's late heartbeat
+    expect(readSyncState()).toBeNull(); // slot stays free
+
+    // So the next Sync Now is not blocked by A's dead lease.
+    const next = await acquireSyncLease();
+    expect(next).not.toBeNull();
+    expect(readSyncState()?.requestId).toBe(next);
   });
 
   it('refresh skips the write when shouldWrite says the sync has settled', async () => {
@@ -339,6 +420,21 @@ describe('startSyncHeartbeat', () => {
     expect(vi.getTimerCount()).toBe(baseline);
   });
 
+  it('stops and reports when the record vanishes, instead of recreating it', async () => {
+    const id = (await acquireSyncLease())!;
+    const onLost = vi.fn();
+    const stopLater = startSyncHeartbeat(id, onLost);
+
+    localStorage.removeItem(KEY);
+    await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS);
+
+    expect(onLost).toHaveBeenCalledTimes(1);
+    expect(readSyncState()).toBeNull();
+    await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS * 5);
+    expect(readSyncState()).toBeNull(); // and it never comes back
+    stopLater();
+  });
+
   it('stops and reports when another request has taken the lease', async () => {
     const id = (await acquireSyncLease())!;
     const onLost = vi.fn();
@@ -402,5 +498,66 @@ describe('onSyncStateChange', () => {
     window.dispatchEvent(new StorageEvent('storage', { key: 'adminSyncState', newValue: null }));
 
     expect(seen).toHaveLength(0);
+  });
+});
+
+describe('startSyncHeartbeat -- bounded lease for a request that never settles', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    removeWebLocks();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('stops refreshing once the maximum lease duration is reached', async () => {
+    const id = (await acquireSyncLease())!;
+    const onExpired = vi.fn();
+    startSyncHeartbeat(id, undefined, onExpired, 5 * SYNC_HEARTBEAT_MS);
+
+    await vi.advanceTimersByTimeAsync(5 * SYNC_HEARTBEAT_MS + 1);
+
+    expect(onExpired).toHaveBeenCalledTimes(1);
+    const writes = vi.spyOn(Storage.prototype, 'setItem');
+    await vi.advanceTimersByTimeAsync(10 * SYNC_HEARTBEAT_MS);
+    expect(writes).not.toHaveBeenCalled(); // no further heartbeat writes
+    writes.mockRestore();
+  });
+
+  it('keeps refreshing right up to the bound', async () => {
+    const id = (await acquireSyncLease())!;
+    startSyncHeartbeat(id, undefined, undefined, 5 * SYNC_HEARTBEAT_MS);
+
+    await vi.advanceTimersByTimeAsync(4 * SYNC_HEARTBEAT_MS);
+
+    expect(isStale(readSyncState()!)).toBe(false);
+    expect(await acquireSyncLease()).toBeNull();
+  });
+
+  it('after the bound, stale recovery lets another tab reclaim the slot', async () => {
+    const id = (await acquireSyncLease())!;
+    startSyncHeartbeat(id, undefined, undefined, 3 * SYNC_HEARTBEAT_MS);
+
+    // Heartbeat dies at 3 beats; the lease then ages out SYNC_STALE_TIMEOUT_MS later.
+    await vi.advanceTimersByTimeAsync(3 * SYNC_HEARTBEAT_MS + SYNC_STALE_TIMEOUT_MS + SYNC_HEARTBEAT_MS);
+
+    expect(isStale(readSyncState()!)).toBe(true);
+    const next = await acquireSyncLease();
+    expect(next).not.toBeNull();
+    expect(next).not.toBe(id);
+    expect(readSyncState()?.requestId).toBe(next);
+  });
+
+  it('defaults the bound to SYNC_MAX_LEASE_MS, well beyond one stale timeout', async () => {
+    expect(SYNC_MAX_LEASE_MS).toBeGreaterThan(SYNC_STALE_TIMEOUT_MS);
+    const id = (await acquireSyncLease())!;
+    startSyncHeartbeat(id);
+
+    await vi.advanceTimersByTimeAsync(SYNC_MAX_LEASE_MS - SYNC_HEARTBEAT_MS);
+    expect(isStale(readSyncState()!)).toBe(false); // still held just under the default bound
+
+    await vi.advanceTimersByTimeAsync(SYNC_MAX_LEASE_MS + SYNC_STALE_TIMEOUT_MS);
+    expect(isStale(readSyncState()!)).toBe(true); // and gone well after it
   });
 });

@@ -24,8 +24,10 @@
  * unavailable (older browsers, insecure contexts) the same critical sections
  * run unserialized. That path is best effort: the compare-before-write still
  * stops a stale request from clobbering a record it can see, but a write by
- * another tab landing inside that window can still be lost. The lease expiry
- * bounds the damage: a lost record is restored by the owner's next heartbeat.
+ * another tab landing inside that window can still be lost. The damage is
+ * bounded: a request whose record is gone treats its lease as lost on its next
+ * heartbeat and stops, rather than writing the record back, and the server's
+ * own single-sync admission still prevents two syncs from running at once.
  *
  * onSyncStateChange complements this: the browser never fires `storage` in
  * the tab that made the change, so it is how a tab that mounted before a
@@ -42,6 +44,15 @@ export const SYNC_STALE_TIMEOUT_MS = 60_000;
 /** How often the owner refreshes its lease. Several beats fit inside
  * SYNC_STALE_TIMEOUT_MS so a throttled background timer does not forfeit it. */
 export const SYNC_HEARTBEAT_MS = 10_000;
+/**
+ * Upper bound on how long one request may keep its lease alive. A heartbeat
+ * that refreshed forever would let a request that hangs without ever settling
+ * lock every other tab out indefinitely, so after this long the heartbeat
+ * stops and the lease expires like any abandoned one (SYNC_STALE_TIMEOUT_MS
+ * later). The server's own single-sync admission still guards a genuinely
+ * running sync, so reclaiming the slot cannot start a second concurrent run.
+ */
+export const SYNC_MAX_LEASE_MS = 10 * 60_000;
 
 export type AdminSyncStatus = "in_progress" | "completed" | "failed";
 
@@ -130,13 +141,21 @@ export function acquireSyncLease(): Promise<string | null> {
 }
 
 /**
- * Heartbeat: advances `updatedAt` on the record this requestId owns. Returns
- * false once a different request owns the slot (the lease was lost and must
- * not be written over). If the record has simply vanished (another tab's
- * stale recovery cleared it while this request was still running) the owner
- * restores it. `shouldWrite` is checked inside the critical section so a
- * heartbeat already queued when the sync settles cannot resurrect a record
- * that settlement has just cleared.
+ * Heartbeat: advances `updatedAt` on the in-progress record this requestId
+ * owns, and returns true. Returns false -- the lease is lost and nothing is
+ * written -- when the slot holds anything else: a different request's record,
+ * a finished record, an unreadable one, or no record at all.
+ *
+ * A missing record in particular is NOT restored. It means someone cleared the
+ * slot, and the usual cause is that a newer request acquired it after this
+ * one's lease went stale and has since finished and cleared it. Writing this
+ * request's old lease back would resurrect a dead lease and block later Sync
+ * Now attempts until it aged out again. (The server's own single-sync
+ * admission still protects a request that really is still running.)
+ *
+ * `shouldWrite` is checked inside the critical section so a heartbeat already
+ * queued when the sync settles cannot write after settlement has cleared the
+ * record.
  */
 export function refreshSyncLease(requestId: string, shouldWrite: () => boolean = () => true): Promise<boolean> {
   return withSyncLock(() => {
@@ -144,13 +163,10 @@ export function refreshSyncLease(requestId: string, shouldWrite: () => boolean =
       if (!shouldWrite()) return true;
       const now = Date.now();
       const current = parseSyncState(localStorage.getItem(STORAGE_KEY));
-      if (current && current.requestId !== requestId) return false;
-      const state: AdminSyncState = {
-        status: "in_progress",
-        startedAt: current?.startedAt ?? now,
-        updatedAt: now,
-        requestId,
-      };
+      if (!current || current.requestId !== requestId || current.status !== "in_progress") {
+        return false;
+      }
+      const state: AdminSyncState = { ...current, updatedAt: now };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       return true;
     } catch {
@@ -216,8 +232,16 @@ const heartbeats = new Map<string, ReturnType<typeof setInterval>>();
  * unmount/remount while the request is genuinely still running; a hard
  * reload destroys it along with the request, which is exactly what lets the
  * lease expire. onLost fires if another request has taken the slot.
+ * The heartbeat also stops by itself once the request has held the lease for
+ * maxLeaseMs (SYNC_MAX_LEASE_MS), and onExpired fires, so a request that never
+ * settles cannot keep other tabs locked out forever.
  */
-export function startSyncHeartbeat(requestId: string, onLost?: () => void): () => void {
+export function startSyncHeartbeat(
+  requestId: string,
+  onLost?: () => void,
+  onExpired?: () => void,
+  maxLeaseMs: number = SYNC_MAX_LEASE_MS,
+): () => void {
   const stop = () => {
     const timer = heartbeats.get(requestId);
     if (timer !== undefined) {
@@ -227,7 +251,15 @@ export function startSyncHeartbeat(requestId: string, onLost?: () => void): () =
   };
   if (heartbeats.has(requestId)) return stop;
 
+  const startedAt = Date.now();
   const timer = setInterval(() => {
+    // Checked before refreshing: once the bound is reached no further write
+    // may extend the lease, so it ages out and stale recovery unlocks the slot.
+    if (Date.now() - startedAt >= maxLeaseMs) {
+      stop();
+      onExpired?.();
+      return;
+    }
     void refreshSyncLease(requestId, () => heartbeats.has(requestId)).then((stillOwner) => {
       if (!stillOwner) {
         stop();

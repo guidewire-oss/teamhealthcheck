@@ -21,6 +21,7 @@ import {
   isStale,
   msUntilStale,
   startSyncHeartbeat,
+  SYNC_HEARTBEAT_MS,
   getActiveSyncPromise,
   setActiveSyncPromise,
   getActiveRequestId,
@@ -111,15 +112,27 @@ export default function DataProviderConfig() {
   // Shared by the original click and by a remount that reattached to the
   // still-running request, so both paths clear state and update the UI
   // identically regardless of which component instance observes completion.
-  const settleSync = (outcome: { ok: true; result: OrganizationSyncResult } | { ok: false; error: any }) => {
+  const settleSync = async (outcome: { ok: true; result: OrganizationSyncResult } | { ok: false; error: any }) => {
     if (staleTimerRef.current) clearTimeout(staleTimerRef.current);
     if (!mountedRef.current) return;
-    if (requestIdRef.current) {
-      // Fire and forget: the clear is serialized behind any in-flight
-      // heartbeat by the sync lock, and is a no-op if a newer request owns
-      // the slot.
-      void clearSyncState(requestIdRef.current);
+
+    // Release the lease BEFORE dropping the module-level handle on the
+    // request. Dropping it first leaves a window where a remount finds no
+    // live promise but a still-fresh persisted record, and -- since a tab
+    // gets no `storage` event for its own clear -- would sit in "syncing"
+    // until the stale timer fired. While the clear is pending the handle
+    // still points at the (already settled) promise, so a remount reattaches
+    // to it and settles immediately instead. The clear is serialized behind
+    // any in-flight heartbeat by the sync lock and is a no-op if a newer
+    // request owns the slot; it never rejects.
+    const requestId = requestIdRef.current;
+    if (requestId) {
+      await clearSyncState(requestId);
     }
+    // Unmounted while the clear was in flight: leave the handle in place so a
+    // remount can still reattach to this settled promise and show the outcome.
+    if (!mountedRef.current) return;
+
     setActiveSyncPromise(null);
     setActiveRequestId(null);
     setSyncing(false);
@@ -162,8 +175,12 @@ export default function DataProviderConfig() {
         return;
       }
       setSyncing(true);
-      // +1ms so the re-check lands just past the stale boundary.
-      staleTimerRef.current = setTimeout(check, msUntilStale(persisted) + 1);
+      // Re-check at the stale boundary, but never wait longer than one
+      // heartbeat: this tab gets no `storage` event for a clear it (or a
+      // just-settled sibling instance) made itself, so a bounded poll is what
+      // guarantees a released lease is noticed within seconds rather than a
+      // full stale timeout. +1ms lands just past the boundary.
+      staleTimerRef.current = setTimeout(check, Math.min(msUntilStale(persisted) + 1, SYNC_HEARTBEAT_MS));
     };
     check();
   };
@@ -195,10 +212,10 @@ export default function DataProviderConfig() {
       setSyncing(true);
       liveSync.then(
         (result) => {
-          settleSync({ ok: true, result: result as OrganizationSyncResult });
+          void settleSync({ ok: true, result: result as OrganizationSyncResult });
         },
         (err) => {
-          settleSync({ ok: false, error: err });
+          void settleSync({ ok: false, error: err });
         }
       );
     } else {
@@ -292,9 +309,9 @@ export default function DataProviderConfig() {
     promise.then(stopHeartbeat, stopHeartbeat);
     try {
       const result = await promise;
-      settleSync({ ok: true, result });
+      void settleSync({ ok: true, result });
     } catch (err: any) {
-      settleSync({ ok: false, error: err });
+      void settleSync({ ok: false, error: err });
     }
   };
 

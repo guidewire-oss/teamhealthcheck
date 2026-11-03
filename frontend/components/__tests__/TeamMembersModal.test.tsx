@@ -65,10 +65,31 @@ describe('TeamMembersModal — add-member picker', () => {
   });
 
   it('shows the empty state when every user is already a member', async () => {
-    listAllUsers.mockResolvedValue([]);
+    // Users exist, and every one of them is already on the team, so the
+    // picker is empty only because members are filtered out.
+    getTeamMembers.mockResolvedValue({
+      members: [
+        { userId: 'u1', userName: 'User u1', email: 'u1@x.com' },
+        { userId: 'u2', userName: 'User u2', email: 'u2@x.com' },
+      ],
+    });
+    listAllUsers.mockResolvedValue([user('u1'), user('u2')]);
     renderModal();
 
     expect(await screen.findByText('All users are already members.')).toBeInTheDocument();
+    expect(screen.queryByTestId('available-user-row')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('member-row')).toHaveLength(2);
+  });
+
+  it('shows the no-match message, not the all-members one, when a search excludes everyone', async () => {
+    listAllUsers.mockResolvedValue([user('u1')]);
+    const u = userEvent.setup();
+    renderModal();
+
+    await u.type(await screen.findByTestId('member-search-input'), 'zzz-no-such-user');
+
+    expect(await screen.findByText('No matching users found.')).toBeInTheDocument();
+    expect(screen.queryByText('All users are already members.')).not.toBeInTheDocument();
   });
 
   it('shows an error instead of a partial list when loading users fails', async () => {

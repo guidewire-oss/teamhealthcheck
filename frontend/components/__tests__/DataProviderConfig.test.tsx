@@ -45,6 +45,8 @@ import {
   setActiveRequestId,
   SYNC_STALE_TIMEOUT_MS,
   SYNC_HEARTBEAT_MS,
+  SYNC_MAX_LEASE_MS,
+  acquireSyncLease,
   isStale,
 } from '@/lib/admin-sync-state';
 
@@ -860,6 +862,110 @@ describe('DataProviderConfig — sync lease (long-running sync, heartbeat, cross
     });
     await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
     expect(readSyncState()).toBeNull();
+  });
+
+  // The race: settle drops the in-memory handle on the request, but the lock
+  // serialized clear of the persisted lease finishes later. A remount in that
+  // gap must not be left parked on a lease that is about to disappear.
+  describe('SPA remount while the lease release is still in flight', () => {
+    let gated = false;
+    let pending: Array<() => void> = [];
+    const releaseGate = async () => {
+      gated = false;
+      await act(async () => {
+        pending.splice(0).forEach((run) => run());
+      });
+    };
+
+    beforeEach(() => {
+      gated = false;
+      pending = [];
+      // A Web Locks stand-in whose critical sections can be held back, to make
+      // the clear take as long as it likes.
+      Object.defineProperty(navigator, 'locks', {
+        configurable: true,
+        value: {
+          request: (_name: string, cb: () => unknown) =>
+            gated
+              ? new Promise((resolve) => pending.push(() => resolve(cb())))
+              : Promise.resolve().then(cb),
+        },
+      });
+    });
+    afterEach(() => {
+      delete (navigator as unknown as { locks?: unknown }).locks;
+    });
+
+    it('reattaches instead of parking on the old lease, then becomes idle once the release lands', async () => {
+      let release: (v: unknown) => void = () => {};
+      sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+      getSettings.mockResolvedValue(READY);
+      const first = render(<DataProviderConfig />);
+      await screen.findByTestId('sync-now-btn');
+      await click();
+      await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
+
+      // The request settles, but the lease release is held back.
+      gated = true;
+      await act(async () => {
+        release(SYNC_RESULT);
+      });
+      first.unmount();
+
+      render(<DataProviderConfig />);
+      await screen.findByTestId('sync-now-btn');
+      // The old lease is still on disk; the remount must treat the request as
+      // still settling, not as a foreign sync it has to time out.
+      expect(readSyncState()).not.toBeNull();
+      expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+
+      await releaseGate();
+
+      await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
+      expect(readSyncState()).toBeNull();
+      expect(await screen.findByTestId('sync-result')).toBeInTheDocument();
+    });
+
+    it('does not stay syncing for a full stale timeout when a lease is released behind its back', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      seedSyncState('in_progress', Date.now());
+      getSettings.mockResolvedValue(READY);
+      render(<DataProviderConfig />);
+      await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
+
+      // Released by something in this same tab: no `storage` event is fired.
+      localStorage.removeItem('adminSyncState');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS + 100);
+      });
+
+      expect(screen.getByTestId('sync-now-btn')).toBeEnabled(); // well inside SYNC_STALE_TIMEOUT_MS
+    });
+  });
+
+  it('lets other tabs reclaim the slot when a request hangs past the maximum lease duration', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    sync.mockImplementation(() => new Promise(() => {})); // never settles
+    await renderReady();
+    await click();
+    await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
+    const hungId = readSyncState()!.requestId;
+
+    // While inside the bound the lease is held and another tab is refused.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SYNC_MAX_LEASE_MS - SYNC_HEARTBEAT_MS * 2);
+    });
+    expect(await acquireSyncLease()).toBeNull();
+
+    // Past the bound the heartbeat stops, the lease goes stale, and it is reclaimable.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS * 2 + SYNC_STALE_TIMEOUT_MS + SYNC_HEARTBEAT_MS);
+    });
+    expect(isStale(readSyncState()!)).toBe(true);
+    const reclaimed = await acquireSyncLease();
+    expect(reclaimed).not.toBeNull();
+    expect(reclaimed).not.toBe(hungId);
   });
 
   it('recovers from a genuinely abandoned sync: no heartbeat, so the record is cleared after the timeout', async () => {
