@@ -99,7 +99,7 @@ A provider that can only send part of its organization sets `"snapshotType": "PA
 ```
 
 - `"COMPLETE"`, or omitting `snapshotType`, states that the snapshot is complete for its provider. Synchronization may mark externally managed records that are absent from the payload as inactive.
-- `"PARTIAL"` states that the payload is only a subset. Synchronization adds and updates the records it contains but never deactivates a record because it is absent.
+- `"PARTIAL"` states that the payload is only a subset. Synchronization adds and updates the records it contains, and never deactivates a record or ends a membership because it is absent. Memberships omitted from a partial snapshot are left unchanged.
 - Non-empty is never treated as evidence of completeness. Only an omitted or explicit `"COMPLETE"` value allows deactivation.
 - Empty `users` or `teams` are still rejected for a `PARTIAL` snapshot, as for any other snapshot.
 
@@ -113,3 +113,4 @@ A provider that can only send part of its organization sets `"snapshotType": "PA
 
 - Incompatible changes require a new contract version. Consumers of v1.0 reject unsupported versions.
 - Additive optional fields may be introduced within v1.0 only when existing consumers can safely ignore them.
+- `snapshotType` is the one exception, and it is safe only because of how v1.0 is deployed: the sole consumer is the Team Health Check synchronization service, which is released together with this document. A provider must not send `"PARTIAL"` to a deployment that predates the field, because such a consumer would ignore it and treat the payload as complete.

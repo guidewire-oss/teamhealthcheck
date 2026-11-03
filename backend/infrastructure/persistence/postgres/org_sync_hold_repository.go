@@ -61,7 +61,8 @@ func (r *OrgSyncHoldRepository) SaveHold(ctx context.Context, h orgsyncrun.Hold)
 }
 
 // ClearHold removes the hold and reports whether there was one. It also drops
-// the hold report stored on failed runs, in the same transaction. The admin UI
+// the hold report of the run that raised it (the newest run carrying one), in
+// the same transaction. Older runs keep their reports as history. The admin UI
 // derives its "Sync Anyway" banner from the latest failed run, so without this
 // a dismissed (or expired) hold would reappear after a page refresh. The run
 // itself stays FAILED, with its error message, as history.
@@ -81,7 +82,9 @@ func (r *OrgSyncHoldRepository) ClearHold(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("clear sync hold: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE org_sync_runs SET hold_report = NULL WHERE hold_report IS NOT NULL`); err != nil {
+		`UPDATE org_sync_runs SET hold_report = NULL
+		 WHERE id = (SELECT id FROM org_sync_runs WHERE hold_report IS NOT NULL
+		             ORDER BY created_at DESC, id DESC LIMIT 1)`); err != nil {
 		return false, fmt.Errorf("clear sync run hold reports: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

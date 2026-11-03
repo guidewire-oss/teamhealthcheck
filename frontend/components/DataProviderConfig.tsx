@@ -377,8 +377,8 @@ export default function DataProviderConfig() {
             )}
             {run.healthChecksDisabled > 0 && (
               <p className="text-sm text-amber-700 mt-1" data-testid="sync-health-checks-disabled">
-                Health checks were switched off for {run.healthChecksDisabled} team(s). They will stop receiving
-                surveys until the provider enables them again.
+                Health checks were switched off for {run.healthChecksDisabled} team(s). They are excluded from
+                survey-completion figures until the provider enables them again.
               </p>
             )}
             {run.healthChecksEnabled > 0 && (

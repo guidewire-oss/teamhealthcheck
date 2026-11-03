@@ -1058,10 +1058,17 @@ func protectedTeamSupervisorUserIDs(ctx context.Context, tx *sql.Tx) (map[string
 
 // markRunSucceeded writes the run's terminal SUCCESS state in the apply
 // transaction, including the snapshot type actually applied: the run row is
-// created before the snapshot is fetched, so it starts out as COMPLETE. The WHERE clause is the stale-worker guard: only a RUNNING run
-// can succeed, so if a recovery sweep already failed it the update matches no
+// created before the snapshot is fetched, so it starts out as COMPLETE.
+//
+// The WHERE clause is the stale-worker guard: only a RUNNING run can succeed, so if a recovery sweep already failed it the update matches no
 // row, this returns an error, and the whole apply rolls back.
 func markRunSucceeded(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, r *orgprovider.ApplyResult) error {
+	// The zero value means PARTIAL (see ApplyInput), and the column's CHECK
+	// constraint rejects an empty string.
+	snapshotType := in.SnapshotType
+	if snapshotType == "" {
+		snapshotType = orgprovider.SnapshotPartial
+	}
 	res, err := tx.ExecContext(ctx, `
 		UPDATE org_sync_runs SET
 			status = 'SUCCESS', stage = $16, completed_at = CURRENT_TIMESTAMP, heartbeat_at = CURRENT_TIMESTAMP,
@@ -1077,7 +1084,7 @@ func markRunSucceeded(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput
 		r.MembershipsAdded+r.MembershipsRemoved, r.UsersDeactivated+r.TeamsDeactivated,
 		r.UnchangedUsers, r.UnchangedTeams,
 		r.HealthChecksDisabled, r.HealthChecksEnabled, r.MassDeletionOverride != nil,
-		string(in.SnapshotType), pq.Array(orgsyncrun.StatusesBefore(orgsyncrun.StatusSuccess)),
+		string(snapshotType), pq.Array(orgsyncrun.StatusesBefore(orgsyncrun.StatusSuccess)),
 		string(orgsyncrun.StageCompleted))
 	if err != nil {
 		return fmt.Errorf("failed to record run success: %w", err)

@@ -216,7 +216,13 @@ func (h *OrganizationProviderHandler) DismissMassDeletionHold(c *gin.Context) {
 		return
 	}
 
-	h.syncService.DismissHold(c.Request.Context())
+	if _, err := h.syncService.DismissHold(c.Request.Context()); err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to dismiss the hold",
+			Message: "The hold could not be cleared. Try again.",
+		})
+		return
+	}
 
 	saved, err := h.settingsRepo.GetOrgSyncMaxDeletePercent(c.Request.Context())
 	if err != nil {

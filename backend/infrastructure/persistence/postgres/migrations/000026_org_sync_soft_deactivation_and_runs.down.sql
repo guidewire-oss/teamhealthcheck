@@ -1,8 +1,8 @@
 -- Refuses to roll back while anything is soft-deactivated. The is_active flags
 -- dropped below are the only record of a deactivation, so dropping them would
 -- silently reactivate every former user (sign-in, survey eligibility), team and
--- membership. Reactivate or hard-delete those rows deliberately first, then
--- re-run this migration.
+-- membership. Reactivate those rows first. Do not hard-delete users or teams:
+-- their rows cascade to action_items. Then re-run this migration.
 DO $$
 DECLARE
     inactive_users   BIGINT;

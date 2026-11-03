@@ -385,14 +385,25 @@ func (s *OrganizationSyncService) syncCore(ctx context.Context, opts SyncOptions
 		// the counts an admin reviews are the counts any override applies to.
 		var hold *orgprovider.MassDeletionHoldError
 		if errors.As(err, &hold) {
-			s.recordHold(ctx, maxDeletePercent, hold.Report)
+			if saveErr := s.recordHold(ctx, maxDeletePercent, hold.Report); saveErr != nil {
+				// Fail closed: surface the persistence failure instead of the
+				// hold, so the run is not reported as a cleanly held sync.
+				return nil, saveErr
+			}
 		}
 		return nil, err
 	}
 
 	// The attempt applied, so whatever hold preceded it is resolved and the
 	// threshold is editable again.
-	s.DismissHold(ctx)
+	//
+	// The apply has already committed, so a failure here cannot undo it and
+	// must not turn a committed sync into a reported failure. It is safe to
+	// continue: a hold that stays behind keeps the threshold frozen until it
+	// expires or an admin dismisses it, which errs toward the stricter guard.
+	if _, err := s.DismissHold(ctx); err != nil {
+		logger.Get().WithError(err).Error("sync applied but its earlier hold could not be cleared; threshold stays frozen until the hold expires or is dismissed")
+	}
 
 	// The supervisor chain is a denormalized cache derived from reports_to.
 	// Rebuilding it is best-effort and deliberately outside the transaction:
@@ -558,36 +569,41 @@ func (s *OrganizationSyncService) heldState(ctx context.Context) (SyncLockState,
 // DismissHold clears an unresolved hold, which re-enables threshold editing.
 // It is what an administrator does after deciding to fix the provider data
 // instead of overriding, and what a completed sync does implicitly. It reports
-// whether there was anything to clear.
-func (s *OrganizationSyncService) DismissHold(ctx context.Context) bool {
+// whether there was anything to clear. A storage failure is returned, not
+// folded into "nothing to clear": the hold may still be active.
+func (s *OrganizationSyncService) DismissHold(ctx context.Context) (bool, error) {
 	if s.holds != nil {
 		existed, err := s.holds.ClearHold(ctx)
 		if err != nil {
-			logger.Get().WithError(err).Error("could not clear the sync hold")
-			return false
+			return false, fmt.Errorf("could not clear the sync hold: %w", err)
 		}
-		return existed
+		return existed, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	existed := s.held != nil
 	s.held = nil
-	return existed
+	return existed, nil
 }
 
 // recordHold remembers a tripped guard, together with the threshold it was
 // judged against.
-func (s *OrganizationSyncService) recordHold(ctx context.Context, threshold float64, report orgprovider.MassDeletionReport) {
+//
+// It returns an error when the shared hold cannot be saved. The caller must
+// fail the run on that error rather than report a normal hold: an unsaved
+// hold leaves the threshold editable, so a retry could bypass the guard.
+func (s *OrganizationSyncService) recordHold(ctx context.Context, threshold float64, report orgprovider.MassDeletionReport) error {
 	heldAt := time.Now().UTC()
 	if s.holds != nil {
 		if err := s.holds.SaveHold(ctx, orgsyncrun.Hold{Threshold: threshold, Report: report, HeldAt: heldAt}); err != nil {
-			logger.Get().WithError(err).Error("could not persist the sync hold")
+			return fmt.Errorf("could not persist the sync hold: %w", err)
 		}
-		return
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.held = &heldSync{threshold: threshold, report: report, heldAt: heldAt}
+	return nil
 }
 
 // thresholdForRun returns the threshold this attempt is judged against: the
