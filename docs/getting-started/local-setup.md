@@ -103,6 +103,50 @@ SMTP_FROM=noreply@teams360.example.com
 VERSION=latest
 ```
 
+### Testing survey reminder emails
+
+The Remind buttons on the survey completion page send real email, so test them with the safety
+switches below. Each one limits who can be reached.
+
+| Variable | Effect |
+|---|---|
+| `EMAIL_MODE=log` | Sends nothing. Each reminder is written to the backend log (recipient, pods, survey period, subject and body). SES and SMTP settings are ignored. |
+| `EMAIL_TEST_POD=<pod name>` | Limits reminders to that pod's team lead and members. An unknown name sends nothing. |
+| `EMAIL_REDIRECT_TO=a@x.com,b@x.com` | Delivers reminders to those addresses instead of their real recipients. The email is sent unchanged (no test label), and the intended recipient is only written to the server log rather than passed separately to the mail sender. |
+
+An unknown `EMAIL_MODE`, or an `EMAIL_REDIRECT_TO` entry that is not a plain email address, turns
+email off instead of falling back to real delivery.
+
+**Dry run, nothing sent:**
+
+```bash
+export EMAIL_MODE=log
+export EMAIL_TEST_POD="<pod name>"
+```
+
+**Real delivery to your own inbox.** Keep the SMTP password out of files and out of your shell
+history by prompting for it. Put this in a script outside the repository, for example
+`~/teams360-smtp.sh`, and `source` it in the terminal that starts the backend:
+
+```bash
+unset EMAIL_MODE AWS_SES_REGION SES_FROM_ADDRESS   # log mode and SES would override SMTP
+
+export SMTP_HOST="smtp.example.com"
+export SMTP_PORT=587
+export SMTP_USERNAME="you@example.com"
+export SMTP_FROM="you@example.com"
+read -s "SMTP_PASSWORD?SMTP password (hidden): "; echo   # zsh; in bash use: read -s -p "SMTP password: " SMTP_PASSWORD
+export SMTP_PASSWORD
+
+export EMAIL_REDIRECT_TO="you@example.com"
+export EMAIL_TEST_POD="<pod name>"
+```
+
+Before clicking Send, check the backend startup log. Reminders are safe when it shows
+`SMTP email service configured` and `EMAIL_REDIRECT_TO set: reminder emails go ONLY to these
+addresses`. If it says `email will be delivered to REAL recipients`, stop the backend and check
+that `EMAIL_REDIRECT_TO` is set in the same terminal.
+
 ### Frontend-only env (optional)
 
 Next.js automatically loads `.env` / `.env.local` files from **`frontend/`** (not the repo root) at dev-server startup. If you need to override a frontend variable directly, create `frontend/.env.local`:

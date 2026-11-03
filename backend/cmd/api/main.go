@@ -178,20 +178,57 @@ func main() {
 	trendsService := trends.NewService(db)
 	jwtService := services.NewJWTService()
 
-	// Initialize email service: SES > SMTP > disabled
+	// Initialize email service. EMAIL_MODE decides first: "log" sends nothing
+	// and ignores any SES/SMTP settings in the environment, so a local run can
+	// never reach a real inbox. An unrecognized value disables email rather
+	// than falling through to real delivery. With EMAIL_MODE unset the order
+	// is SES > SMTP > disabled.
 	var emailSender email.Sender
-	if sesCfg := email.LoadSESConfig(); sesCfg != nil {
-		ses, err := email.NewSESEmailService(sesCfg)
-		if err != nil {
-			log.WithError(err).Fatal("failed to initialize SES email service")
+	switch mode := email.Mode(); mode {
+	case "":
+		if sesCfg := email.LoadSESConfig(); sesCfg != nil {
+			ses, err := email.NewSESEmailService(sesCfg)
+			if err != nil {
+				log.WithError(err).Fatal("failed to initialize SES email service")
+			}
+			emailSender = ses
+			log.WithField("region", sesCfg.Region).Info("AWS SES email service configured")
+		} else if smtpCfg := email.LoadConfig(); smtpCfg != nil {
+			emailSender = email.NewSMTPEmailService(smtpCfg)
+			log.WithField("host", smtpCfg.Host).Info("SMTP email service configured")
+		} else {
+			log.Info("No email service configured, email notifications disabled")
 		}
-		emailSender = ses
-		log.WithField("region", sesCfg.Region).Info("AWS SES email service configured")
-	} else if smtpCfg := email.LoadConfig(); smtpCfg != nil {
-		emailSender = email.NewSMTPEmailService(smtpCfg)
-		log.WithField("host", smtpCfg.Host).Info("SMTP email service configured")
-	} else {
-		log.Info("No email service configured, email notifications disabled")
+	case email.ModeLog:
+		emailSender = email.LogSender{}
+		log.Warn("EMAIL_MODE=log: NO email will be sent. SES/SMTP settings are ignored; emails are written to this log instead")
+	default:
+		log.WithField("EMAIL_MODE", mode).Error("unknown EMAIL_MODE (valid: log); email is DISABLED and nothing will be sent")
+	}
+	if pod := email.TestPod(); pod != "" {
+		log.WithField("pod", pod).Warn("EMAIL_TEST_POD set: survey reminders are restricted to this pod's team lead and members")
+	}
+
+	// EMAIL_REDIRECT_TO sends reminders to test addresses instead of their real
+	// recipients. Only the reminder path gets the real transport, and only
+	// through the redirect; every other email (survey notifications, password
+	// reset) goes to the log-only sender, so nothing else can reach a real
+	// person. An unusable value disables email rather than falling back to real
+	// recipients.
+	reminderSender := emailSender
+	switch targets, configured, rerr := email.RedirectTargets(os.Getenv(email.EnvRedirectTo)); {
+	case rerr != nil:
+		log.WithError(rerr).Error("invalid EMAIL_REDIRECT_TO; email is DISABLED and nothing will be sent")
+		emailSender, reminderSender = nil, nil
+	case configured && emailSender != nil && email.Delivers(emailSender):
+		reminderSender = email.NewRedirectSender(emailSender, targets)
+		emailSender = email.LogSender{}
+		log.WithField("redirect_to", strings.Join(targets, ", ")).
+			Warn("EMAIL_REDIRECT_TO set: reminder emails go ONLY to these addresses, never to the real recipients; other emails are not sent")
+	case configured:
+		log.Warn("EMAIL_REDIRECT_TO is set but there is no delivering email service (none configured, or EMAIL_MODE=log); nothing will be sent")
+	case emailSender != nil && email.Delivers(emailSender):
+		log.Warn("email will be delivered to REAL recipients; set EMAIL_REDIRECT_TO to test safely")
 	}
 
 	// Initialize notification service
@@ -254,7 +291,7 @@ func main() {
 	v1.SetupActionItemRoutes(router, db, jwtService)    // Action item CRUD routes
 	v1.SetupUserRoutes(router, db, jwtService)          // User routes with JWT + same-user-or-manager
 	v1.SetupProtectedUserRoutes(router, db, jwtService) // Protected routes requiring JWT
-	v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, healthCheckRepo, jwtService)
+	v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, healthCheckRepo, jwtService, v1.WithReminderSender(reminderSender), v1.WithReminderTestPod(email.TestPod()))
 	v1.SetupOrganizationProviderRoutes(router, orgSyncService, orgRepo, jwtService)
 	v1.SetupPasswordResetRoutes(router, passwordResetService, userRepo)
 

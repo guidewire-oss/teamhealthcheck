@@ -20,6 +20,7 @@ import ReminderTreeModal from "./ReminderTreeModal";
 import { getAssessmentPeriods } from "@/lib/api/health-checks";
 import {
   getSurveyCompletion,
+  sendSurveyReminders,
   type SurveyCompletionGroup,
   type SurveyCompletionOverview,
   type SurveyCompletionPersonGroup,
@@ -46,6 +47,7 @@ import {
   buildOrgReminderPlan,
   buildPersonReminderPlan,
   buildTeamReminderPlan,
+  formatReminderResult,
   type ReminderPlan,
 } from "@/lib/reminder-tree";
 import { STATUS_BADGE_CLASS, STATUS_LABEL } from "@/lib/status-colors";
@@ -66,8 +68,9 @@ import { STATUS_BADGE_CLASS, STATUS_LABEL } from "@/lib/status-colors";
  * alone as a top-level row; a team with no resolvable owner falls into the
  * catch-all "Other" group.
  *
- * The "Remind" buttons are UI-only for now (a local toast) — there is no
- * backend endpoint for sending reminders yet.
+ * The "Remind" buttons open a preview of who will be mailed; Send posts the
+ * target to POST /api/v1/admin/survey-completion/reminders, and the server
+ * emails the pods that are still in progress or not started.
  *
  * --- How to verify it's reading the DB behind DATABASE_URL ---
  * With the backend pointed at teams360_dummy, flip a team's status and
@@ -605,6 +608,7 @@ export default function SurveyCompletionDashboard() {
   const [activeFilter, setActiveFilter] = useState<CardFilter>("all");
   const [showOverallAnalytics, setShowOverallAnalytics] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [isSendingReminder, setIsSendingReminder] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [reminderPlan, setReminderPlan] = useState<ReminderPlan | null>(null);
@@ -668,12 +672,10 @@ export default function SurveyCompletionDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timePeriod]);
 
-  const showToast = (message: string) => {
-    // Placeholder feedback only — wire this to a real reminder endpoint later.
-    console.log("[SurveyCompletionDashboard]", message);
+  const showToast = (message: string, durationMs = 2200) => {
     setToast(message);
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 2200);
+    toastTimer.current = setTimeout(() => setToast(null), durationMs);
   };
 
   const toggleFilter = (filter: CardFilter) => {
@@ -707,10 +709,27 @@ export default function SurveyCompletionDashboard() {
     setReminderPlan(buildPersonReminderPlan(group));
   };
 
-  const handleSendReminder = () => {
-    if (!reminderPlan) return;
-    showToast(reminderPlan.toastMessage);
-    setReminderPlan(null);
+  const handleSendReminder = async () => {
+    if (!reminderPlan || isSendingReminder) return;
+    setIsSendingReminder(true);
+    try {
+      // Send for the period on screen, so the reminder matches the numbers
+      // the admin is looking at.
+      const result = await sendSurveyReminders({
+        ...reminderPlan.request,
+        assessmentPeriod: overview?.assessmentPeriod || undefined,
+      });
+      const problems =
+        result.failed.length + result.skippedNoEmail.length + result.podsWithoutTeamLead.length > 0;
+      showToast(formatReminderResult(result), problems ? 6000 : 2200);
+      setReminderPlan((current) => (current === reminderPlan ? null : current));
+    } catch (err) {
+      // Leave the preview open so the admin can retry.
+      const reason = err instanceof Error ? err.message : "unknown error";
+      showToast(`Could not send reminder: ${reason}`, 6000);
+    } finally {
+      setIsSendingReminder(false);
+    }
   };
 
   if (isLoading && !overview) {
@@ -1061,6 +1080,7 @@ export default function SurveyCompletionDashboard() {
           plan={reminderPlan}
           onCancel={() => setReminderPlan(null)}
           onSend={handleSendReminder}
+          isSending={isSendingReminder}
         />
       )}
     </div>
