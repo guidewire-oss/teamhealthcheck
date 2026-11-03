@@ -14,6 +14,21 @@ interface ReminderTreeModalProps {
 
 const TITLE_ID = 'reminder-tree-title';
 
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+function getFocusable(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (el) => !el.hasAttribute('hidden') && el.getAttribute('aria-hidden') !== 'true',
+  );
+}
+
 function getInitials(name: string): string {
   return name
     .split(' ')
@@ -59,6 +74,9 @@ function TreeNode({ node, depth }: { node: ReminderTreeNode; depth: number }) {
   return (
     <li className="relative pl-9" data-testid="reminder-tree-team-node">
       <span
+        role="img"
+        aria-label={STATUS_LABEL[node.status]}
+        data-testid="reminder-tree-status-dot"
         className={`absolute left-1.5 top-1.5 w-3.5 h-3.5 rounded-full flex-shrink-0 ${STATUS_DOT_CLASS[node.status]}`}
       />
       <span className="text-sm text-gray-800">
@@ -85,7 +103,7 @@ function Legend({ statuses, align }: { statuses: SurveyStatus[]; align: 'left' |
       <div className={`flex flex-wrap gap-x-3 gap-y-1 ${align === 'right' ? 'justify-end' : 'justify-start'}`}>
         {statuses.map((status) => (
           <span key={status} className="flex items-center gap-1.5 text-xs text-gray-600 whitespace-nowrap">
-            <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${STATUS_DOT_CLASS[status]}`} />
+            <span aria-hidden="true" className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${STATUS_DOT_CLASS[status]}`} />
             {STATUS_LABEL[status]}
           </span>
         ))}
@@ -96,12 +114,49 @@ function Legend({ statuses, align }: { statuses: SurveyStatus[]; align: 'left' |
 
 export default function ReminderTreeModal({ plan, onCancel, onSend }: ReminderTreeModalProps) {
   const statuses = getStatusesInTree(plan.root);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
+  // Kept in a ref so a parent re-render that passes a fresh onCancel does
+  // not re-run the effect below (which would re-steal focus and re-capture
+  // the "previously focused" element as something inside the dialog).
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel();
+      if (e.key === 'Escape') {
+        onCancelRef.current();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+
+      // aria-modal does not stop Tab from reaching the page behind the
+      // overlay, so keep focus cycling inside the dialog.
+      const focusable = getFocusable(dialog);
+      if (focusable.length === 0) {
+        e.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      const outside = !active || !dialog.contains(active);
+
+      if (e.shiftKey) {
+        if (outside || active === first || active === dialog) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else if (outside || active === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', handleKeyDown);
 
@@ -113,19 +168,21 @@ export default function ReminderTreeModal({ plan, onCancel, onSend }: ReminderTr
     // reader user is left with focus on a control that's still "inside" a
     // now-invisible page, or dropped back to the top of the document.
     previouslyFocused.current = document.activeElement as HTMLElement | null;
-    closeButtonRef.current?.focus();
+    (closeButtonRef.current ?? dialogRef.current)?.focus();
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
       document.body.style.overflow = previousOverflow;
       previouslyFocused.current?.focus();
     };
-  }, [onCancel]);
+  }, []);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div
-        className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[85vh] overflow-y-auto"
+        ref={dialogRef}
+        tabIndex={-1}
+        className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[85vh] overflow-y-auto focus:outline-none"
         data-testid="reminder-tree-modal"
         role="dialog"
         aria-modal="true"

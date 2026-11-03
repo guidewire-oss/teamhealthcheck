@@ -123,6 +123,45 @@ func (n *nodeBuilder) toDTO() (dto.SurveyCompletionGroupDTO, []dto.SurveyComplet
 	}, subtreeTeams
 }
 
+// findCycleMembers returns the set of nodes that lie on a cycle in the
+// child -> parent map. Each node is visited once (three-state walk), so the
+// cost is O(N) regardless of hierarchy depth.
+func findCycleMembers(parentOf map[string]string) map[string]bool {
+	const (
+		unvisited = iota
+		visiting
+		done
+	)
+	state := make(map[string]int, len(parentOf))
+	members := make(map[string]bool)
+
+	for start := range parentOf {
+		if state[start] != unvisited {
+			continue
+		}
+		var path []string
+		cur := start
+		for cur != "" && state[cur] == unvisited {
+			state[cur] = visiting
+			path = append(path, cur)
+			cur = parentOf[cur]
+		}
+		if cur != "" && state[cur] == visiting {
+			// Walked back into this path: everything from cur around is a cycle.
+			for n := cur; ; n = parentOf[n] {
+				members[n] = true
+				if parentOf[n] == cur {
+					break
+				}
+			}
+		}
+		for _, n := range path {
+			state[n] = done
+		}
+	}
+	return members
+}
+
 func buildSurveyCompletionResponse(overview *queries.SurveyCompletionOverview) dto.SurveyCompletionResponse {
 	nodeBuilders := make(map[string]*nodeBuilder, len(overview.Persons))
 	for _, p := range overview.Persons {
@@ -142,29 +181,15 @@ func buildSurveyCompletionResponse(overview *queries.SurveyCompletionOverview) d
 		parentOf[p.UserID] = p.ParentID
 	}
 
-	// isInCycle reports whether walking up from start's parent chain leads
-	// back to start itself, i.e. whether linking start under its parent
-	// would create (or be part of) a cycle. The seen set bounds the walk to
-	// at most len(parentOf) steps, so a cycle elsewhere in the data can never
-	// cause an infinite loop here.
-	isInCycle := func(start string) bool {
-		seen := map[string]bool{start: true}
-		for cur := parentOf[start]; cur != ""; cur = parentOf[cur] {
-			if cur == start {
-				return true
-			}
-			if seen[cur] {
-				return false // a different cycle, not involving start
-			}
-			seen[cur] = true
-		}
-		return false
-	}
+	// inCycle holds every user whose parent chain leads back to itself, i.e.
+	// whose attachment under its parent would create (or be part of) a cycle.
+	// It is computed once in O(N) so each person is not re-walked per request.
+	inCycle := findCycleMembers(parentOf)
 
 	var rootOrder []string
 	for _, p := range overview.Persons {
 		if p.ParentID != "" {
-			if parent, ok := nodeBuilders[p.ParentID]; ok && !isInCycle(p.UserID) {
+			if parent, ok := nodeBuilders[p.ParentID]; ok && !inCycle[p.UserID] {
 				parent.children = append(parent.children, nodeBuilders[p.UserID])
 				continue
 			}

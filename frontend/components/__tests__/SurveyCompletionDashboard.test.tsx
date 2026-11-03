@@ -713,6 +713,113 @@ describe('SurveyCompletionDashboard period switch', () => {
   });
 });
 
+// Recovery from a failed period fetch: the dropdown stays available, Retry
+// re-fetches without a reload, and stale data never shows under the wrong period.
+describe('SurveyCompletionDashboard — fetch failure recovery', () => {
+  beforeEach(() => {
+    vi.mocked(getAssessmentPeriods).mockResolvedValue(['2026 H1', '2026 H2']);
+  });
+
+  async function loadH1ThenFailH2() {
+    let h2Attempts = 0;
+    vi.mocked(getSurveyCompletion).mockImplementation(async (period?: string) => {
+      if (period === '2026 H2') {
+        h2Attempts += 1;
+        if (h2Attempts === 1) throw new Error('Unknown assessment period');
+        return overview({ assessmentPeriod: '2026 H2', totalTeams: 9 });
+      }
+      return overview({ assessmentPeriod: '2026 H1', totalTeams: 5 });
+    });
+    render(<SurveyCompletionDashboard />);
+    await screen.findByTestId('survey-card-total');
+    await userEvent.selectOptions(screen.getByTestId('survey-period-select'), '2026 H2');
+    await screen.findByTestId('survey-dashboard-error');
+  }
+
+  it('keeps the period selector, on the failed period, alongside the error', async () => {
+    await loadH1ThenFailH2();
+
+    expect(screen.getByTestId('survey-period-select')).toHaveValue('2026 H2');
+    expect(screen.getByRole('alert')).toHaveTextContent('Unknown assessment period');
+    expect(screen.queryByTestId('survey-card-total')).not.toBeInTheDocument();
+  });
+
+  it('Retry re-fetches the selected period without a reload and shows its data', async () => {
+    await loadH1ThenFailH2();
+    vi.mocked(getSurveyCompletion).mockClear();
+
+    await userEvent.click(screen.getByTestId('survey-dashboard-retry'));
+
+    await waitFor(() => expect(screen.getByTestId('survey-card-total').textContent).toContain('9'));
+    expect(vi.mocked(getSurveyCompletion)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getSurveyCompletion)).toHaveBeenCalledWith('2026 H2');
+    expect(screen.queryByTestId('survey-dashboard-error')).not.toBeInTheDocument();
+  });
+
+  it('shows the error again, still without stale data, when Retry also fails', async () => {
+    await loadH1ThenFailH2();
+    vi.mocked(getSurveyCompletion).mockRejectedValue(new Error('still down'));
+
+    await userEvent.click(screen.getByTestId('survey-dashboard-retry'));
+
+    expect(await screen.findByText(/still down/)).toBeInTheDocument();
+    expect(screen.queryByTestId('survey-card-total')).not.toBeInTheDocument();
+    expect(screen.getByTestId('survey-dashboard-retry')).toBeInTheDocument();
+  });
+
+  it('lets the admin switch to another period after an error, including the last good one', async () => {
+    await loadH1ThenFailH2();
+
+    await userEvent.selectOptions(screen.getByTestId('survey-period-select'), '2026 H1');
+
+    await waitFor(() => expect(screen.getByTestId('survey-card-total').textContent).toContain('5'));
+    expect(screen.queryByTestId('survey-dashboard-error')).not.toBeInTheDocument();
+  });
+
+  it('never shows the previous period\'s data while a retry is loading', async () => {
+    await loadH1ThenFailH2();
+    const pending = deferredPromise<SurveyCompletionOverview>();
+    vi.mocked(getSurveyCompletion).mockImplementation(() => pending.promise);
+
+    await userEvent.click(screen.getByTestId('survey-dashboard-retry'));
+
+    expect(await screen.findByTestId('survey-dashboard-loading')).toBeInTheDocument();
+    expect(screen.queryByTestId('survey-card-total')).not.toBeInTheDocument();
+    pending.resolve(overview({ assessmentPeriod: '2026 H2', totalTeams: 9 }));
+    await waitFor(() => expect(screen.getByTestId('survey-card-total').textContent).toContain('9'));
+  });
+
+  it('recovers when the very first load fails, offering the selector and Retry', async () => {
+    vi.mocked(getSurveyCompletion)
+      .mockRejectedValueOnce(new Error('cold start failure'))
+      .mockResolvedValue(overview({ assessmentPeriod: '2026 H2', totalTeams: 7 }));
+    render(<SurveyCompletionDashboard />);
+
+    await screen.findByTestId('survey-dashboard-error');
+    expect(screen.getByTestId('survey-period-select')).toHaveValue('');
+
+    await userEvent.click(screen.getByTestId('survey-dashboard-retry'));
+
+    await waitFor(() => expect(screen.getByTestId('survey-card-total').textContent).toContain('7'));
+  });
+
+  it('hides the selector but still offers Retry when the period list itself failed to load', async () => {
+    vi.mocked(getAssessmentPeriods).mockRejectedValueOnce(new Error('periods down')).mockResolvedValue(['2026 H1']);
+    vi.mocked(getSurveyCompletion)
+      .mockRejectedValueOnce(new Error('overview down'))
+      .mockResolvedValue(overview({ assessmentPeriod: '2026 H1', totalTeams: 3 }));
+    render(<SurveyCompletionDashboard />);
+
+    await screen.findByTestId('survey-dashboard-error');
+    expect(screen.queryByTestId('survey-period-select')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('survey-dashboard-retry'));
+
+    await waitFor(() => expect(screen.getByTestId('survey-card-total').textContent).toContain('3'));
+    expect(screen.getByTestId('survey-period-select')).toBeInTheDocument();
+  });
+});
+
 // The bulk "Remind N pending pods" button should only appear for filters
 // scoped to pods that could plausibly still need a nudge (Opted In, In
 // Progress, Not Started), and must react immediately to filter switches

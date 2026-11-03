@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { X, AlertCircle, Loader2, Plus, Trash2, Search } from 'lucide-react';
 import {
   getTeamMembers,
   addTeamMember,
   removeTeamMember,
-  listUsers,
+  listAllUsers,
   type TeamMemberAdmin,
   type AdminUser,
 } from '@/lib/api/admin';
@@ -30,24 +30,38 @@ export default function TeamMembersModal({
   const [adding, setAdding] = useState(false);
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
 
+  // Cancels the in-flight load when the team changes, the modal unmounts, or
+  // a newer load supersedes it, so a slow earlier response can never
+  // overwrite fresher data.
+  const loadAbortRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
     loadData();
+    return () => loadAbortRef.current?.abort();
   }, [teamId]);
 
   const loadData = async () => {
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+
     setLoading(true);
     setError(null);
     try {
-      const [membersRes, usersRes] = await Promise.all([
+      // The picker needs every user, not just the first page of the paginated
+      // listing, or anyone past the first page could never be added.
+      const [membersRes, users] = await Promise.all([
         getTeamMembers(teamId),
-        listUsers(),
+        listAllUsers({ signal: controller.signal }),
       ]);
+      if (controller.signal.aborted) return;
       setMembers(membersRes.members || []);
-      setAllUsers(usersRes.users || []);
+      setAllUsers(users);
     } catch (err) {
+      if (controller.signal.aborted) return;
       setError(err instanceof Error ? err.message : 'Failed to load data');
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   };
 

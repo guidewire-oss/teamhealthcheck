@@ -597,6 +597,45 @@ function PersonGroupRows({
   );
 }
 
+/**
+ * The time-period dropdown, shared by the loaded view and the load-failure
+ * view so a failed fetch for one period never strands the admin without a way
+ * to pick another. `value` is "" when no period has resolved yet (the very
+ * first fetch failed), which renders a disabled placeholder.
+ */
+function PeriodSelect({
+  periods,
+  value,
+  onChange,
+}: {
+  periods: string[];
+  value: string;
+  onChange: (period: string) => void;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+      Time period
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        data-testid="survey-period-select"
+        className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+      >
+        {value === "" && (
+          <option value="" disabled>
+            Select a period
+          </option>
+        )}
+        {periods.map((period) => (
+          <option key={period} value={period}>
+            {period}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 export default function SurveyCompletionDashboard() {
   const [periods, setPeriods] = useState<string[]>([]);
   const [timePeriod, setTimePeriod] = useState<string | undefined>(undefined);
@@ -616,13 +655,25 @@ export default function SurveyCompletionDashboard() {
   // (fetch for real), even though both look identical from the dependency
   // array's point of view: timePeriod changing.
   const lastFetchedPeriod = useRef<string | undefined>(undefined);
+  // Bumped by the Retry button to re-run the fetch effect for the SAME
+  // selected period, which its [timePeriod] dependency alone would not do.
+  const [reloadKey, setReloadKey] = useState(0);
 
-  // Load the list of assessment periods once, for the period dropdown.
+  // Load the list of assessment periods for the dropdown, and again on Retry
+  // so a failure of this request does not leave the dropdown empty for good.
   useEffect(() => {
+    let cancelled = false;
     getAssessmentPeriods()
-      .then((fetched) => setPeriods(fetched))
-      .catch(() => setPeriods([]));
-  }, []);
+      .then((fetched) => {
+        if (!cancelled) setPeriods(fetched);
+      })
+      .catch(() => {
+        if (!cancelled) setPeriods([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
 
   // Fetch the overview whenever the selected period changes. Passing
   // `undefined` lets the backend pick the most recent period with data,
@@ -648,6 +699,11 @@ export default function SurveyCompletionDashboard() {
     // (and any fetch error would be swallowed entirely, with no visible
     // indication anything went wrong).
     setOverview(null);
+    // Nothing is on screen for any period now, so none counts as "already
+    // fetched". Otherwise, after a failed switch, picking the last
+    // successfully loaded period again would be skipped as an echo and leave
+    // the error state stuck.
+    lastFetchedPeriod.current = undefined;
 
     getSurveyCompletion(timePeriod)
       .then((data) => {
@@ -668,7 +724,7 @@ export default function SurveyCompletionDashboard() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timePeriod]);
+  }, [timePeriod, reloadKey]);
 
   const showToast = (message: string) => {
     // Placeholder feedback only — wire this to a real reminder endpoint later.
@@ -725,11 +781,27 @@ export default function SurveyCompletionDashboard() {
 
   if (error && !overview) {
     return (
-      <div
-        className="bg-white rounded-xl border border-red-200 p-12 text-center text-sm text-red-600"
-        data-testid="survey-dashboard-error"
-      >
-        Failed to load survey completion data: {error}
+      <div className="space-y-4" data-testid="survey-dashboard-error-view">
+        {periods.length > 0 && (
+          <div className="flex justify-end">
+            <PeriodSelect periods={periods} value={timePeriod ?? ""} onChange={setTimePeriod} />
+          </div>
+        )}
+        <div
+          className="bg-white rounded-xl border border-red-200 p-12 text-center text-sm text-red-600"
+          data-testid="survey-dashboard-error"
+          role="alert"
+        >
+          <p>Failed to load survey completion data: {error}</p>
+          <button
+            type="button"
+            onClick={() => setReloadKey((key) => key + 1)}
+            data-testid="survey-dashboard-retry"
+            className="mt-4 px-4 py-2 bg-white text-red-700 border border-red-300 rounded-lg text-sm font-semibold hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-500"
+          >
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
@@ -822,21 +894,11 @@ export default function SurveyCompletionDashboard() {
             Admin only &middot; PDO department &middot; participation metadata &mdash; no individual responses
           </p>
         </div>
-        <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
-          Time period
-          <select
-            value={timePeriod ?? overview.assessmentPeriod}
-            onChange={(e) => setTimePeriod(e.target.value)}
-            data-testid="survey-period-select"
-            className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-          >
-            {periods.map((period) => (
-              <option key={period} value={period}>
-                {period}
-              </option>
-            ))}
-          </select>
-        </label>
+        <PeriodSelect
+          periods={periods}
+          value={timePeriod ?? overview.assessmentPeriod}
+          onChange={setTimePeriod}
+        />
       </div>
 
       {/* Summary metric cards */}

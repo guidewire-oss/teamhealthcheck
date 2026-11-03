@@ -40,11 +40,24 @@ vi.mock('@/lib/api/admin', async (importOriginal) => {
 import DataProviderConfig from '../DataProviderConfig';
 import {
   readSyncState,
-  writeSyncState,
+  startSyncHeartbeat,
   setActiveSyncPromise,
   setActiveRequestId,
   SYNC_STALE_TIMEOUT_MS,
+  SYNC_HEARTBEAT_MS,
+  isStale,
 } from '@/lib/admin-sync-state';
+
+// Seeds the shared slot the way another tab (or a pre-reload page) would have
+// left it. updatedAt equals startedAt, i.e. no heartbeat has landed since.
+function seedSyncState(status: 'in_progress' | 'completed' | 'failed', startedAt: number = Date.now()): string {
+  const requestId = `seed-${Math.random().toString(36).slice(2)}`;
+  localStorage.setItem(
+    'adminSyncState',
+    JSON.stringify({ status, startedAt, updatedAt: startedAt, requestId })
+  );
+  return requestId;
+}
 
 const READY = {
   provider: 'data-provider',
@@ -325,7 +338,7 @@ describe('DataProviderConfig — persisted sync state (reload, tab switch, navig
   });
 
   it('restores a disabled, syncing button on remount (refresh) when a fresh in-progress state is persisted', async () => {
-    writeSyncState('in_progress', Date.now());
+    seedSyncState('in_progress', Date.now());
     // No live promise survives a real reload, and the sync API must not be
     // called again just because a valid in-progress record exists.
     getSettings.mockResolvedValue(READY);
@@ -339,7 +352,7 @@ describe('DataProviderConfig — persisted sync state (reload, tab switch, navig
   });
 
   it('discards a stale in-progress state on remount and re-enables the button without calling the API', async () => {
-    writeSyncState('in_progress', Date.now() - (SYNC_STALE_TIMEOUT_MS + 1000));
+    seedSyncState('in_progress', Date.now() - (SYNC_STALE_TIMEOUT_MS + 1000));
     getSettings.mockResolvedValue(READY);
 
     render(<DataProviderConfig />);
@@ -352,7 +365,7 @@ describe('DataProviderConfig — persisted sync state (reload, tab switch, navig
 
   it('self-clears a valid-but-unresolved in-progress state once the stale timeout elapses', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    writeSyncState('in_progress', Date.now());
+    seedSyncState('in_progress', Date.now());
     getSettings.mockResolvedValue(READY);
 
     render(<DataProviderConfig />);
@@ -454,7 +467,7 @@ describe('DataProviderConfig — persisted sync state (reload, tab switch, navig
     await renderReady();
     expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
 
-    const otherTabRequestId = writeSyncState('in_progress');
+    const otherTabRequestId = seedSyncState('in_progress');
     act(() => {
       window.dispatchEvent(
         new StorageEvent('storage', {
@@ -469,7 +482,7 @@ describe('DataProviderConfig — persisted sync state (reload, tab switch, navig
 
     // The other tab finishes and clears its own record.
     const { clearSyncState } = await import('@/lib/admin-sync-state');
-    clearSyncState(otherTabRequestId);
+    await clearSyncState(otherTabRequestId);
     act(() => {
       window.dispatchEvent(new StorageEvent('storage', { key: 'adminSyncState', newValue: null }));
     });
@@ -481,28 +494,33 @@ describe('DataProviderConfig — persisted sync state (reload, tab switch, navig
     // This tab discovers an in-progress record left over from a reload and
     // starts timing it out.
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    const staleOwnerRequestId = writeSyncState('in_progress', Date.now());
+    const staleOwnerRequestId = seedSyncState('in_progress', Date.now());
     getSettings.mockResolvedValue(READY);
 
     render(<DataProviderConfig />);
     await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
 
     // Before the timeout fires, a different tab starts its own, genuinely
-    // fresh sync -- taking over the shared slot with a new requestId.
+    // fresh sync -- taking over the shared slot with a new requestId -- and,
+    // being alive, keeps heartbeating it.
     const { clearSyncState } = await import('@/lib/admin-sync-state');
-    const freshRequestId = writeSyncState('in_progress', Date.now());
+    const freshRequestId = seedSyncState('in_progress', Date.now());
     expect(freshRequestId).not.toBe(staleOwnerRequestId);
+    const stopOtherTabHeartbeat = startSyncHeartbeat(freshRequestId);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(SYNC_STALE_TIMEOUT_MS + 100);
     });
 
-    // The old record's timeout fired, but clearSyncState was scoped to the
-    // requestId it originally read, so it must not have erased the newer one.
+    // The old record's timeout fired, but it is scoped to the requestId it
+    // originally read, and the newer record has been kept alive, so it must
+    // not have been erased.
     const state = readSyncState();
     expect(state).not.toBeNull();
     expect(state?.requestId).toBe(freshRequestId);
-    clearSyncState(freshRequestId);
+    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+    stopOtherTabHeartbeat();
+    await clearSyncState(freshRequestId);
   });
 });
 
@@ -704,5 +722,128 @@ describe('DataProviderConfig — mass-deletion hold and Sync Anyway override', (
     // Dismissing resolves the review; it never applies the sync.
     expect(sync).toHaveBeenCalledTimes(syncCallsBefore);
     await waitFor(() => expect(screen.getByTestId('threshold-input')).not.toBeDisabled());
+  });
+});
+
+describe('DataProviderConfig — sync lease (long-running sync, heartbeat, cross-tab)', () => {
+  const click = async () => {
+    await act(async () => {
+      screen.getByTestId('sync-now-btn').click();
+    });
+  };
+
+  it('keeps the lease alive for a sync that outlasts SYNC_STALE_TIMEOUT_MS, then releases it on completion', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let release: (v: unknown) => void = () => {};
+    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    await renderReady();
+    await click();
+    await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3 * SYNC_STALE_TIMEOUT_MS);
+    });
+
+    const state = readSyncState()!;
+    expect(state).not.toBeNull();
+    expect(isStale(state)).toBe(false); // heartbeat kept advancing updatedAt
+    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+
+    await act(async () => {
+      release(SYNC_RESULT);
+    });
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
+    expect(readSyncState()).toBeNull();
+
+    // No heartbeat left behind to recreate the record.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS * 3);
+    });
+    expect(readSyncState()).toBeNull();
+  });
+
+  it('stops heartbeating and clears the lease when the sync fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let fail: (e: unknown) => void = () => {};
+    sync.mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
+    await renderReady();
+    await click();
+    await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
+
+    await act(async () => {
+      fail(new Error('boom'));
+    });
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
+    expect(readSyncState()).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS * 3);
+    });
+    expect(readSyncState()).toBeNull();
+  });
+
+  it('keeps heartbeating across an unmount/remount while the request is still running', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let release: (v: unknown) => void = () => {};
+    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    getSettings.mockResolvedValue(READY);
+    const { unmount } = render(<DataProviderConfig />);
+    await screen.findByTestId('sync-now-btn');
+    await click();
+    await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
+
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2 * SYNC_STALE_TIMEOUT_MS);
+    });
+    expect(isStale(readSyncState()!)).toBe(false);
+
+    render(<DataProviderConfig />);
+    await screen.findByTestId('sync-now-btn');
+    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+
+    await act(async () => {
+      release(SYNC_RESULT);
+    });
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
+    expect(readSyncState()).toBeNull();
+  });
+
+  it('recovers from a genuinely abandoned sync: no heartbeat, so the record is cleared after the timeout', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    seedSyncState('in_progress', Date.now());
+    getSettings.mockResolvedValue(READY);
+    render(<DataProviderConfig />);
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SYNC_STALE_TIMEOUT_MS + 1_000);
+    });
+
+    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
+    expect(readSyncState()).toBeNull();
+  });
+
+  it("does not start a duplicate sync when another tab already holds a live lease this tab hasn't heard about", async () => {
+    await renderReady(); // idle: no record, no storage event yet
+    const otherTab = seedSyncState('in_progress', Date.now());
+
+    await click();
+
+    expect(sync).not.toHaveBeenCalled();
+    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+    expect(readSyncState()?.requestId).toBe(otherTab);
+  });
+
+  it('ignores a rapid second click while the first is still acquiring its lease', async () => {
+    sync.mockImplementation(() => new Promise(() => {}));
+    await renderReady();
+
+    await act(async () => {
+      screen.getByTestId('sync-now-btn').click();
+      screen.getByTestId('sync-now-btn').click();
+    });
+
+    await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
   });
 });

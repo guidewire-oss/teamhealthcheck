@@ -16,10 +16,11 @@ import {
 } from "@/lib/api/admin";
 import {
   readSyncState,
-  writeSyncState,
+  acquireSyncLease,
   clearSyncState,
   isStale,
-  SYNC_STALE_TIMEOUT_MS,
+  msUntilStale,
+  startSyncHeartbeat,
   getActiveSyncPromise,
   setActiveSyncPromise,
   getActiveRequestId,
@@ -110,7 +111,10 @@ export default function DataProviderConfig() {
     if (staleTimerRef.current) clearTimeout(staleTimerRef.current);
     if (!mountedRef.current) return;
     if (requestIdRef.current) {
-      clearSyncState(requestIdRef.current);
+      // Fire and forget: the clear is serialized behind any in-flight
+      // heartbeat by the sync lock, and is a no-op if a newer request owns
+      // the slot.
+      void clearSyncState(requestIdRef.current);
     }
     setActiveSyncPromise(null);
     setActiveRequestId(null);
@@ -131,6 +135,37 @@ export default function DataProviderConfig() {
       setError(outcome.error?.message || "Synchronization failed");
     }
   };
+
+  // Watches a sync that is running somewhere this tab cannot observe (another
+  // tab, or a request a reload orphaned). Each check re-reads the lease: a
+  // fresh heartbeat reschedules the check for when it would next go stale,
+  // while a record that has stopped being refreshed is cleared (scoped to
+  // that exact requestId, so a newer sync that took the slot is untouched).
+  const followPersistedSync = () => {
+    if (staleTimerRef.current) clearTimeout(staleTimerRef.current);
+    const check = () => {
+      const persisted = readSyncState();
+      if (!persisted || persisted.status !== "in_progress") {
+        setSyncing(false);
+        return;
+      }
+      if (isStale(persisted)) {
+        void clearSyncState(persisted.requestId).then(() => {
+          if (!mountedRef.current) return;
+          const fresh = readSyncState();
+          setSyncing(!!fresh && fresh.status === "in_progress" && !isStale(fresh));
+        });
+        return;
+      }
+      setSyncing(true);
+      // +1ms so the re-check lands just past the stale boundary.
+      staleTimerRef.current = setTimeout(check, msUntilStale(persisted) + 1);
+    };
+    check();
+  };
+  // Blocks a second click from starting a second acquire while the first is
+  // still waiting on the lock.
+  const startingRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -166,25 +201,12 @@ export default function DataProviderConfig() {
       // No live promise in this session -- either nothing is running, or a
       // hard reload destroyed the module graph along with the real request
       // (which the backend also aborts server-side; see admin-sync-state.ts).
-      // Fall back to the persisted snapshot, bounded by a stale timeout so a
-      // reload that outlives the real sync never disables the button forever.
+      // Fall back to the persisted lease, which the owning tab keeps fresh
+      // with a heartbeat while it is alive, so a record that stops being
+      // refreshed for SYNC_STALE_TIMEOUT_MS is genuinely abandoned.
       const persisted = readSyncState();
       if (persisted && persisted.status === "in_progress") {
-        if (isStale(persisted)) {
-          clearSyncState(persisted.requestId);
-          setSyncing(false);
-        } else {
-          setSyncing(true);
-          const remaining = SYNC_STALE_TIMEOUT_MS - (Date.now() - persisted.startedAt);
-          staleTimerRef.current = setTimeout(() => {
-            // Scoped to the record we actually timed: if another tab's
-            // fresher sync has since taken the slot, leave it alone and
-            // reflect its real state instead of assuming it's safe to clear.
-            clearSyncState(persisted.requestId);
-            const fresh = readSyncState();
-            setSyncing(!!fresh && fresh.status === "in_progress" && !isStale(fresh));
-          }, remaining);
-        }
+        followPersistedSync();
       }
     }
 
@@ -222,14 +244,27 @@ export default function DataProviderConfig() {
   const handleSync = async (overrideMassDeletion = false, confirmedReport?: MassDeletionReport) => {
     // Guard as well as disable: a double-submit must not reach the backend,
     // which would answer the second call with a 409.
-    if (syncing) return;
+    if (syncing || startingRef.current) return;
+    startingRef.current = true;
+    setSyncing(true);
 
-    // Persisted before the request starts so a reload/navigation immediately
-    // after the click still finds an in-progress record to restore.
-    const requestId = writeSyncState("in_progress");
+    // Claimed before the request starts so a reload/navigation immediately
+    // after the click still finds an in-progress record to restore. Refused
+    // when another tab already holds a live lease: that tab's sync is the one
+    // running, so this click must not start a duplicate.
+    let requestId: string | null;
+    try {
+      requestId = await acquireSyncLease();
+    } finally {
+      startingRef.current = false;
+    }
+    if (!requestId) {
+      if (mountedRef.current) followPersistedSync();
+      return;
+    }
     requestIdRef.current = requestId;
     setActiveRequestId(requestId);
-    setSyncing(true);
+    const stopHeartbeat = startSyncHeartbeat(requestId);
     setError(null);
     setSyncResult(null);
     setHold(null);
@@ -246,6 +281,10 @@ export default function DataProviderConfig() {
 
     const promise = syncOrganizationProvider({ overrideMassDeletion, confirmedMassDeletion });
     setActiveSyncPromise(promise);
+    // The heartbeat is tied to the request, not this component: it must keep
+    // the lease alive across an SPA unmount/remount while the request is
+    // still running, and stop the moment it settles either way.
+    promise.then(stopHeartbeat, stopHeartbeat);
     try {
       const result = await promise;
       settleSync({ ok: true, result });

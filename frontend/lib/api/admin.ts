@@ -342,6 +342,42 @@ export async function listUsers(params: ListUsersParams = {}): Promise<UsersList
   );
 }
 
+/** The backend clamps pageSize to 100, so asking for more gains nothing. */
+const ALL_USERS_PAGE_SIZE = 100;
+
+/**
+ * Fetches EVERY user matching the optional filters by walking all pages of
+ * listUsers. Use this only where the full set is genuinely needed (e.g. an
+ * add-member picker); listUsers itself stays a single, bounded page so
+ * unrelated callers never trigger an unbounded fetch. Users are deduplicated
+ * by id, since rows can shift between pages if the set changes mid-walk, and
+ * the AbortSignal cancels both the in-flight page and any remaining pages.
+ *
+ * @returns Every matching user, in listing order
+ */
+export async function listAllUsers(
+  params: Pick<ListUsersParams, 'search' | 'role' | 'signal'> = {}
+): Promise<AdminUser[]> {
+  const { signal } = params;
+  const byId = new Map<string, AdminUser>();
+  let page = 1;
+  let totalPages = 1;
+
+  do {
+    if (signal?.aborted) {
+      throw new DOMException('Request aborted', 'AbortError');
+    }
+    const response = await listUsers({ ...params, page, pageSize: ALL_USERS_PAGE_SIZE });
+    for (const user of response.users ?? []) {
+      if (!byId.has(user.id)) byId.set(user.id, user);
+    }
+    totalPages = response.pagination?.totalPages ?? 1;
+    page += 1;
+  } while (page <= totalPages);
+
+  return Array.from(byId.values());
+}
+
 /**
  * Fetches minimal data (id, username, fullName, hierarchyLevel) for every
  * user. Intended for dropdowns/pickers (team lead, reports-to) that need the
