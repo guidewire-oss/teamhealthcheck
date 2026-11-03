@@ -199,7 +199,7 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 	if err := upsertSnapshotTeams(ctx, tx, in); err != nil {
 		return nil, err
 	}
-	if err := replaceSnapshotMemberships(ctx, tx, in, currentProtectedUserIDs, result); err != nil {
+	if err := replaceSnapshotMemberships(ctx, tx, in, currentProtectedUserIDSet, result); err != nil {
 		return nil, err
 	}
 	// Teams are deleted before users: a team's own action_items row is keyed by
@@ -484,7 +484,25 @@ func upsertSnapshotTeams(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyIn
 // tracked (non-protected) team, not len(in.Snapshot.Memberships) -- a
 // membership entry for a protected team, or a team absent from the
 // snapshot's own teams[], is dropped above and must not be reported as synced.
-func replaceSnapshotMemberships(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs []string, result *orgprovider.ApplyResult) error {
+//
+// A membership entry for a user upsertSnapshotUsers skipped as protected
+// (see that function) is dropped here too, not just left unsynced: inserting
+// it would reference a users.id row that was never written for a protected
+// incoming user absent from THC, violating the team_members foreign key.
+// Protected users keep whatever membership they already have -- the keep
+// list below still carries currentProtectedUserIDs -- this only stops the
+// sync from trying to insert a *new* row for one.
+func replaceSnapshotMemberships(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, result *orgprovider.ApplyResult) error {
+	skipMembershipUserIDs := make(map[string]bool, len(currentProtectedUserIDs))
+	for id := range currentProtectedUserIDs {
+		skipMembershipUserIDs[id] = true
+	}
+	for _, u := range in.Snapshot.Users {
+		if orgprovider.IsProtectedUser(u.ID, u.HierarchyLevelID) {
+			skipMembershipUserIDs[u.ID] = true
+		}
+	}
+
 	membersByTeam := make(map[string][]string, len(in.Snapshot.Teams))
 	for _, t := range in.Snapshot.Teams {
 		if orgprovider.IsProtectedTeam(t.ID) {
@@ -496,6 +514,9 @@ func replaceSnapshotMemberships(ctx context.Context, tx *sql.Tx, in orgprovider.
 		if _, tracked := membersByTeam[m.TeamID]; !tracked {
 			continue // protected team, or a team not in the snapshot's own teams[] (already rejected by validation)
 		}
+		if skipMembershipUserIDs[m.UserID] {
+			continue // protected user: upsertSnapshotUsers never wrote this id, so inserting it here would violate the FK
+		}
 		membersByTeam[m.TeamID] = append(membersByTeam[m.TeamID], m.UserID)
 	}
 
@@ -504,7 +525,9 @@ func replaceSnapshotMemberships(ctx context.Context, tx *sql.Tx, in orgprovider.
 
 		keep := append([]string{}, members...)
 		keep = append(keep, in.PreservedMemberUserIDs...)
-		keep = append(keep, currentProtectedUserIDs...)
+		for id := range currentProtectedUserIDs {
+			keep = append(keep, id)
+		}
 
 		res, err := tx.ExecContext(ctx, `
 			DELETE FROM team_members WHERE team_id = $1 AND user_id <> ALL($2)
@@ -607,14 +630,19 @@ func deleteMissingUsers(ctx context.Context, tx *sql.Tx, missingUserIDs []string
 			return fmt.Errorf("failed to check action items for user %q: %w", userID, err)
 		}
 
+		// hierarchy_level_id is re-checked here, not just in the earlier
+		// candidate list: a user promoted to level-admin between that read and
+		// this statement must not be deleted just because the stale candidate
+		// list still names them.
 		res, err := tx.ExecContext(ctx, `
 			DELETE FROM users
 			WHERE id = $1
+			  AND hierarchy_level_id IS DISTINCT FROM $3
 			  AND NOT EXISTS (
 			      SELECT 1 FROM team_supervisors ts
 			      WHERE ts.user_id = $1 AND ts.team_id = ANY($2)
 			  )
-		`, userID, pq.Array(protectedTeamIDs))
+		`, userID, pq.Array(protectedTeamIDs), orgprovider.ProtectedHierarchyLevelID)
 		if err != nil {
 			return fmt.Errorf("failed to delete user %q: %w", userID, err)
 		}

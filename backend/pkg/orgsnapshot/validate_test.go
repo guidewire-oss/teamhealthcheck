@@ -199,6 +199,40 @@ func TestValidate_AllowsEmptyMemberships(t *testing.T) {
 	}
 }
 
+func TestValidate_RejectsNilMemberships(t *testing.T) {
+	snap := validSnapshot()
+	snap.Memberships = nil
+
+	if !hasError(snap.Validate(), orgsnapshot.EntitySnapshot, "memberships", "must not be null") {
+		t.Fatal("expected nil memberships to be rejected")
+	}
+}
+
+func TestValidate_RejectsMissingMembershipsField(t *testing.T) {
+	data, err := json.Marshal(validSnapshot())
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+	delete(raw, "memberships")
+	data, err = json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("remarshal without memberships: %v", err)
+	}
+
+	var snap orgsnapshot.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+
+	if !hasError(snap.Validate(), orgsnapshot.EntitySnapshot, "memberships", "must not be null") {
+		t.Fatal("expected a missing memberships field to be rejected")
+	}
+}
+
 func TestValidate_DuplicateMembership(t *testing.T) {
 	snap := validSnapshot()
 	snap.Memberships = append(snap.Memberships, snap.Memberships[0])
@@ -333,6 +367,36 @@ func TestValidate_UserFormats(t *testing.T) {
 			t.Fatalf("expected %s format error", field)
 		}
 	}
+}
+
+// TestValidate_RejectsValuesLongerThan255Characters guards against values
+// that pass validation but exceed the VARCHAR(255) database columns backing
+// displayName, email, and team name -- previously this only failed at sync
+// time during the database insert.
+func TestValidate_RejectsValuesLongerThan255Characters(t *testing.T) {
+	t.Run("displayName", func(t *testing.T) {
+		snap := validSnapshot()
+		snap.Users[0].DisplayName = strings.Repeat("x", 256)
+		if !hasError(snap.Validate(), orgsnapshot.EntityUser, "displayName", "255") {
+			t.Fatal("expected displayName length error")
+		}
+	})
+
+	t.Run("email", func(t *testing.T) {
+		snap := validSnapshot()
+		snap.Users[0].Email = strings.Repeat("x", 250) + "@example.com"
+		if !hasError(snap.Validate(), orgsnapshot.EntityUser, "email", "255") {
+			t.Fatal("expected email length error")
+		}
+	})
+
+	t.Run("team name", func(t *testing.T) {
+		snap := validSnapshot()
+		snap.Teams[0].Name = strings.Repeat("x", 256)
+		if !hasError(snap.Validate(), orgsnapshot.EntityTeam, "name", "255") {
+			t.Fatal("expected team name length error")
+		}
+	})
 }
 
 func TestValidate_RejectsAddressesTheDatabaseConstraintRejects(t *testing.T) {

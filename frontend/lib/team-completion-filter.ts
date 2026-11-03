@@ -100,7 +100,8 @@ export function buildCompletionBars(
     .filter((team) => team.status !== 'opted_out' && team.total > 0)
     .map((team) => {
       const percent = Math.round((team.completed / team.total) * 100);
-      const status: CompletionBarStatus = percent >= 100 ? 'complete' : 'in_progress';
+      const status: CompletionBarStatus =
+        percent >= 100 && team.postWorkshopCompleted === true ? 'complete' : 'in_progress';
       return {
         teamId: team.teamId,
         teamName: team.teamName,

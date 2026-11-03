@@ -6,6 +6,7 @@ import { getCurrentUser, logout, authenticatedFetch } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { API_BASE_URL } from '@/lib/api/client';
 import { getOrgConfig, getHierarchyLevel } from '@/lib/org-config';
+import { formatScore } from '@/lib/format';
 // Assessment period import removed — period is team-specific, computed on survey page
 import { LogOut, ChevronDown, ClipboardList, TrendingUp, Calendar, Clock, CalendarClock, BookOpen } from 'lucide-react';
 import BrandMark from '@/components/BrandMark';
@@ -385,7 +386,7 @@ export default function MemberHomePage() {
                         fillOpacity={0.5}
                       />
                       <PolarRadiusAxis domain={[0, 3]} tickCount={4} tick={{ fill: '#334155', fontSize: 12, fontWeight: 600 }} />
-                      <Tooltip />
+                      <Tooltip formatter={(value: number, name: string) => [formatScore(Number(value)), name]} />
                     </RadarChart>
                   </ResponsiveContainer>
                 </div>

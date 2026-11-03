@@ -128,7 +128,7 @@ func TestFilterSnapshotClearsUnresolvableManagerLinks(t *testing.T) {
 			user("exec", "ceo", "level-0", nil),
 		},
 		[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
-		nil,
+		[]orgsnapshot.Membership{},
 	)
 
 	got, err := services.FilterSnapshot(in, knownLevels())

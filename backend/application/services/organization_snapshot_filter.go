@@ -112,9 +112,14 @@ func FilterSnapshot(in *orgsnapshot.Snapshot, knownLevels map[string]bool) (Snap
 	}
 
 	// Keep memberships whose user and team both survived, dropping duplicates.
+	// A nil in.Memberships (omitted or null) must stay nil here: orgsnapshot.Validate
+	// rejects that case, and allocating a non-nil slice would mask it.
 	type membershipKey struct{ userID, teamID string }
 	seen := make(map[membershipKey]bool, len(in.Memberships))
-	memberships := make([]orgsnapshot.Membership, 0, len(in.Memberships))
+	var memberships []orgsnapshot.Membership
+	if in.Memberships != nil {
+		memberships = make([]orgsnapshot.Membership, 0, len(in.Memberships))
+	}
 	membersOfTeam := make(map[string]map[string]bool, len(in.Teams))
 
 	for _, m := range in.Memberships {

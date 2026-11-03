@@ -81,3 +81,50 @@ func TestSortAssessmentPeriodsDescending_UnparseableSortsLast(t *testing.T) {
 		}
 	}
 }
+
+func TestSortAssessmentPeriodsDescending_TieBreaksDeterministicallyAcrossInputOrders(t *testing.T) {
+	// "2026", "2026 Jan", and "2026 Q1" all resolve to the same chronological
+	// key (start of 2026), since FindDistinctAssessmentPeriods feeds this
+	// function rows from an unordered SQL DISTINCT query, the result must not
+	// depend on the slice's initial order.
+	tied := []string{"2026", "2026 Jan", "2026 Q1"}
+	want := []string{"2026 Jan", "2026 Q1", "2026"}
+
+	orderings := [][]string{
+		{"2026", "2026 Jan", "2026 Q1"},
+		{"2026 Q1", "2026", "2026 Jan"},
+		{"2026 Jan", "2026 Q1", "2026"},
+	}
+	for _, input := range orderings {
+		periods := append([]string(nil), input...)
+		SortAssessmentPeriodsDescending(periods)
+		for i := range want {
+			if periods[i] != want[i] {
+				t.Fatalf("input order %v: index %d: got %q, want %q (full result: %v)", input, i, periods[i], want[i], periods)
+			}
+		}
+	}
+
+	// Sanity: all three really do share one key.
+	for _, p := range tied {
+		if _, ok := AssessmentPeriodSortKey(p); !ok {
+			t.Fatalf("expected %q to be parseable", p)
+		}
+	}
+}
+
+func TestSortAssessmentPeriodsDescending_RepeatedCallsAreStable(t *testing.T) {
+	base := []string{"2026 Q1", "2026", "2026 Jan", "2025 Q4", "2025"}
+	first := append([]string(nil), base...)
+	SortAssessmentPeriodsDescending(first)
+
+	for i := 0; i < 20; i++ {
+		got := append([]string(nil), base...)
+		SortAssessmentPeriodsDescending(got)
+		for j := range first {
+			if got[j] != first[j] {
+				t.Fatalf("iteration %d: non-deterministic result: got %v, want %v", i, got, first)
+			}
+		}
+	}
+}

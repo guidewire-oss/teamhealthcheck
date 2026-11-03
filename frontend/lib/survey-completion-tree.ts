@@ -42,18 +42,21 @@ export function getPodCompletionPercent(team: SurveyCompletionTeam): number {
  */
 export function getPodDisplayStatus(team: SurveyCompletionTeam): SurveyStatus {
   if (team.status !== 'in_progress' && team.status !== 'complete') return team.status;
-  return getPodCompletionPercent(team) >= 100 ? 'complete' : 'in_progress';
+  return isPodFullyCompleted(team) ? 'complete' : 'in_progress';
 }
 
 /**
  * A pod is fully completed when its own normalized completion percentage
- * is exactly 100%. Reuses getPodCompletionPercent -- the SAME rounding and
- * missing/invalid-data handling already used for a pod's own displayed
- * status -- so a pod's Fully-Completed classification and what its Status
- * column actually shows can never disagree.
+ * is exactly 100% AND its post-workshop session is itself complete. Reuses
+ * getPodCompletionPercent -- the SAME rounding and missing/invalid-data
+ * handling already used for a pod's own displayed status -- so a pod's
+ * Fully-Completed classification and what its Status column actually shows
+ * can never disagree. 100% survey completion alone isn't enough: the
+ * backend still treats a team as in_progress until its post-workshop
+ * session is also complete.
  */
 export function isPodFullyCompleted(team: SurveyCompletionTeam): boolean {
-  return getPodCompletionPercent(team) >= 100;
+  return getPodCompletionPercent(team) >= 100 && team.postWorkshopCompleted === true;
 }
 
 /**
@@ -228,12 +231,18 @@ function aggregatePodPercentages(
   // otherwise in_progress.
   const canonicalStatus: SurveyStatus = percent === 0 ? 'not_started' : 'in_progress';
 
+  // The aggregate only reads as "complete" when every underlying pod is
+  // itself fully completed -- 100% survey completion AND a completed
+  // post-workshop session -- not merely when the averaged percentage
+  // rounds up to 100.
+  const allPodsFullyCompleted = pods.every(isPodFullyCompleted);
+
   const syntheticPod: SurveyCompletionTeam = {
     teamId: `hierarchy:${id}`,
     teamName: name,
     completed: percent,
     total: 100,
-    postWorkshopCompleted: null,
+    postWorkshopCompleted: allPodsFullyCompleted,
     status: canonicalStatus,
   };
 

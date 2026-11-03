@@ -130,14 +130,49 @@ func buildSurveyCompletionResponse(overview *queries.SurveyCompletionOverview) d
 		nodeBuilders[p.UserID] = &nodeBuilder{person: person}
 	}
 
+	// parentOf mirrors overview.Persons' ParentID links, used below to detect
+	// a circular manager chain (e.g. A -> B -> A) before attaching a node as
+	// a child. Attaching blindly would leave every member of the cycle
+	// unreachable from rootOrder -- never a root (each has a parent) and
+	// never actually linked into a tree reachable from one (the cycle has no
+	// top) -- so their teams would still be counted in the totals above but
+	// silently missing from the rendered Groups.
+	parentOf := make(map[string]string, len(overview.Persons))
+	for _, p := range overview.Persons {
+		parentOf[p.UserID] = p.ParentID
+	}
+
+	// isInCycle reports whether walking up from start's parent chain leads
+	// back to start itself, i.e. whether linking start under its parent
+	// would create (or be part of) a cycle. The seen set bounds the walk to
+	// at most len(parentOf) steps, so a cycle elsewhere in the data can never
+	// cause an infinite loop here.
+	isInCycle := func(start string) bool {
+		seen := map[string]bool{start: true}
+		for cur := parentOf[start]; cur != ""; cur = parentOf[cur] {
+			if cur == start {
+				return true
+			}
+			if seen[cur] {
+				return false // a different cycle, not involving start
+			}
+			seen[cur] = true
+		}
+		return false
+	}
+
 	var rootOrder []string
 	for _, p := range overview.Persons {
 		if p.ParentID != "" {
-			if parent, ok := nodeBuilders[p.ParentID]; ok {
+			if parent, ok := nodeBuilders[p.ParentID]; ok && !isInCycle(p.UserID) {
 				parent.children = append(parent.children, nodeBuilders[p.UserID])
 				continue
 			}
 		}
+		// Either a genuine root, an orphan (parent missing from this
+		// overview), or a member of a cycle: in every case the node must
+		// still be rendered, so it becomes its own root instead of being
+		// dropped.
 		rootOrder = append(rootOrder, p.UserID)
 	}
 

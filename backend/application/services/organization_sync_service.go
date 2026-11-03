@@ -514,8 +514,7 @@ func envMaxDeletePercent() (float64, bool) {
 		return 0, false
 	}
 	value, err := strconv.ParseFloat(raw, 64)
-	// Reject NaN/Inf since they can bypass the percentage validation.
-	if err != nil || value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+	if err != nil || !validDeletePercent(value) {
 		return 0, false
 	}
 	return value, true
@@ -546,7 +545,19 @@ func (s *OrganizationSyncService) rederiveSupervisorChains(ctx context.Context, 
 			}
 			continue
 		}
-		if stored == nil || stored.TeamLeadID == nil {
+		if stored == nil {
+			continue
+		}
+		if stored.TeamLeadID == nil {
+			// The sync removed this team's lead and the FK cleared
+			// teams.team_lead_id; the supervisor chain must not keep
+			// pointing at a lead that no longer applies.
+			if err := s.teamRepo.UpdateSupervisorChain(ctx, t.ID, nil); err != nil {
+				log.Warn("failed to clear supervisor chain for team " + t.ID + ": " + err.Error())
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
 			continue
 		}
 

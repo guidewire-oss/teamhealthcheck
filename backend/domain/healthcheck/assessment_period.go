@@ -6,6 +6,40 @@ import (
 	"strconv"
 )
 
+// periodFormatRank orders the known period formats so that, when two
+// different formats resolve to the same AssessmentPeriodSortKey (e.g.
+// "2026", "2026 Jan", and "2026 Q1" all start at month 0 of 2026), sorting
+// is still a deterministic total order instead of depending on whatever
+// order the caller (e.g. an unordered SQL DISTINCT query) happened to
+// supply. Finer-grained formats rank before coarser ones so "2026 Jan"
+// (the most specific statement of "start of 2026") is treated as the most
+// recent among ties.
+const (
+	rankMonthly = iota
+	rankQuarterly
+	rankHalfYearly
+	rankLegacyHalfYearly
+	rankYearly
+	rankUnknown
+)
+
+func periodFormatRank(period string) int {
+	switch {
+	case monthlyPeriodPattern.MatchString(period):
+		return rankMonthly
+	case quarterlyPeriodPattern.MatchString(period):
+		return rankQuarterly
+	case halfYearlyPeriodPattern.MatchString(period):
+		return rankHalfYearly
+	case legacyPeriodPattern.MatchString(period):
+		return rankLegacyHalfYearly
+	case yearlyPeriodPattern.MatchString(period):
+		return rankYearly
+	default:
+		return rankUnknown
+	}
+}
+
 var (
 	monthlyPeriodPattern    = regexp.MustCompile(`^(\d{4}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$`)
 	quarterlyPeriodPattern  = regexp.MustCompile(`^(\d{4}) Q([1-4])$`)
@@ -69,6 +103,13 @@ func AssessmentPeriodSortKey(period string) (key int, ok bool) {
 // A period that doesn't match any known format sorts after every
 // parseable one and keeps its relative order among other unparseable
 // entries (stable sort), rather than being interleaved arbitrarily.
+//
+// When two parseable periods share the same chronological key (different
+// formats describing the same start date), order is broken deterministically
+// by periodFormatRank and then lexically, so repeated calls on the same
+// input — regardless of the input's original order — always produce the
+// same result. This matters because FindDistinctAssessmentPeriods feeds
+// this function rows from an unordered SQL DISTINCT query.
 func SortAssessmentPeriodsDescending(periods []string) {
 	sort.SliceStable(periods, func(i, j int) bool {
 		keyI, okI := AssessmentPeriodSortKey(periods[i])
@@ -79,6 +120,13 @@ func SortAssessmentPeriodsDescending(periods []string) {
 		if !okI {
 			return false
 		}
-		return keyI > keyJ
+		if keyI != keyJ {
+			return keyI > keyJ
+		}
+		rankI, rankJ := periodFormatRank(periods[i]), periodFormatRank(periods[j])
+		if rankI != rankJ {
+			return rankI < rankJ
+		}
+		return periods[i] < periods[j]
 	})
 }

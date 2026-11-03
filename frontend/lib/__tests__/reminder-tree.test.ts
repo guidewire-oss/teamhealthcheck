@@ -204,10 +204,10 @@ describe('getStatusesInTree', () => {
     const group: SurveyCompletionPersonGroup = {
       type: 'person',
       person: person('mgr1', 'Sreejith Rajasekaran', 'Manager'),
-      totalTeams: 4,
-      optedInTeams: 4,
+      totalTeams: 5,
+      optedInTeams: 5,
       completionPercent: 0,
-      remindCount: 2,
+      remindCount: 3,
       // buildPersonReminderPlan only keeps pending (not_started/in_progress)
       // teams as leaves, so both appear even though the source list mixes
       // in every status.
@@ -216,6 +216,9 @@ describe('getStatusesInTree', () => {
         team({ teamId: 'b', status: 'in_progress' }),
         team({ teamId: 'c', status: 'complete' }),
         team({ teamId: 'd', status: 'opted_out' }),
+        // A second in_progress pod, so the expected output below only
+        // proves dedup if duplicates are actually collapsed.
+        team({ teamId: 'e', status: 'in_progress' }),
       ],
       children: [],
     };

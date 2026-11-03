@@ -104,6 +104,7 @@ export interface SurveyCompletionData {
     completed: number;
     total: number;
     status: SurveyStatus;
+    postWorkshopCompleted: boolean | null;
   }[];
   timeSeries: { label: string; completion: number }[];
 }
@@ -162,6 +163,7 @@ function toSurveyCompletionData(overview: SurveyCompletionOverview): SurveyCompl
         completed: team.completed,
         total: team.total,
         status: team.status,
+        postWorkshopCompleted: team.postWorkshopCompleted,
       })),
     ),
     timeSeries: overview.timeSeries,

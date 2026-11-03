@@ -170,9 +170,9 @@ describe('buildInProgressBars', () => {
 
   it('excludes an in_progress team whose percentage rounds up to exactly 100%', () => {
     const bars = buildInProgressBars([
-      { teamId: 'Alpha', teamName: 'Alpha', completed: 1, total: 4, status: 'in_progress' },
+      { teamId: 'Alpha', teamName: 'Alpha', completed: 1, total: 4, status: 'in_progress', postWorkshopCompleted: true },
       // Raw status in_progress (completed < total), but rounds to 100%.
-      { teamId: 'RoundsUp', teamName: 'RoundsUp', completed: 199, total: 200, status: 'in_progress' },
+      { teamId: 'RoundsUp', teamName: 'RoundsUp', completed: 199, total: 200, status: 'in_progress', postWorkshopCompleted: true },
     ]);
     expect(bars.map((b) => b.teamName)).toEqual(['Alpha']);
   });
@@ -188,8 +188,8 @@ describe('buildInProgressBars', () => {
 
   it('returns an empty array when nothing is genuinely in progress', () => {
     const bars = buildInProgressBars([
-      { teamId: 'Beta', teamName: 'Beta', completed: 4, total: 4, status: 'complete' },
-      { teamId: 'RoundsUp', teamName: 'RoundsUp', completed: 199, total: 200, status: 'in_progress' },
+      { teamId: 'Beta', teamName: 'Beta', completed: 4, total: 4, status: 'complete', postWorkshopCompleted: true },
+      { teamId: 'RoundsUp', teamName: 'RoundsUp', completed: 199, total: 200, status: 'in_progress', postWorkshopCompleted: true },
     ]);
     expect(bars).toEqual([]);
   });

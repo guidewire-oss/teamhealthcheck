@@ -641,6 +641,83 @@ var _ = Describe("Integration: Organization Provider Sync", func() {
 			)).To(Equal(1), "a protected user's membership must survive reconciliation of a non-protected team too, not only their own users row")
 		})
 
+		It("should not insert a membership for a protected user absent locally, without failing the sync", func() {
+			// 'demo' is never inserted into users before this sync, and the
+			// snapshot incoming claims it as a member of sync-team-1. Before the
+			// fix, replaceSnapshotMemberships would try to INSERT INTO
+			// team_members for 'demo' even though upsertSnapshotUsers skipped
+			// writing its users row, violating the team_members -> users FK.
+			providerBody = `{
+				"contractVersion": "1.0",
+				"generatedAt": "2026-08-31T05:04:48.240Z",
+				"teams": [{"id": "sync-team-1", "name": "Alcatraz"}],
+				"users": [
+					{"id": "demo", "username": "demo", "displayName": "Demo User", "email": "demo@teams360.demo", "hierarchyLevelId": "level-5"}
+				],
+				"memberships": [
+					{"userId": "demo", "teamId": "sync-team-1"}
+				]
+			}`
+
+			w := doSync(adminToken)
+			Expect(w.Code).To(Equal(http.StatusOK), w.Body.String())
+
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'demo'`)).To(BeZero(),
+				"a protected id must never be created by a sync, even when the provider claims it")
+			Expect(countRows(
+				`SELECT COUNT(*) FROM team_members WHERE team_id = 'sync-team-1' AND user_id = 'demo'`,
+			)).To(BeZero(), "a membership cannot exist for a users row the sync never wrote")
+		})
+
+		It("should not touch an existing protected user's membership when the provider also claims it", func() {
+			_, err := db.Exec(`
+				INSERT INTO users (id, username, email, full_name, hierarchy_level_id, password_hash)
+				VALUES ('demo', 'demo', 'demo@teams360.demo', 'Demo User', 'level-5', '')
+			`)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = db.Exec(`INSERT INTO teams (id, name) VALUES ('sync-team-1', 'Alcatraz')`)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = db.Exec(`INSERT INTO team_members (team_id, user_id) VALUES ('sync-team-1', 'demo')`)
+			Expect(err).NotTo(HaveOccurred())
+
+			providerBody = `{
+				"contractVersion": "1.0",
+				"generatedAt": "2026-08-31T05:04:48.240Z",
+				"teams": [{"id": "sync-team-1", "name": "Alcatraz"}],
+				"users": [
+					{"id": "demo", "username": "demo", "displayName": "Demo User", "email": "demo@teams360.demo", "hierarchyLevelId": "level-5"}
+				],
+				"memberships": [
+					{"userId": "demo", "teamId": "sync-team-1"}
+				]
+			}`
+
+			w := doSync(adminToken)
+			Expect(w.Code).To(Equal(http.StatusOK), w.Body.String())
+
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'demo'`)).To(Equal(1))
+			Expect(countRows(
+				`SELECT COUNT(*) FROM team_members WHERE team_id = 'sync-team-1' AND user_id = 'demo'`,
+			)).To(Equal(1), "an existing protected user's membership must be preserved, not pruned or duplicated")
+		})
+
+		It("should never delete a user currently holding the level-admin hierarchy level, even if stale candidate data named them", func() {
+			_, err := db.Exec(`
+				INSERT INTO users (id, username, email, full_name, hierarchy_level_id, password_hash)
+				VALUES ('sync-promoted-admin', 'promotedadmin', 'promotedadmin@test.com', 'Promoted Admin', 'level-admin', '')
+			`)
+			Expect(err).NotTo(HaveOccurred())
+
+			// The snapshot never mentions this user, which is exactly the stale
+			// candidate case: the user is a deletion candidate by every earlier
+			// check, but is now level-admin in the database at delete time.
+			w := doSync(adminToken)
+			Expect(w.Code).To(Equal(http.StatusOK), w.Body.String())
+
+			Expect(countRows(`SELECT COUNT(*) FROM users WHERE id = 'sync-promoted-admin'`)).To(Equal(1),
+				"a level-admin user must survive deletion even if an earlier computed candidate list named them")
+		})
+
 		It("should block a sync and write nothing when calculated deletions exceed the configured threshold", func() {
 			os.Setenv(services.EnvMaxDeletePercent, "1")
 			defer os.Unsetenv(services.EnvMaxDeletePercent)

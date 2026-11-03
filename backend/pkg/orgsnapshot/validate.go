@@ -92,6 +92,17 @@ func (s Snapshot) Validate() ValidationErrors {
 			Message: "teams must contain at least one record",
 		})
 	}
+	if s.Memberships == nil {
+		// A missing field and an explicit JSON null both unmarshal to nil here,
+		// while an explicit [] unmarshals to a non-nil empty slice. Treating nil
+		// as "no memberships" would make a provider that omits the field wipe
+		// every existing team membership during sync; require [] to say that.
+		errs = append(errs, ValidationError{
+			Entity:  EntitySnapshot,
+			Field:   "memberships",
+			Message: "memberships is required and must not be null; use [] to explicitly clear all memberships",
+		})
+	}
 
 	userIDs := make(map[string]bool, len(s.Users))
 	for i, u := range s.Users {
@@ -126,12 +137,12 @@ func (s Snapshot) Validate() ValidationErrors {
 				Message:    "username must be 2-50 characters containing only letters, numbers, underscores, or hyphens",
 			})
 		}
-		if u.DisplayName == "" {
+		if u.DisplayName == "" || len(u.DisplayName) > 255 {
 			errs = append(errs, ValidationError{
 				Entity:     EntityUser,
 				Identifier: identifier,
 				Field:      "displayName",
-				Message:    "displayName is required and must be non-empty",
+				Message:    "displayName is required and must not exceed 255 characters",
 			})
 		}
 		if u.HierarchyLevelID == "" || len(u.HierarchyLevelID) > 50 {
@@ -142,12 +153,12 @@ func (s Snapshot) Validate() ValidationErrors {
 				Message:    "hierarchyLevelId is required and must not exceed 50 characters",
 			})
 		}
-		if !emailPattern.MatchString(u.Email) {
+		if !emailPattern.MatchString(u.Email) || len(u.Email) > 255 {
 			errs = append(errs, ValidationError{
 				Entity:     EntityUser,
 				Identifier: identifier,
 				Field:      "email",
-				Message:    "email must be a valid address",
+				Message:    "email must be a valid address and must not exceed 255 characters",
 			})
 		}
 	}
@@ -177,12 +188,12 @@ func (s Snapshot) Validate() ValidationErrors {
 		} else {
 			teamIDs[t.ID] = true
 		}
-		if t.Name == "" {
+		if t.Name == "" || len(t.Name) > 255 {
 			errs = append(errs, ValidationError{
 				Entity:     EntityTeam,
 				Identifier: identifier,
 				Field:      "name",
-				Message:    "name is required and must be non-empty",
+				Message:    "name is required and must not exceed 255 characters",
 			})
 		}
 	}

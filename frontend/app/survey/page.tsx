@@ -7,7 +7,9 @@ import { HealthCheckResponse, HealthDimension } from '@/lib/types';
 import { getAssessmentPeriod, toCadence } from '@/lib/assessment-period';
 import { submitHealthCheck, getHealthDimensions, formatDateForAPI, HealthCheckAPIError } from '@/lib/api/health-checks';
 import { getTeamInfoCached, TeamInfo, TeamsAPIError } from '@/lib/api/teams';
+import { API_BASE_URL } from '@/lib/api/client';
 import { TrendingUp, TrendingDown, Minus, ChevronLeft, ChevronRight, Save, LogOut, CheckCircle, BarChart3, Loader2, AlertCircle, Info, X } from 'lucide-react';
+import BrandMark from '@/components/BrandMark';
 
 interface SurveyDraft {
   responses: HealthCheckResponse[];
@@ -61,6 +63,18 @@ function SurveyPageContent() {
   const [teamOptions, setTeamOptions] = useState<{id: string, name: string}[]>([]);
   const [showHelpPanel, setShowHelpPanel] = useState(false);
   const helpAutoShown = useRef(false);
+  const [brandingName, setBrandingName] = useState('');
+  const [brandingLogo, setBrandingLogo] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/v1/config`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.companyName) setBrandingName(data.companyName);
+        if (data.logoURL) setBrandingLogo(data.logoURL);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const currentUser = getCurrentUser();
@@ -122,6 +136,17 @@ function SurveyPageContent() {
         if (dims.length === 0) {
           setDimensionsError('No active health dimensions are configured. Please contact your administrator.');
         }
+
+        // A restored draft may reference dimensions that have since been
+        // deactivated, or a currentDimension index past the newly loaded
+        // (possibly shorter) list. Reconcile both against the active set.
+        const activeIds = new Set(dims.map((d) => d.id));
+        setResponses((prev) => prev.filter((r) => activeIds.has(r.dimensionId)));
+        setCurrentDimension((prev) => {
+          if (dims.length === 0) return 0;
+          return Math.min(prev, dims.length - 1);
+        });
+
         setDimensionsLoading(false);
       })
       .catch((err) => {
@@ -410,12 +435,19 @@ function SurveyPageContent() {
 
   // Show error state if team or health dimensions fetch failed
   if (teamError || !team || dimensionsError || dimensions.length === 0) {
+    const isTeamIssue = Boolean(teamError || !team);
+    const heading = isTeamIssue ? 'Unable to Load Team' : 'Unable to Load Health Dimensions';
+    const detail = teamError
+      || dimensionsError
+      || (isTeamIssue
+        ? 'No team assigned to your account. Please contact your administrator.'
+        : 'No active health dimensions are configured. Please contact your administrator.');
     return (
       <div className="min-h-screen bg-gradient-to-br from-red-50 to-orange-100 flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-xl p-12 max-w-md w-full text-center">
           <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-6" />
-          <h1 className="text-2xl font-bold text-gray-900 mb-4">Unable to Load Team</h1>
-          <p className="text-gray-600 mb-6">{teamError || dimensionsError || 'No team assigned to your account. Please contact your administrator.'}</p>
+          <h1 className="text-2xl font-bold text-gray-900 mb-4">{heading}</h1>
+          <p className="text-gray-600 mb-6">{detail}</p>
           <button
             onClick={handleLogout}
             className="bg-gray-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-gray-700 transition-colors"
@@ -473,6 +505,7 @@ function SurveyPageContent() {
                 Record your team&apos;s consensus from the workshop discussion
               </div>
             )}
+            <BrandMark logoUrl={brandingLogo} companyName={brandingName} size="header" className="mb-3 [&_span]:text-white" />
             <div className="flex justify-between items-center mb-4">
               <div>
                 <h1 className="text-2xl font-bold">{isPostWorkshop ? 'Post-Workshop Survey' : 'Squad Health Check'}</h1>

@@ -238,6 +238,8 @@ export default function AdminPage() {
         companyName: brandingCompanyName,
         logoURL: brandingLogoURL,
       });
+      setBrandingName(brandingCompanyName);
+      setBrandingLogo(brandingLogoURL || null);
       setSettingsSuccess(true);
       setTimeout(() => setSettingsSuccess(false), 3000);
     } catch (err) {
@@ -303,6 +305,11 @@ export default function AdminPage() {
 
     const cached = usersPageCacheRef.current.get(cacheKey);
     if (cached) {
+      // Abort and clear any previous in-flight request before applying the
+      // cached data, so it can't finish later and overwrite these results.
+      usersAbortControllerRef.current?.abort();
+      usersAbortControllerRef.current = null;
+      usersInFlightKeyRef.current = null;
       setUsers(cached.users);
       setUsersPagination(cached.pagination);
       setUsersError(null);
@@ -359,6 +366,12 @@ export default function AdminPage() {
   // Clears cached user pages and re-fetches the current page. Call after any
   // mutation (create/update/delete) so the list reflects the change.
   const reloadUsersData = async () => {
+    // Cancel any in-flight request and clear its tracking state first, so a
+    // stale in-flight key doesn't cause loadUsersPage to skip the reload
+    // below and leave the old list on screen.
+    usersAbortControllerRef.current?.abort();
+    usersAbortControllerRef.current = null;
+    usersInFlightKeyRef.current = null;
     usersPageCacheRef.current.clear();
     await Promise.all([
       loadUsersTabMeta(),
