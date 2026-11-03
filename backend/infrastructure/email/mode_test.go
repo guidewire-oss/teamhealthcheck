@@ -7,7 +7,7 @@ import (
 )
 
 func TestModeReadsAndNormalizesEnv(t *testing.T) {
-	cases := map[string]string{"": "", "log": "log", "  LOG ": "log", "smtp": "smtp"}
+	cases := map[string]string{"": "", "log": "log", "  LOG ": "log", "smtp": "smtp", "   ": BlankValue}
 	for in, want := range cases {
 		t.Setenv(EnvMode, in)
 		if got := Mode(); got != want {
@@ -24,6 +24,16 @@ func TestTestPodTrimsWhitespace(t *testing.T) {
 	t.Setenv(EnvTestPod, "")
 	if got := TestPod(); got != "" {
 		t.Errorf("TestPod() unset = %q, want empty", got)
+	}
+	t.Setenv(EnvTestPod, "   ")
+	if got := TestPod(); got != BlankValue {
+		t.Errorf("TestPod() whitespace-only = %q, want %q so it fails closed", got, BlankValue)
+	}
+}
+
+func TestDeliversIsFalseForNilSender(t *testing.T) {
+	if Delivers(nil) {
+		t.Error("Delivers(nil) = true, want false")
 	}
 }
 

@@ -149,6 +149,10 @@ func (h *SurveyCompletionAdminHandler) SendReminders(c *gin.Context) {
 			dto.RespondErrorWithDetails(c, http.StatusUnprocessableEntity, "Test pod not found",
 				"EMAIL_TEST_POD is set to \""+h.reminderTestPod+"\" but no pod has that name, so nothing was sent.")
 			return
+		case errors.Is(err, errTestPodAmbiguous):
+			dto.RespondErrorWithDetails(c, http.StatusUnprocessableEntity, "Test pod is ambiguous",
+				"EMAIL_TEST_POD is set to \""+h.reminderTestPod+"\" but more than one pod has that name, so nothing was sent.")
+			return
 		case err != nil:
 			dto.RespondErrorWithDetails(c, http.StatusInternalServerError, "Failed to apply the test pod restriction", err.Error())
 			return

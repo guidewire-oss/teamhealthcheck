@@ -67,6 +67,20 @@ func (r *RedirectSender) RedirectTargets() []string { return append([]string(nil
 // Delivers reports whether the wrapped sender delivers anything.
 func (r *RedirectSender) Delivers() bool { return Delivers(r.inner) }
 
+// PartialDeliveryError means at least one redirect target received the email
+// and at least one did not. Retrying would send the successful targets a
+// duplicate, so callers should treat the email as sent.
+type PartialDeliveryError struct {
+	Delivered, Failed int
+	Err               error
+}
+
+func (e *PartialDeliveryError) Error() string {
+	return fmt.Sprintf("delivered to %d redirect target(s), failed for %d: %v", e.Delivered, e.Failed, e.Err)
+}
+
+func (e *PartialDeliveryError) Unwrap() error { return e.Err }
+
 // SendHTML delivers one copy of the email to each test address.
 func (r *RedirectSender) SendHTML(ctx context.Context, to, subject, htmlBody string) error {
 	logger.Get().
@@ -75,10 +89,17 @@ func (r *RedirectSender) SendHTML(ctx context.Context, to, subject, htmlBody str
 		Info("reminder email redirected")
 
 	var firstErr error
+	failed := 0
 	for _, target := range r.to {
-		if err := r.inner.SendHTML(ctx, target, subject, htmlBody); err != nil && firstErr == nil {
-			firstErr = err
+		if err := r.inner.SendHTML(ctx, target, subject, htmlBody); err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
+	}
+	if failed > 0 && failed < len(r.to) {
+		return &PartialDeliveryError{Delivered: len(r.to) - failed, Failed: failed, Err: firstErr}
 	}
 	return firstErr
 }

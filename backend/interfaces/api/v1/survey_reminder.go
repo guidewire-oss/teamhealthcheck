@@ -25,6 +25,9 @@ var (
 	// errTestPodNotFound means EMAIL_TEST_POD names a pod that does not exist.
 	// The run fails closed: nothing is sent.
 	errTestPodNotFound = errors.New("test pod not found")
+	// errTestPodAmbiguous means more than one pod has the EMAIL_TEST_POD name.
+	// Team names are not unique, so the run fails closed: nothing is sent.
+	errTestPodAmbiguous = errors.New("test pod name matches more than one pod")
 )
 
 const (
@@ -267,16 +270,25 @@ type memberLister interface {
 // team lead or one of its members, and what they are mailed about shrinks to
 // that pod alone. Everyone else is dropped, including the leaders above the pod.
 //
-// It fails closed: if no pod has the name, it returns errTestPodNotFound and
-// the caller must send nothing.
+// It fails closed: if no pod has the name it returns errTestPodNotFound, and
+// if several do it returns errTestPodAmbiguous. The caller must send nothing.
 func restrictPlanToTestPod(ctx context.Context, plan *reminderPlan, podName string, teams []queries.SurveyCompletionTeam, members memberLister) (*reminderPlan, error) {
 	podIDs := map[string]bool{}
 	allowed := map[string]bool{}
+	var matched []queries.SurveyCompletionTeam
 	for _, t := range teams {
-		if !strings.EqualFold(strings.TrimSpace(t.TeamName), strings.TrimSpace(podName)) {
-			continue
+		if strings.EqualFold(strings.TrimSpace(t.TeamName), strings.TrimSpace(podName)) {
+			podIDs[t.TeamID] = true
+			matched = append(matched, t)
 		}
-		podIDs[t.TeamID] = true
+	}
+	if len(podIDs) == 0 {
+		return nil, errTestPodNotFound
+	}
+	if len(podIDs) > 1 {
+		return nil, errTestPodAmbiguous
+	}
+	for _, t := range matched {
 		if t.TeamLeadID != "" {
 			allowed[t.TeamLeadID] = true
 		}
@@ -287,9 +299,6 @@ func restrictPlanToTestPod(ctx context.Context, plan *reminderPlan, podName stri
 		for _, m := range ms {
 			allowed[m.UserID] = true
 		}
-	}
-	if len(podIDs) == 0 {
-		return nil, errTestPodNotFound
 	}
 
 	out := &reminderPlan{}
@@ -433,7 +442,14 @@ func sendReminderPlan(ctx context.Context, sender email.Sender, assessmentPeriod
 			Pods:             pods,
 		})
 
-		if err := sender.SendHTML(ctx, r.Email, email.SurveyReminderSubject(assessmentPeriod), body); err != nil {
+		err := sender.SendHTML(ctx, r.Email, email.SurveyReminderSubject(assessmentPeriod), body)
+		var partial *email.PartialDeliveryError
+		if errors.As(err, &partial) {
+			// Some redirect targets got it; a retry would duplicate those copies.
+			log.WithField("user_id", r.UserID).WithError(err).Warn("survey reminder: partially delivered, counting as sent")
+			err = nil
+		}
+		if err != nil {
 			log.WithField("user_id", r.UserID).WithError(err).Warn("survey reminder: failed to send")
 			resp.Failed = append(resp.Failed, r.Name)
 			continue

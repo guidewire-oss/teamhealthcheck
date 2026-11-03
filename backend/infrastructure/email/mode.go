@@ -26,12 +26,33 @@ const (
 // unset. The caller must treat any value it does not recognize as "do not
 // send", never as "fall back to real delivery".
 func Mode() string {
-	return strings.ToLower(strings.TrimSpace(os.Getenv(EnvMode)))
+	return trimmedEnv(EnvMode, true)
 }
 
 // TestPod returns the pod name survey reminders are restricted to, or "".
+//
+// A variable that is set but only whitespace is NOT treated as unset: that
+// would silently lift the restriction. It returns BlankValue, which matches no
+// pod, so the handler fails closed.
 func TestPod() string {
-	return strings.TrimSpace(os.Getenv(EnvTestPod))
+	return trimmedEnv(EnvTestPod, false)
+}
+
+// BlankValue is returned for a variable that is set to whitespace only. It is
+// never a valid mode or pod name, so callers fail closed instead of reading it
+// as "unset".
+const BlankValue = "<blank>"
+
+func trimmedEnv(name string, lower bool) string {
+	raw := os.Getenv(name)
+	v := strings.TrimSpace(raw)
+	if lower {
+		v = strings.ToLower(v)
+	}
+	if v == "" && raw != "" {
+		return BlankValue
+	}
+	return v
 }
 
 // LogSender is the Sender used when EMAIL_MODE=log. It never opens a
@@ -65,6 +86,9 @@ func (LogSender) Delivers() bool { return false }
 // by having a Delivers() bool method that returns false (LogSender does);
 // everything else is assumed to deliver.
 func Delivers(sender Sender) bool {
+	if sender == nil {
+		return false
+	}
 	if d, ok := sender.(interface{ Delivers() bool }); ok {
 		return d.Delivers()
 	}

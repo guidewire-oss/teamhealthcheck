@@ -112,7 +112,7 @@ switches below. Each one limits who can be reached.
 |---|---|
 | `EMAIL_MODE=log` | Sends nothing. Each reminder is written to the backend log (recipient, pods, survey period, subject and body). SES and SMTP settings are ignored. |
 | `EMAIL_TEST_POD=<pod name>` | Limits reminders to that pod's team lead and members. An unknown name sends nothing. |
-| `EMAIL_REDIRECT_TO=a@x.com,b@x.com` | Delivers reminders to those addresses instead of their real recipients. The email is sent unchanged (no test label), the intended recipient is only written to the server log, and the real recipient never receives it. |
+| `EMAIL_REDIRECT_TO=a@x.com,b@x.com` | Delivers reminders to those addresses instead of their real recipients. The email is sent unchanged (no test label), and the intended recipient is only written to the server log rather than passed separately to the mail sender. |
 
 An unknown `EMAIL_MODE`, or an `EMAIL_REDIRECT_TO` entry that is not a plain email address, turns
 email off instead of falling back to real delivery.

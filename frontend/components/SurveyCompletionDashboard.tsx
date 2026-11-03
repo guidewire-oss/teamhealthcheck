@@ -722,7 +722,7 @@ export default function SurveyCompletionDashboard() {
       const problems =
         result.failed.length + result.skippedNoEmail.length + result.podsWithoutTeamLead.length > 0;
       showToast(formatReminderResult(result), problems ? 6000 : 2200);
-      setReminderPlan(null);
+      setReminderPlan((current) => (current === reminderPlan ? null : current));
     } catch (err) {
       // Leave the preview open so the admin can retry.
       const reason = err instanceof Error ? err.message : "unknown error";

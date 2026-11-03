@@ -324,7 +324,7 @@ var _ = Describe("survey reminder test-pod restriction and log mode", func() {
 				{UserID: "tl-beta", Name: "Beta Lead", Email: "tlbeta@x.com", Role: "team lead", Pods: []dto.SurveyCompletionTeamDTO{podBeta}},
 				{UserID: "tl-delta", Name: "Delta Lead", Email: "tldelta@x.com", Role: "team lead", Pods: []dto.SurveyCompletionTeamDTO{podDelta}},
 			},
-			PodsWithoutTeamLead: []string{"Hopefarm", "Some Other Pod"},
+			PodsWithoutTeamLead: []string{"Some Other Pod"},
 		}
 	}
 
@@ -375,10 +375,24 @@ var _ = Describe("survey reminder test-pod restriction and log mode", func() {
 		})
 
 		It("keeps only the test pod in the list of pods with no team lead", func() {
-			p, err := restrictPlanToTestPod(context.Background(), fullPlan(), "Hopefarm", teams, fakeMembers{})
+			// A genuinely leadless Hopefarm: no team lead, and nobody mailed for it.
+			leadless := []queries.SurveyCompletionTeam{{TeamID: "beta", TeamName: "Hopefarm"}}
+			plan := &reminderPlan{
+				Recipients:          []*reminderRecipient{{UserID: "dir-b", Name: "Director", Email: "dir@x.com", Pods: []dto.SurveyCompletionTeamDTO{podBeta}}},
+				PodsWithoutTeamLead: []string{"Hopefarm", "Some Other Pod"},
+			}
+			p, err := restrictPlanToTestPod(context.Background(), plan, "Hopefarm", leadless, fakeMembers{})
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(p.PodsWithoutTeamLead).To(Equal([]string{"Hopefarm"}))
+		})
+
+		It("fails closed when more than one pod has that name", func() {
+			dup := append([]queries.SurveyCompletionTeam{{TeamID: "beta2", TeamName: "Hopefarm", TeamLeadID: "tl-x"}}, teams...)
+			p, err := restrictPlanToTestPod(context.Background(), fullPlan(), "Hopefarm", dup, fakeMembers{})
+
+			Expect(err).To(MatchError(errTestPodAmbiguous))
+			Expect(p).To(BeNil())
 		})
 
 		It("fails closed when no pod has that name", func() {
