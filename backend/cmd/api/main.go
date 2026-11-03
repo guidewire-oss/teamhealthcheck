@@ -208,13 +208,13 @@ func main() {
 	case rerr != nil:
 		log.WithError(rerr).Error("invalid EMAIL_REDIRECT_TO; email is DISABLED and nothing will be sent")
 		emailSender, reminderSender = nil, nil
-	case configured && emailSender != nil:
+	case configured && emailSender != nil && email.Delivers(emailSender):
 		reminderSender = email.NewRedirectSender(emailSender, targets)
 		emailSender = email.LogSender{}
 		log.WithField("redirect_to", strings.Join(targets, ", ")).
 			Warn("EMAIL_REDIRECT_TO set: reminder emails go ONLY to these addresses, never to the real recipients; other emails are not sent")
 	case configured:
-		log.Warn("EMAIL_REDIRECT_TO is set but no email service is configured; nothing will be sent")
+		log.Warn("EMAIL_REDIRECT_TO is set but there is no delivering email service (none configured, or EMAIL_MODE=log); nothing will be sent")
 	case emailSender != nil && email.Delivers(emailSender):
 		log.Warn("email will be delivered to REAL recipients; set EMAIL_REDIRECT_TO to test safely")
 	}

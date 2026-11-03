@@ -164,7 +164,7 @@ func TestReminderListsEveryPodAsARow(t *testing.T) {
 
 	mustContain(t, "html", htmlBody, "HopeFarm", "Falcons", "Not started", "0 / 3")
 	mustContain(t, "text", text, "HopeFarm - In progress", "Falcons - Not started")
-	if got := strings.Count(htmlBody, `class="rem-cell"`) + strings.Count(htmlBody, `class="rem-cell rem-cell-last"`); got != 8 {
+	if got := strings.Count(htmlBody, `<td class="rem-cell`); got != 8 {
 		t.Errorf("body cells = %d, want 8 (2 pods x 4 columns)", got)
 	}
 }

@@ -103,11 +103,27 @@ func TestRedirectSenderKeepsGoingAfterOneTargetFails(t *testing.T) {
 
 	err := s.SendHTML(context.Background(), "real@x.com", "s", "<body></body>")
 
-	if err == nil {
-		t.Error("a failed delivery must be reported")
+	var partial *PartialDeliveryError
+	if !errors.As(err, &partial) {
+		t.Fatalf("one success and one failure must be a *PartialDeliveryError, got %v", err)
+	}
+	if partial.Delivered != 1 || partial.Failed != 1 {
+		t.Errorf("counts = delivered %d, failed %d; want 1 and 1", partial.Delivered, partial.Failed)
 	}
 	if len(inner.calls) != 2 {
 		t.Errorf("the second address must still be tried, got %d calls", len(inner.calls))
+	}
+}
+
+func TestRedirectSenderReportsPlainErrorWhenEveryTargetFails(t *testing.T) {
+	inner := &recordingSender{failFor: map[string]bool{"cw1@x.com": true, "cw2@x.com": true}}
+	s := NewRedirectSender(inner, []string{"cw1@x.com", "cw2@x.com"})
+
+	err := s.SendHTML(context.Background(), "real@x.com", "s", "<body></body>")
+
+	var partial *PartialDeliveryError
+	if err == nil || errors.As(err, &partial) {
+		t.Errorf("total failure must be a plain error so it can be retried, got %v", err)
 	}
 }
 

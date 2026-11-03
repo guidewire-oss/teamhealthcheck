@@ -97,8 +97,9 @@ type SurveyReminderResponse struct {
 	// written to the server log instead.
 	Mode string `json:"mode"`
 	// RedirectedTo lists the test addresses every email was delivered to
-	// instead of its real recipient (EMAIL_REDIRECT_TO). Empty means emails
-	// went to their real recipients.
+	// instead of its real recipient (EMAIL_REDIRECT_TO). Empty means no
+	// redirect is in effect; use Mode to tell whether anything was delivered
+	// (nothing is when Mode is "log").
 	RedirectedTo []string `json:"redirectedTo"`
 	// TestPod is set when EMAIL_TEST_POD limited the recipients to one pod.
 	TestPod string   `json:"testPod,omitempty"`
