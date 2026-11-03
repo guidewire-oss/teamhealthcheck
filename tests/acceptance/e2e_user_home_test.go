@@ -66,7 +66,7 @@ var _ = Describe("E2E: User Home Page and Survey History", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Wait for redirect to survey page
-				err = page.WaitForURL("**/survey", playwright.PageWaitForURLOptions{
+				err = page.WaitForURL("**/survey**", playwright.PageWaitForURLOptions{
 					Timeout: playwright.Float(5000),
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -147,14 +147,14 @@ var _ = Describe("E2E: User Home Page and Survey History", func() {
 				Expect(err).NotTo(HaveOccurred())
 				err = submitButton.Click()
 				Expect(err).NotTo(HaveOccurred())
-
-				By("Verifying redirect to user home page (not Thank You page)")
-				// After submission, user should be redirected to /home (or /my-dashboard)
-				// The home page should show their survey history
-				err = page.WaitForURL("**/home", playwright.PageWaitForURLOptions{
-					Timeout: playwright.Float(10000),
-				})
+				By("Confirming the submission in the confirmation modal")
+				err = page.Locator("[data-testid='submit-confirm-accept']").Click()
 				Expect(err).NotTo(HaveOccurred())
+
+				By("Going to the user home page from the Thank You page")
+				// After submission the survey shows a Thank You page; its button leads to /home,
+				// which should show their survey history
+				continueFromThankYou(page, "**/home")
 				dismissOnboardingIfVisible(page)
 
 				// Wait for network to settle before checking for survey history
@@ -215,8 +215,8 @@ var _ = Describe("E2E: User Home Page and Survey History", func() {
 				_, err := db.Exec(`
 					INSERT INTO health_check_sessions (id, team_id, user_id, date, assessment_period, completed) VALUES
 					('e2e_trend_session1', 'e2e_team1', 'e2e_demo', '2023-07-15', '2023 - 1st Half', true),
-					('e2e_trend_session2', 'e2e_team1', 'e2e_demo', '2024-01-15', '2023 - 2nd Half', true),
-					('e2e_trend_session3', 'e2e_team1', 'e2e_demo', '2024-07-15', '2024 - 1st Half', true)
+					('e2e_trend_session2', 'e2e_team1', 'e2e_demo', '2023-01-15', '2022 - 2nd Half', true),
+					('e2e_trend_session3', 'e2e_team1', 'e2e_demo', '2022-07-15', '2022 - 1st Half', true)
 					ON CONFLICT (id) DO NOTHING
 				`)
 				Expect(err).NotTo(HaveOccurred())
@@ -350,7 +350,7 @@ var _ = Describe("E2E: User Home Page and Survey History", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Wait for redirect to survey page
-				err = page.WaitForURL("**/survey", playwright.PageWaitForURLOptions{
+				err = page.WaitForURL("**/survey**", playwright.PageWaitForURLOptions{
 					Timeout: playwright.Float(5000),
 				})
 				Expect(err).NotTo(HaveOccurred())

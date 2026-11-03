@@ -16,6 +16,10 @@ export interface APIError {
   error: string;
   message: string;
   code?: string;
+  // Populated on submission-cooldown (409) errors: both are user-facing H1/H2 labels
+  // (e.g. "H1 2026" / "H2 2026") -- never a day-level date.
+  submittedPeriod?: string;
+  nextEligiblePeriod?: string;
 }
 
 /**

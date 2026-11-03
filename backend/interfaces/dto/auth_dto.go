@@ -4,7 +4,7 @@ package dto
 type LoginRequest struct {
 	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required"`
-}
+} //@name LoginRequest
 
 // LoginResponse represents the successful login response with JWT tokens
 type LoginResponse struct {
@@ -12,18 +12,18 @@ type LoginResponse struct {
 	AccessToken  string  `json:"accessToken"`
 	RefreshToken string  `json:"refreshToken"`
 	ExpiresIn    int64   `json:"expiresIn"` // Access token expiry in seconds
-}
+} //@name LoginResponse
 
 // RefreshTokenRequest represents a token refresh request
 type RefreshTokenRequest struct {
 	RefreshToken string `json:"refreshToken" binding:"required"`
-}
+} //@name RefreshTokenRequest
 
 // RefreshTokenResponse represents a token refresh response
 type RefreshTokenResponse struct {
 	AccessToken string `json:"accessToken"`
 	ExpiresIn   int64  `json:"expiresIn"` // Access token expiry in seconds
-}
+} //@name RefreshTokenResponse
 
 // UserDTO represents user data transfer object
 type UserDTO struct {
@@ -34,15 +34,32 @@ type UserDTO struct {
 	HierarchyLevel string   `json:"hierarchyLevel"`
 	TeamIds        []string `json:"teamIds"`
 	CanTakeSurvey  bool     `json:"canTakeSurvey"`
-}
+} //@name UserDTO
 
 // ForgotPasswordRequest represents a forgot password request
 type ForgotPasswordRequest struct {
 	Email string `json:"email" binding:"required"`
-}
+} //@name ForgotPasswordRequest
 
 // ResetPasswordRequest represents a password reset request
 type ResetPasswordRequest struct {
 	Token       string `json:"token" binding:"required"`
 	NewPassword string `json:"newPassword" binding:"required"`
-}
+} //@name ResetPasswordRequest
+
+// PublicSSOConfig is the SSO block of the public app configuration.
+type PublicSSOConfig struct {
+	ClientID     string `json:"clientId"`
+	AuthorizeURL string `json:"authorizeUrl"`
+	RedirectURI  string `json:"redirectUri"`
+	Scopes       string `json:"scopes"`
+} //@name PublicSSOConfig
+
+// PublicConfigResponse is the unauthenticated app configuration served at
+// GET /config. SSO is null when OAUTH_CLIENT_ID is not set on the server.
+type PublicConfigResponse struct {
+	AppEnv      string           `json:"appEnv"`
+	CompanyName string           `json:"companyName"`
+	LogoURL     string           `json:"logoURL"`
+	SSO         *PublicSSOConfig `json:"sso"`
+} //@name PublicConfigResponse
