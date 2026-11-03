@@ -15,6 +15,9 @@
  *  - "Cancel" closes the modal without submitting or losing answers.
  *  - "Confirm and submit" submits the selected period (not a recomputed one).
  *  - Invalid/missing periods cannot be submitted.
+ *
+ * Also covers draft restoration against the dynamically-fetched (not statically imported)
+ * active health dimensions.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
@@ -44,25 +47,6 @@ vi.mock('@/lib/auth', () => ({
   logout: vi.fn(),
 }));
 
-vi.mock('@/lib/data', () => ({
-  HEALTH_DIMENSIONS: [
-    {
-      id: 'mission',
-      name: 'Mission',
-      description: 'desc',
-      goodDescription: 'good',
-      badDescription: 'bad',
-    },
-    {
-      id: 'value',
-      name: 'Delivering Value',
-      description: 'desc',
-      goodDescription: 'good',
-      badDescription: 'bad',
-    },
-  ],
-}));
-
 const getTeamInfoCached = vi.fn();
 vi.mock('@/lib/api/teams', () => ({
   getTeamInfoCached: (...args: unknown[]) => getTeamInfoCached(...args),
@@ -72,8 +56,10 @@ vi.mock('@/lib/api/teams', () => ({
 }));
 
 const submitHealthCheck = vi.fn();
+const getHealthDimensions = vi.fn();
 vi.mock('@/lib/api/health-checks', () => ({
   submitHealthCheck: (...args: unknown[]) => submitHealthCheck(...args),
+  getHealthDimensions: (...args: unknown[]) => getHealthDimensions(...args),
   formatDateForAPI: (d: Date) => d.toISOString(),
   HealthCheckAPIError: class HealthCheckAPIError extends Error {},
 }));
@@ -84,6 +70,23 @@ const TEAM_INFO = {
   cadence: 'half-yearly',
   members: [],
 };
+
+const ACTIVE_DIMENSIONS = [
+  {
+    id: 'mission',
+    name: 'Mission',
+    description: 'desc',
+    goodDescription: 'good',
+    badDescription: 'bad',
+  },
+  {
+    id: 'value',
+    name: 'Delivering Value',
+    description: 'desc',
+    goodDescription: 'good',
+    badDescription: 'bad',
+  },
+];
 
 function getGreenScoreButton(): HTMLElement {
   const el = document.querySelector('[data-score="3"]');
@@ -110,6 +113,7 @@ describe('Survey assessment period (read-only, sourced from Member Home)', () =>
     };
     vi.setSystemTime(new Date(2026, 8, 22)); // Sep 22, 2026 -> auto period "2026 H2"
     getTeamInfoCached.mockResolvedValue(TEAM_INFO);
+    getHealthDimensions.mockResolvedValue(ACTIVE_DIMENSIONS);
     submitHealthCheck.mockResolvedValue({ id: 'session-123' });
   });
 
@@ -444,6 +448,7 @@ describe('Survey: team lookup failure', () => {
     searchParams = new URLSearchParams('');
     currentUser = { id: 'user-1', name: 'Taylor Lead', hierarchyLevelId: 'level-4', teamIds: ['team-1'] };
     vi.setSystemTime(new Date(2026, 8, 22));
+    getHealthDimensions.mockResolvedValue(ACTIVE_DIMENSIONS);
   });
 
   it('shows the team error from the API when the lookup fails with a TeamsAPIError', async () => {
@@ -479,6 +484,7 @@ describe('Survey: resuming a saved draft', () => {
     searchParams = new URLSearchParams('');
     currentUser = { id: 'user-1', name: 'Taylor Lead', hierarchyLevelId: 'level-4', teamIds: ['team-1'] };
     getTeamInfoCached.mockResolvedValue(TEAM_INFO);
+    getHealthDimensions.mockResolvedValue(ACTIVE_DIMENSIONS);
   });
 
   it('resumes a draft saved under a manually selected earlier period even after today\'s period has moved on', async () => {
@@ -520,6 +526,7 @@ describe('Survey: switching teams keeps the chosen period', () => {
     currentUser = { id: 'user-1', name: 'Taylor Lead', hierarchyLevelId: 'level-4', teamIds: ['team-1', 'team-2'] };
     vi.setSystemTime(new Date(2026, 8, 22)); // auto period 2026 H2
     getTeamInfoCached.mockImplementation(async (id: string) => ({ ...TEAM_INFO, id, name: id }));
+    getHealthDimensions.mockResolvedValue(ACTIVE_DIMENSIONS);
   });
 
   it('keeps a period chosen on Member Home when the user switches to another team', async () => {
@@ -543,5 +550,75 @@ describe('Survey: switching teams keeps the chosen period', () => {
 
     await waitFor(() => expect(getTeamInfoCached).toHaveBeenCalledWith('team-2'));
     await waitFor(() => expect(screen.getByTestId('selected-period')).toHaveTextContent('H2 2026'));
+  });
+});
+
+describe('SurveyPage draft restoration against dynamically-fetched dimensions', () => {
+  function getDraftKey(userId: string, teamId: string) {
+    return `surveyDraft:${userId}:${teamId}`;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    searchParams = new URLSearchParams('');
+    currentUser = {
+      id: 'user-1',
+      name: 'User One',
+      hierarchyLevelId: 'level-5',
+      teamIds: ['team-1'],
+    };
+    getTeamInfoCached.mockResolvedValue(TEAM_INFO);
+  });
+
+  it('clamps an out-of-range currentDimension and drops responses for deactivated dimensions', async () => {
+    // Only two of the three dimensions the draft references are still active.
+    getHealthDimensions.mockResolvedValue(ACTIVE_DIMENSIONS);
+
+    const currentPeriod = (await import('@/lib/assessment-period')).getAssessmentPeriod(
+      new Date(),
+      (await import('@/lib/assessment-period')).toCadence(TEAM_INFO.cadence)
+    );
+
+    const draft = {
+      responses: [
+        { dimensionId: 'mission', score: 3, trend: 'stable', comment: '' },
+        { dimensionId: 'dim-removed', score: 2, trend: 'stable', comment: 'stale' },
+      ],
+      // Points past the end of the now-shorter active dimension list.
+      currentDimension: 5,
+      assessmentPeriod: currentPeriod,
+      savedAt: new Date().toISOString(),
+    };
+    localStorage.setItem(getDraftKey('user-1', 'team-1'), JSON.stringify(draft));
+
+    render(<SurveyPage />);
+
+    // Renders the last valid dimension instead of crashing on an undefined one.
+    await waitFor(() => {
+      expect(screen.getByText('Delivering Value')).toBeInTheDocument();
+    });
+
+    // The stale response for the deactivated dimension must not resurrect it.
+    expect(screen.queryByText('dim-removed')).not.toBeInTheDocument();
+  });
+
+  it('handles an empty active-dimension list without rendering an undefined dimension', async () => {
+    getHealthDimensions.mockResolvedValue([]);
+    localStorage.setItem(
+      getDraftKey('user-1', 'team-1'),
+      JSON.stringify({
+        responses: [{ dimensionId: 'mission', score: 1, trend: 'stable', comment: '' }],
+        currentDimension: 2,
+        assessmentPeriod: 'whatever',
+        savedAt: new Date().toISOString(),
+      })
+    );
+
+    render(<SurveyPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Unable to Load Health Dimensions')).toBeInTheDocument();
+    });
   });
 });

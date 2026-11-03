@@ -40,11 +40,26 @@ vi.mock('@/lib/api/admin', async (importOriginal) => {
 import DataProviderConfig from '../DataProviderConfig';
 import {
   readSyncState,
-  writeSyncState,
+  startSyncHeartbeat,
   setActiveSyncPromise,
   setActiveRequestId,
   SYNC_STALE_TIMEOUT_MS,
+  SYNC_HEARTBEAT_MS,
+  SYNC_MAX_LEASE_MS,
+  acquireSyncLease,
+  isStale,
 } from '@/lib/admin-sync-state';
+
+// Seeds the shared slot the way another tab (or a pre-reload page) would have
+// left it. updatedAt equals startedAt, i.e. no heartbeat has landed since.
+function seedSyncState(status: 'in_progress' | 'completed' | 'failed', startedAt: number = Date.now()): string {
+  const requestId = `seed-${Math.random().toString(36).slice(2)}`;
+  localStorage.setItem(
+    'adminSyncState',
+    JSON.stringify({ status, startedAt, updatedAt: startedAt, requestId })
+  );
+  return requestId;
+}
 
 const READY = {
   provider: 'data-provider',
@@ -325,7 +340,7 @@ describe('DataProviderConfig — persisted sync state (reload, tab switch, navig
   });
 
   it('restores a disabled, syncing button on remount (refresh) when a fresh in-progress state is persisted', async () => {
-    writeSyncState('in_progress', Date.now());
+    seedSyncState('in_progress', Date.now());
     // No live promise survives a real reload, and the sync API must not be
     // called again just because a valid in-progress record exists.
     getSettings.mockResolvedValue(READY);
@@ -339,7 +354,7 @@ describe('DataProviderConfig — persisted sync state (reload, tab switch, navig
   });
 
   it('discards a stale in-progress state on remount and re-enables the button without calling the API', async () => {
-    writeSyncState('in_progress', Date.now() - (SYNC_STALE_TIMEOUT_MS + 1000));
+    seedSyncState('in_progress', Date.now() - (SYNC_STALE_TIMEOUT_MS + 1000));
     getSettings.mockResolvedValue(READY);
 
     render(<DataProviderConfig />);
@@ -352,7 +367,7 @@ describe('DataProviderConfig — persisted sync state (reload, tab switch, navig
 
   it('self-clears a valid-but-unresolved in-progress state once the stale timeout elapses', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    writeSyncState('in_progress', Date.now());
+    seedSyncState('in_progress', Date.now());
     getSettings.mockResolvedValue(READY);
 
     render(<DataProviderConfig />);
@@ -454,7 +469,7 @@ describe('DataProviderConfig — persisted sync state (reload, tab switch, navig
     await renderReady();
     expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
 
-    const otherTabRequestId = writeSyncState('in_progress');
+    const otherTabRequestId = seedSyncState('in_progress');
     act(() => {
       window.dispatchEvent(
         new StorageEvent('storage', {
@@ -469,7 +484,7 @@ describe('DataProviderConfig — persisted sync state (reload, tab switch, navig
 
     // The other tab finishes and clears its own record.
     const { clearSyncState } = await import('@/lib/admin-sync-state');
-    clearSyncState(otherTabRequestId);
+    await clearSyncState(otherTabRequestId);
     act(() => {
       window.dispatchEvent(new StorageEvent('storage', { key: 'adminSyncState', newValue: null }));
     });
@@ -481,28 +496,33 @@ describe('DataProviderConfig — persisted sync state (reload, tab switch, navig
     // This tab discovers an in-progress record left over from a reload and
     // starts timing it out.
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    const staleOwnerRequestId = writeSyncState('in_progress', Date.now());
+    const staleOwnerRequestId = seedSyncState('in_progress', Date.now());
     getSettings.mockResolvedValue(READY);
 
     render(<DataProviderConfig />);
     await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
 
     // Before the timeout fires, a different tab starts its own, genuinely
-    // fresh sync -- taking over the shared slot with a new requestId.
+    // fresh sync -- taking over the shared slot with a new requestId -- and,
+    // being alive, keeps heartbeating it.
     const { clearSyncState } = await import('@/lib/admin-sync-state');
-    const freshRequestId = writeSyncState('in_progress', Date.now());
+    const freshRequestId = seedSyncState('in_progress', Date.now());
     expect(freshRequestId).not.toBe(staleOwnerRequestId);
+    const stopOtherTabHeartbeat = startSyncHeartbeat(freshRequestId);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(SYNC_STALE_TIMEOUT_MS + 100);
     });
 
-    // The old record's timeout fired, but clearSyncState was scoped to the
-    // requestId it originally read, so it must not have erased the newer one.
+    // The old record's timeout fired, but it is scoped to the requestId it
+    // originally read, and the newer record has been kept alive, so it must
+    // not have been erased.
     const state = readSyncState();
     expect(state).not.toBeNull();
     expect(state?.requestId).toBe(freshRequestId);
-    clearSyncState(freshRequestId);
+    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+    stopOtherTabHeartbeat();
+    await clearSyncState(freshRequestId);
   });
 });
 
@@ -704,5 +724,418 @@ describe('DataProviderConfig — mass-deletion hold and Sync Anyway override', (
     // Dismissing resolves the review; it never applies the sync.
     expect(sync).toHaveBeenCalledTimes(syncCallsBefore);
     await waitFor(() => expect(screen.getByTestId('threshold-input')).not.toBeDisabled());
+  });
+});
+
+describe('DataProviderConfig — hold dismissal feedback', () => {
+  it('shows a dismissal failure in the hold panel and keeps the hold visible', async () => {
+    const user = userEvent.setup();
+    sync.mockRejectedValue(holdError());
+    dismissHold.mockRejectedValueOnce(new Error('A sync is running'));
+    await renderReady();
+    await user.click(screen.getByTestId('sync-now-btn'));
+    await screen.findByTestId('sync-mass-deletion-hold');
+
+    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
+
+    const failure = await screen.findByTestId('sync-hold-dismiss-error');
+    expect(failure).toHaveTextContent('A sync is running');
+    expect(failure).toHaveTextContent('still in place');
+    expect(screen.getByTestId('sync-mass-deletion-hold')).toBeInTheDocument();
+    // Dismissal feedback is its own message, not the sync's generic error box.
+    expect(screen.queryByTestId('provider-error')).not.toBeInTheDocument();
+    // And the admin can try again.
+    expect(screen.getByTestId('sync-hold-dismiss-btn')).toBeEnabled();
+  });
+
+  it('clears the old hold error after a successful dismissal instead of resurfacing it as a generic failure', async () => {
+    const user = userEvent.setup();
+    sync.mockRejectedValue(holdError());
+    await renderReady();
+    await user.click(screen.getByTestId('sync-now-btn'));
+    await screen.findByTestId('sync-mass-deletion-hold');
+
+    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
+
+    await waitFor(() => expect(screen.queryByTestId('sync-mass-deletion-hold')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('provider-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sync-hold-dismiss-error')).not.toBeInTheDocument();
+  });
+
+  it('retries after a failed dismissal and then clears both the failure and the hold', async () => {
+    const user = userEvent.setup();
+    sync.mockRejectedValue(holdError());
+    dismissHold.mockRejectedValueOnce(new Error('temporary failure'));
+    await renderReady();
+    await user.click(screen.getByTestId('sync-now-btn'));
+    await screen.findByTestId('sync-mass-deletion-hold');
+    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
+    await screen.findByTestId('sync-hold-dismiss-error');
+
+    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
+
+    await waitFor(() => expect(screen.queryByTestId('sync-mass-deletion-hold')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('sync-hold-dismiss-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('provider-error')).not.toBeInTheDocument();
+  });
+});
+
+describe('DataProviderConfig — sync lease (long-running sync, heartbeat, cross-tab)', () => {
+  const click = async () => {
+    await act(async () => {
+      screen.getByTestId('sync-now-btn').click();
+    });
+  };
+
+  it('keeps the lease alive for a sync that outlasts SYNC_STALE_TIMEOUT_MS, then releases it on completion', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let release: (v: unknown) => void = () => {};
+    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    await renderReady();
+    await click();
+    await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3 * SYNC_STALE_TIMEOUT_MS);
+    });
+
+    const state = readSyncState()!;
+    expect(state).not.toBeNull();
+    expect(isStale(state)).toBe(false); // heartbeat kept advancing updatedAt
+    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+
+    await act(async () => {
+      release(SYNC_RESULT);
+    });
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
+    expect(readSyncState()).toBeNull();
+
+    // No heartbeat left behind to recreate the record.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS * 3);
+    });
+    expect(readSyncState()).toBeNull();
+  });
+
+  it('stops heartbeating and clears the lease when the sync fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let fail: (e: unknown) => void = () => {};
+    sync.mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
+    await renderReady();
+    await click();
+    await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
+
+    await act(async () => {
+      fail(new Error('boom'));
+    });
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
+    expect(readSyncState()).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS * 3);
+    });
+    expect(readSyncState()).toBeNull();
+  });
+
+  it('keeps heartbeating across an unmount/remount while the request is still running', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let release: (v: unknown) => void = () => {};
+    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    getSettings.mockResolvedValue(READY);
+    const { unmount } = render(<DataProviderConfig />);
+    await screen.findByTestId('sync-now-btn');
+    await click();
+    await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
+
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2 * SYNC_STALE_TIMEOUT_MS);
+    });
+    expect(isStale(readSyncState()!)).toBe(false);
+
+    render(<DataProviderConfig />);
+    await screen.findByTestId('sync-now-btn');
+    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+
+    await act(async () => {
+      release(SYNC_RESULT);
+    });
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
+    expect(readSyncState()).toBeNull();
+  });
+
+  // The race: settle drops the in-memory handle on the request, but the lock
+  // serialized clear of the persisted lease finishes later. A remount in that
+  // gap must not be left parked on a lease that is about to disappear.
+  describe('SPA remount while the lease release is still in flight', () => {
+    let gated = false;
+    let pending: Array<() => void> = [];
+    const releaseGate = async () => {
+      gated = false;
+      await act(async () => {
+        pending.splice(0).forEach((run) => run());
+      });
+    };
+
+    beforeEach(() => {
+      gated = false;
+      pending = [];
+      // A Web Locks stand-in whose critical sections can be held back, to make
+      // the clear take as long as it likes.
+      Object.defineProperty(navigator, 'locks', {
+        configurable: true,
+        value: {
+          request: (_name: string, cb: () => unknown) =>
+            gated
+              ? new Promise((resolve) => pending.push(() => resolve(cb())))
+              : Promise.resolve().then(cb),
+        },
+      });
+    });
+    afterEach(() => {
+      delete (navigator as unknown as { locks?: unknown }).locks;
+    });
+
+    it('reattaches instead of parking on the old lease, then becomes idle once the release lands', async () => {
+      let release: (v: unknown) => void = () => {};
+      sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+      getSettings.mockResolvedValue(READY);
+      const first = render(<DataProviderConfig />);
+      await screen.findByTestId('sync-now-btn');
+      await click();
+      await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
+
+      // The request settles, but the lease release is held back.
+      gated = true;
+      await act(async () => {
+        release(SYNC_RESULT);
+      });
+      first.unmount();
+
+      render(<DataProviderConfig />);
+      await screen.findByTestId('sync-now-btn');
+      // The old lease is still on disk; the remount must treat the request as
+      // still settling, not as a foreign sync it has to time out.
+      expect(readSyncState()).not.toBeNull();
+      expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+
+      await releaseGate();
+
+      await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
+      expect(readSyncState()).toBeNull();
+      expect(await screen.findByTestId('sync-result')).toBeInTheDocument();
+    });
+
+    it('does not stay syncing for a full stale timeout when a lease is released behind its back', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      seedSyncState('in_progress', Date.now());
+      getSettings.mockResolvedValue(READY);
+      render(<DataProviderConfig />);
+      await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
+
+      // Released by something in this same tab: no `storage` event is fired.
+      localStorage.removeItem('adminSyncState');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS + 100);
+      });
+
+      expect(screen.getByTestId('sync-now-btn')).toBeEnabled(); // well inside SYNC_STALE_TIMEOUT_MS
+    });
+  });
+
+  describe('a request that hangs past the maximum lease duration', () => {
+    const MESSAGE = /stopped responding/i;
+    const hang = () => {
+      let settle: (v: unknown) => void = () => {};
+      let fail: (e: unknown) => void = () => {};
+      sync.mockImplementationOnce(
+        () => new Promise((resolve, reject) => { settle = resolve; fail = reject; })
+      );
+      return { settle: (v: unknown) => settle(v), fail: (e: unknown) => fail(e) };
+    };
+    const pastTheBound = async () => {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SYNC_MAX_LEASE_MS + SYNC_HEARTBEAT_MS);
+      });
+    };
+
+    it('keeps the lease inside the bound, then releases it so another tab can start a sync', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      hang();
+      await renderReady();
+      await click();
+      await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
+      const hungId = readSyncState()!.requestId;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SYNC_MAX_LEASE_MS - SYNC_HEARTBEAT_MS * 2);
+      });
+      expect(await acquireSyncLease()).toBeNull();
+
+      await pastTheBound();
+      expect(readSyncState()).toBeNull(); // released at the bound
+      const reclaimed = await acquireSyncLease();
+      expect(reclaimed).not.toBeNull();
+      expect(reclaimed).not.toBe(hungId);
+    });
+
+    it('stops presenting the request as running in the tab that started it', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      hang();
+      await renderReady();
+      await click();
+      await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
+
+      await pastTheBound();
+
+      expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
+      expect(screen.getByTestId('provider-error')).toHaveTextContent(MESSAGE);
+    });
+
+    it('stops presenting it as running in a remounted instance that reattached to it', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      hang();
+      getSettings.mockResolvedValue(READY);
+      const first = render(<DataProviderConfig />);
+      await screen.findByTestId('sync-now-btn');
+      await click();
+      await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
+      first.unmount();
+
+      render(<DataProviderConfig />);
+      await screen.findByTestId('sync-now-btn');
+      expect(screen.getByTestId('sync-now-btn')).toBeDisabled(); // reattached to the live request
+
+      await pastTheBound();
+
+      expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
+      expect(screen.getByTestId('provider-error')).toHaveTextContent(MESSAGE);
+    });
+
+    it('a remount after the bound does not reattach to the abandoned request', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      hang();
+      getSettings.mockResolvedValue(READY);
+      const first = render(<DataProviderConfig />);
+      await screen.findByTestId('sync-now-btn');
+      await click();
+      await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
+      first.unmount();
+      await pastTheBound();
+
+      render(<DataProviderConfig />);
+      await screen.findByTestId('sync-now-btn');
+
+      expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
+      expect(sync).toHaveBeenCalledTimes(1);
+    });
+
+    it('a late settlement does not clear or reset a newer request that has since started', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const first = hang();
+      const second = hang();
+      await renderReady();
+      await click();
+      await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
+
+      await pastTheBound(); // first request abandoned, tab idle again
+      await click(); // a newer request starts and takes the lease
+      await waitFor(() => expect(sync).toHaveBeenCalledTimes(2));
+      const newerId = readSyncState()!.requestId;
+      expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+
+      // The old request finally comes back (with a result, then it could fail too).
+      await act(async () => {
+        first.settle(SYNC_RESULT);
+      });
+
+      expect(readSyncState()?.requestId).toBe(newerId); // lease untouched
+      expect(screen.getByTestId('sync-now-btn')).toBeDisabled(); // still syncing the newer one
+      expect(screen.queryByTestId('sync-result')).not.toBeInTheDocument(); // old outcome not shown over it
+
+      // The newer request still settles normally.
+      await act(async () => {
+        second.settle(SYNC_RESULT);
+      });
+      await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
+      expect(readSyncState()).toBeNull();
+    });
+
+    it('shows a late result when nothing newer is running, without touching any lease', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const first = hang();
+      await renderReady();
+      await click();
+      await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
+      await pastTheBound();
+      const other = await acquireSyncLease(); // another tab holds the slot now
+
+      await act(async () => {
+        first.settle(SYNC_RESULT);
+      });
+
+      expect(await screen.findByTestId('sync-result')).toBeInTheDocument();
+      expect(readSyncState()?.requestId).toBe(other); // that tab's lease was not cleared
+    });
+
+    it('a late failure from the abandoned request does not disturb a newer one either', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const first = hang();
+      hang();
+      await renderReady();
+      await click();
+      await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
+      await pastTheBound();
+      await click();
+      await waitFor(() => expect(sync).toHaveBeenCalledTimes(2));
+      const newerId = readSyncState()!.requestId;
+
+      await act(async () => {
+        first.fail(new Error('connection reset'));
+      });
+
+      expect(readSyncState()?.requestId).toBe(newerId);
+      expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+      expect(screen.queryByText(/connection reset/)).not.toBeInTheDocument();
+    });
+  });
+
+  it('recovers from a genuinely abandoned sync: no heartbeat, so the record is cleared after the timeout', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    seedSyncState('in_progress', Date.now());
+    getSettings.mockResolvedValue(READY);
+    render(<DataProviderConfig />);
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SYNC_STALE_TIMEOUT_MS + 1_000);
+    });
+
+    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
+    expect(readSyncState()).toBeNull();
+  });
+
+  it("does not start a duplicate sync when another tab already holds a live lease this tab hasn't heard about", async () => {
+    await renderReady(); // idle: no record, no storage event yet
+    const otherTab = seedSyncState('in_progress', Date.now());
+
+    await click();
+
+    expect(sync).not.toHaveBeenCalled();
+    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
+    expect(readSyncState()?.requestId).toBe(otherTab);
+  });
+
+  it('ignores a rapid second click while the first is still acquiring its lease', async () => {
+    sync.mockImplementation(() => new Promise(() => {}));
+    await renderReady();
+
+    await act(async () => {
+      screen.getByTestId('sync-now-btn').click();
+      screen.getByTestId('sync-now-btn').click();
+    });
+
+    await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
   });
 });

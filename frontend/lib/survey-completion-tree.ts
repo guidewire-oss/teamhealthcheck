@@ -42,18 +42,21 @@ export function getPodCompletionPercent(team: SurveyCompletionTeam): number {
  */
 export function getPodDisplayStatus(team: SurveyCompletionTeam): SurveyStatus {
   if (team.status !== 'in_progress' && team.status !== 'complete') return team.status;
-  return getPodCompletionPercent(team) >= 100 ? 'complete' : 'in_progress';
+  return isPodFullyCompleted(team) ? 'complete' : 'in_progress';
 }
 
 /**
  * A pod is fully completed when its own normalized completion percentage
- * is exactly 100%. Reuses getPodCompletionPercent -- the SAME rounding and
- * missing/invalid-data handling already used for a pod's own displayed
- * status -- so a pod's Fully-Completed classification and what its Status
- * column actually shows can never disagree.
+ * is exactly 100% AND its post-workshop session is itself complete. Reuses
+ * getPodCompletionPercent -- the SAME rounding and missing/invalid-data
+ * handling already used for a pod's own displayed status -- so a pod's
+ * Fully-Completed classification and what its Status column actually shows
+ * can never disagree. 100% survey completion alone isn't enough: the
+ * backend still treats a team as in_progress until its post-workshop
+ * session is also complete.
  */
 export function isPodFullyCompleted(team: SurveyCompletionTeam): boolean {
-  return getPodCompletionPercent(team) >= 100;
+  return getPodCompletionPercent(team) >= 100 && team.postWorkshopCompleted === true;
 }
 
 /**
@@ -221,19 +224,29 @@ function aggregatePodPercentages(
   const percentSum = pods.reduce((sum, pod) => sum + getPodCompletionPercent(pod), 0);
   const percent = Math.round(percentSum / pods.length);
 
-  // Mirrors the backend's own deriveSurveyCompletionStatus ordering for a
-  // canonical status, applied to the AVERAGED percentage rather than one
-  // pod's own counts: no completion anywhere yet -> not_started; every pod
-  // averaging out to 100% -> complete (via getPodDisplayStatus below);
-  // otherwise in_progress.
-  const canonicalStatus: SurveyStatus = percent === 0 ? 'not_started' : 'in_progress';
+  // Canonical status comes from the SOURCE pods, never from the rounded
+  // average: a pod at 1 of 201 is genuinely in_progress, yet its percentage
+  // rounds to 0, so testing `percent === 0` would misclassify the aggregate
+  // as not_started and drop it from the In Progress filter. It is
+  // not_started only when every pod is itself not_started (using the same
+  // getPodDisplayStatus a pod's own Status column uses); any started or
+  // completed pod makes the aggregate in_progress. Full completion is
+  // decided separately below, via getPodDisplayStatus on the synthetic pod.
+  const anyPodStarted = pods.some((pod) => getPodDisplayStatus(pod) !== 'not_started');
+  const canonicalStatus: SurveyStatus = anyPodStarted ? 'in_progress' : 'not_started';
+
+  // The aggregate only reads as "complete" when every underlying pod is
+  // itself fully completed -- 100% survey completion AND a completed
+  // post-workshop session -- not merely when the averaged percentage
+  // rounds up to 100.
+  const allPodsFullyCompleted = pods.every(isPodFullyCompleted);
 
   const syntheticPod: SurveyCompletionTeam = {
     teamId: `hierarchy:${id}`,
     teamName: name,
     completed: percent,
     total: 100,
-    postWorkshopCompleted: null,
+    postWorkshopCompleted: allPodsFullyCompleted,
     status: canonicalStatus,
   };
 

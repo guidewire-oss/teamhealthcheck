@@ -22,6 +22,7 @@ function team(overrides: Partial<SurveyCompletionTeam> = {}): SurveyCompletionTe
     total: 3,
     postWorkshopCompleted: false,
     status: 'not_started',
+    teamLeadId: 'lead-1',
     teamLeadName: 'Alice',
     ...overrides,
   };
@@ -64,8 +65,41 @@ describe('buildTeamReminderPlan', () => {
   });
 
   it('labels an unassigned team lead', () => {
-    const plan = buildTeamReminderPlan(team({ teamLeadName: undefined }), {});
+    const plan = buildTeamReminderPlan(team({ teamLeadId: undefined, teamLeadName: undefined }), {});
     expect(plan.root).toMatchObject({ teamLeadName: 'Unassigned' });
+  });
+
+  describe('toast wording follows whether a team lead is actually assigned', () => {
+    const owner = person('mgr1', 'Sreejith Rajasekaran', 'Manager');
+
+    it('names the team lead when one is assigned (owner + lead)', () => {
+      const plan = buildTeamReminderPlan(team({ teamName: 'Goa' }), { owner });
+      expect(plan.toastMessage).toBe('Reminder sent to Sreejith Rajasekaran and the team lead for Goa.');
+    });
+
+    it('names the team lead when one is assigned and there is no owner', () => {
+      const plan = buildTeamReminderPlan(team({ teamName: 'Goa' }), {});
+      expect(plan.toastMessage).toBe('Reminder sent to the team lead for Goa.');
+    });
+
+    it.each([
+      ['undefined id', { teamLeadId: undefined }],
+      ['empty id', { teamLeadId: '' }],
+      ['blank id', { teamLeadId: '   ' }],
+      ['a name but no id', { teamLeadId: undefined, teamLeadName: 'Alice' }],
+    ])('does not claim a team lead received it when the lead is missing (%s), with an owner', (_label, lead) => {
+      const plan = buildTeamReminderPlan(team({ teamName: 'Goa', ...lead }), { owner });
+
+      expect(plan.toastMessage).toBe('Reminder sent to Sreejith Rajasekaran. Goa has no team lead assigned.');
+      expect(plan.toastMessage).not.toContain('and the team lead');
+    });
+
+    it('reports that nobody was reminded when there is neither a lead nor an owner', () => {
+      const plan = buildTeamReminderPlan(team({ teamName: 'Goa', teamLeadId: undefined, teamLeadName: undefined }), {});
+
+      expect(plan.toastMessage).toBe('No reminder sent: Goa has no team lead assigned and no supervisor to notify.');
+      expect(plan.subtitle).toBe('Goa has no team lead assigned');
+    });
   });
 });
 
@@ -206,10 +240,10 @@ describe('getStatusesInTree', () => {
     const group: SurveyCompletionPersonGroup = {
       type: 'person',
       person: person('mgr1', 'Sreejith Rajasekaran', 'Manager'),
-      totalTeams: 4,
-      optedInTeams: 4,
+      totalTeams: 5,
+      optedInTeams: 5,
       completionPercent: 0,
-      remindCount: 2,
+      remindCount: 3,
       // buildPersonReminderPlan only keeps pending (not_started/in_progress)
       // teams as leaves, so both appear even though the source list mixes
       // in every status.
@@ -218,6 +252,9 @@ describe('getStatusesInTree', () => {
         team({ teamId: 'b', status: 'in_progress' }),
         team({ teamId: 'c', status: 'complete' }),
         team({ teamId: 'd', status: 'opted_out' }),
+        // A second in_progress pod, so the expected output below only
+        // proves dedup if duplicates are actually collapsed.
+        team({ teamId: 'e', status: 'in_progress' }),
       ],
       children: [],
     };

@@ -1,6 +1,7 @@
 package services_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -128,7 +129,7 @@ func TestFilterSnapshotClearsUnresolvableManagerLinks(t *testing.T) {
 			user("exec", "ceo", "level-0", nil),
 		},
 		[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
-		nil,
+		[]orgsnapshot.Membership{},
 	)
 
 	got, err := services.FilterSnapshot(in, knownLevels())
@@ -323,5 +324,147 @@ func TestFilterSnapshotRejectsDuplicateUserIDWhenBothAreImportable(t *testing.T)
 	_, err := services.FilterSnapshot(in, knownLevels())
 	if err == nil {
 		t.Fatal("expected an error for a duplicate user id, got nil")
+	}
+}
+
+// The filter must never turn a contract-invalid payload into a valid one:
+// whatever it repairs, orgsnapshot.Validate has to see the original breach.
+
+func validateFiltered(t *testing.T, in *orgsnapshot.Snapshot) error {
+	t.Helper()
+	got, err := services.FilterSnapshot(in, knownLevels())
+	if err != nil {
+		t.Fatalf("FilterSnapshot: %v", err)
+	}
+	return got.Snapshot.ValidationError()
+}
+
+func TestFilterSnapshotRejectsEmptyUserIDAlongsideAValidUser(t *testing.T) {
+	cases := map[string]orgsnapshot.User{
+		"importable level":   user("", "ghost", "level-3", nil),
+		"missing level":      user("", "ghost", "", nil),
+		"level THC lacks":    user("", "ghost", "level-unknown", nil),
+		"valid level, no id": user("", "ghost", "level-5", nil),
+	}
+	for name, bad := range cases {
+		t.Run(name, func(t *testing.T) {
+			snap := baseSnapshot(
+				[]orgsnapshot.User{user("u1", "alice", "level-3", nil), bad},
+				[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
+				[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}},
+			)
+			if err := validateFiltered(t, snap); err == nil {
+				t.Fatal("a record with an empty user id must reject the snapshot even though u1 is valid")
+			}
+		})
+	}
+}
+
+func TestFilterSnapshotDoesNotRepairAnEmptyReportsToID(t *testing.T) {
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("u1", "alice", "level-3", nil), user("u2", "bob", "level-3", strPtr(""))},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
+		[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}, {UserID: "u2", TeamID: "t1"}},
+	)
+
+	got, err := services.FilterSnapshot(snap, knownLevels())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClearedManagers != 0 || got.PreserveReportsToUserIDs["u2"] {
+		t.Fatalf("an empty reportsToId must not be treated as a repairable dangling manager: %+v", got)
+	}
+	if rt := got.Snapshot.Users[1].ReportsToID; rt == nil || *rt != "" {
+		t.Fatalf("the explicit empty value must be preserved for validation, got %v", rt)
+	}
+	if err := got.Snapshot.ValidationError(); err == nil {
+		t.Fatal("an empty reportsToId must fail validation")
+	}
+}
+
+func TestFilterSnapshotStillRepairsADanglingNonEmptyReportsToID(t *testing.T) {
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("u1", "alice", "level-3", strPtr("ghost"))},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
+		[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}},
+	)
+	got, _ := services.FilterSnapshot(snap, knownLevels())
+	if got.ClearedManagers != 1 || !got.PreserveReportsToUserIDs["u1"] {
+		t.Fatalf("a genuinely unresolvable manager is still cleared and preserved: %+v", got)
+	}
+}
+
+func TestFilterSnapshotDoesNotRepairAnEmptyTeamLeadID(t *testing.T) {
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("u1", "alice", "level-3", nil)},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz", TeamLeadID: strPtr("")}},
+		[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}},
+	)
+
+	got, err := services.FilterSnapshot(snap, knownLevels())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClearedTeamLeads != 0 {
+		t.Fatalf("an empty teamLeadId must not be counted as a cleared lead: %+v", got)
+	}
+	if lead := got.Snapshot.Teams[0].TeamLeadID; lead == nil || *lead != "" {
+		t.Fatalf("the explicit empty value must be preserved for validation, got %v", lead)
+	}
+	if err := got.Snapshot.ValidationError(); err == nil {
+		t.Fatal("an empty teamLeadId must fail validation")
+	}
+}
+
+func TestFilterSnapshotKeepsOmittedTeamLeadAsPreserve(t *testing.T) {
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("u1", "alice", "level-3", nil)},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}}, // omitted => preserve existing
+		[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}},
+	)
+	got, _ := services.FilterSnapshot(snap, knownLevels())
+	if got.Snapshot.Teams[0].TeamLeadID != nil {
+		t.Fatal("an omitted teamLeadId must stay nil (preserve)")
+	}
+	if err := got.Snapshot.ValidationError(); err != nil {
+		t.Fatalf("omitted lead is valid: %v", err)
+	}
+}
+
+// End to end: an invalid snapshot is rejected by Sync and nothing reaches
+// persistence, so no fallback value (previous manager or lead) is written.
+type invalidSnapshotFetcher struct{ snap *orgsnapshot.Snapshot }
+
+func (f invalidSnapshotFetcher) FetchSnapshot(context.Context) (*orgsnapshot.Snapshot, error) {
+	return f.snap, nil
+}
+
+func TestSyncRejectsContractInvalidSnapshotsWithoutPersisting(t *testing.T) {
+	invalid := map[string]*orgsnapshot.Snapshot{
+		"empty user id next to a valid user": baseSnapshot(
+			[]orgsnapshot.User{user("u1", "alice", "level-3", nil), user("", "ghost", "level-unknown", nil)},
+			[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
+			[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}}),
+		"empty reportsToId": baseSnapshot(
+			[]orgsnapshot.User{user("u1", "alice", "level-3", strPtr(""))},
+			[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
+			[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}}),
+		"empty teamLeadId": baseSnapshot(
+			[]orgsnapshot.User{user("u1", "alice", "level-3", nil)},
+			[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz", TeamLeadID: strPtr("")}},
+			[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}}),
+	}
+	for name, snap := range invalid {
+		t.Run(name, func(t *testing.T) {
+			repo := &holdingRepo{}
+			service := services.NewOrganizationSyncService(repo, invalidSnapshotFetcher{snap}, nil, nil)
+
+			if _, err := service.Sync(context.Background()); err == nil {
+				t.Fatal("expected the contract-invalid snapshot to be rejected")
+			}
+			if repo.calls != 0 {
+				t.Fatalf("nothing may be persisted for a rejected snapshot, ApplySnapshot ran %d time(s)", repo.calls)
+			}
+		})
 	}
 }

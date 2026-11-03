@@ -8,7 +8,6 @@ import (
 	"os"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
@@ -188,8 +187,12 @@ type OrganizationSyncService struct {
 	// variable and the built-in default decide.
 	thresholds DeleteThresholdStore
 
-	// mu guards held. It is not the sync admission lock -- that is running,
-	// below -- only the small record describing an unresolved hold.
+	// mu is the single serialization boundary for everything that decides
+	// whether the mass-deletion guard may change: sync admission (running),
+	// the unresolved-hold record (held), threshold writes, and hold dismissal.
+	// Each of those is one critical section under mu, so a check ("is a sync
+	// running?") and the action it gates ("write the threshold", "clear the
+	// hold", "start the sync") can never be separated by another request.
 	mu sync.Mutex
 	// held records a sync that the mass-deletion guard stopped and that nobody
 	// has resolved yet. Its presence freezes the threshold: the whole point of
@@ -197,10 +200,10 @@ type OrganizationSyncService struct {
 	// limit and retrying.
 	held *heldSync
 
-	// running admits one sync at a time. A second concurrent request is
-	// rejected rather than queued: two runs applying overlapping snapshots
-	// would interleave their transactions unpredictably.
-	running atomic.Bool
+	// running admits one sync at a time (guarded by mu). A second concurrent
+	// request is rejected rather than queued: two runs applying overlapping
+	// snapshots would interleave their transactions unpredictably.
+	running bool
 }
 
 // NewOrganizationSyncService creates the service. A nil fetcher is tolerated
@@ -248,10 +251,10 @@ func (s *OrganizationSyncService) Sync(ctx context.Context) (*SyncResult, error)
 // allowlists still apply in persistence, and provider/transaction failures are
 // handled exactly as they are for a normal run.
 func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts SyncOptions) (*SyncResult, error) {
-	if !s.running.CompareAndSwap(false, true) {
+	if !s.admit() {
 		return nil, ErrSyncInProgress
 	}
-	defer s.running.Store(false)
+	defer s.release()
 
 	log := logger.Get()
 	startedAt := time.Now().UTC()
@@ -401,10 +404,14 @@ func formatCascade(m *orgprovider.DeletionMetric) string {
 // and at what value. An expired hold is dropped here rather than lingering, so
 // callers never have to reason about staleness themselves.
 func (s *OrganizationSyncService) LockState() SyncLockState {
-	state := SyncLockState{Syncing: s.running.Load()}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.lockStateLocked()
+}
+
+// lockStateLocked is LockState for a caller that already holds mu.
+func (s *OrganizationSyncService) lockStateLocked() SyncLockState {
+	state := SyncLockState{Syncing: s.running}
 	if s.held != nil {
 		if time.Since(s.held.heldAt) > MassDeletionHoldTTL {
 			s.held = nil
@@ -415,6 +422,66 @@ func (s *OrganizationSyncService) LockState() SyncLockState {
 		}
 	}
 	return state
+}
+
+// admit claims the single sync slot, reporting false when one is running.
+func (s *OrganizationSyncService) admit() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running {
+		return false
+	}
+	s.running = true
+	return true
+}
+
+func (s *OrganizationSyncService) release() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.running = false
+}
+
+// ThresholdLockedError is returned by UpdateMaxDeletePercent when a sync is
+// running or held, carrying the state that caused the refusal.
+type ThresholdLockedError struct{ State SyncLockState }
+
+func (e *ThresholdLockedError) Error() string {
+	if e.State.Syncing {
+		return "the deletion threshold cannot be changed while a synchronization is running"
+	}
+	return "the deletion threshold cannot be changed while a synchronization is held for review"
+}
+
+// UpdateMaxDeletePercent persists a new threshold via write, but only if no
+// sync is running or held, and does so while holding the same mutex sync
+// admission takes. A sync therefore cannot be admitted between the check and
+// the write, which a handler-level LockState() read followed by an unprotected
+// repository write could not guarantee. It returns *ThresholdLockedError when
+// refused. write must not call back into this service.
+func (s *OrganizationSyncService) UpdateMaxDeletePercent(ctx context.Context, percent float64, write func(context.Context, float64) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if state := s.lockStateLocked(); state.Locked() {
+		return &ThresholdLockedError{State: state}
+	}
+	return write(ctx, percent)
+}
+
+// DismissHoldIfIdle clears an unresolved hold on behalf of an administrator,
+// refusing with ErrSyncInProgress while a sync is running. The check and the
+// clear are one critical section under the admission mutex: a sync that is
+// admitted afterwards can create a fresh hold, but it can never have that
+// hold cleared by a dismissal that was decided before it started. It reports
+// whether there was a hold to clear.
+func (s *OrganizationSyncService) DismissHoldIfIdle() (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running {
+		return false, ErrSyncInProgress
+	}
+	existed := s.held != nil
+	s.held = nil
+	return existed, nil
 }
 
 // DismissHold clears an unresolved hold, which re-enables threshold editing.
@@ -514,8 +581,7 @@ func envMaxDeletePercent() (float64, bool) {
 		return 0, false
 	}
 	value, err := strconv.ParseFloat(raw, 64)
-	// Reject NaN/Inf since they can bypass the percentage validation.
-	if err != nil || value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+	if err != nil || !validDeletePercent(value) {
 		return 0, false
 	}
 	return value, true
@@ -546,7 +612,19 @@ func (s *OrganizationSyncService) rederiveSupervisorChains(ctx context.Context, 
 			}
 			continue
 		}
-		if stored == nil || stored.TeamLeadID == nil {
+		if stored == nil {
+			continue
+		}
+		if stored.TeamLeadID == nil {
+			// The sync removed this team's lead and the FK cleared
+			// teams.team_lead_id; the supervisor chain must not keep
+			// pointing at a lead that no longer applies.
+			if err := s.teamRepo.UpdateSupervisorChain(ctx, t.ID, nil); err != nil {
+				log.Warn("failed to clear supervisor chain for team " + t.ID + ": " + err.Error())
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
 			continue
 		}
 

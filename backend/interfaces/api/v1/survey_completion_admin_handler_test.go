@@ -516,3 +516,105 @@ var _ = Describe("buildSurveyCompletionResponse never lets one team ID render tw
 		Expect(resp.Groups[0].TotalTeams).To(Equal(1))
 	})
 })
+
+// Regression test: a circular manager relationship (a sync/data error, e.g.
+// A's ParentID points to B and B's ParentID points back to A) must not make
+// every cycle member vanish from the rendered hierarchy. Before the fix,
+// each cycle member always had a parent present in nodeBuilders, so none of
+// them ever qualified for rootOrder, and they were never reachable from any
+// other root either -- their teams were still counted in the overview
+// totals but silently absent from Groups.
+var _ = Describe("buildSurveyCompletionResponse cycle handling", func() {
+	It("still renders both members of a two-person cycle (A -> B -> A), each exactly once", func() {
+		persons := []queries.PersonNode{
+			{UserID: "a", Name: "A", LevelID: "manager", LevelName: "Manager", ParentID: "b"},
+			{UserID: "b", Name: "B", LevelID: "manager", LevelName: "Manager", ParentID: "a"},
+		}
+		overview := &queries.SurveyCompletionOverview{
+			Persons: persons,
+			Teams: []queries.SurveyCompletionTeam{
+				{TeamID: "team-a", TeamName: "Team A", OwnerUserID: "a", Total: 1, Completed: 1, PostWorkshopCompleted: true, HealthCheckEnabled: true},
+				{TeamID: "team-b", TeamName: "Team B", OwnerUserID: "b", Total: 1, Completed: 1, PostWorkshopCompleted: true, HealthCheckEnabled: true},
+			},
+		}
+
+		resp := buildSurveyCompletionResponse(overview)
+
+		Expect(resp.TotalTeams).To(Equal(2))
+
+		names := []string{}
+		for _, g := range resp.Groups {
+			if g.Person != nil {
+				names = append(names, g.Person.Name)
+			}
+		}
+		Expect(names).To(ConsistOf("A", "B"))
+
+		seen := map[string]int{}
+		for _, g := range resp.Groups {
+			countGroupTeams(g, seen)
+		}
+		Expect(seen).To(HaveLen(2))
+		for id, count := range seen {
+			Expect(count).To(Equal(1), "team %s should appear exactly once", id)
+		}
+	})
+
+	It("still renders every member of a longer cycle (A -> B -> C -> A), each exactly once", func() {
+		persons := []queries.PersonNode{
+			{UserID: "a", Name: "A", LevelID: "manager", LevelName: "Manager", ParentID: "c"},
+			{UserID: "b", Name: "B", LevelID: "manager", LevelName: "Manager", ParentID: "a"},
+			{UserID: "c", Name: "C", LevelID: "manager", LevelName: "Manager", ParentID: "b"},
+		}
+		overview := &queries.SurveyCompletionOverview{
+			Persons: persons,
+			Teams: []queries.SurveyCompletionTeam{
+				{TeamID: "team-a", TeamName: "Team A", OwnerUserID: "a", Total: 1, Completed: 1, HealthCheckEnabled: true},
+				{TeamID: "team-b", TeamName: "Team B", OwnerUserID: "b", Total: 1, Completed: 1, HealthCheckEnabled: true},
+				{TeamID: "team-c", TeamName: "Team C", OwnerUserID: "c", Total: 1, Completed: 1, HealthCheckEnabled: true},
+			},
+		}
+
+		resp := buildSurveyCompletionResponse(overview)
+
+		Expect(resp.TotalTeams).To(Equal(3))
+
+		names := []string{}
+		for _, g := range resp.Groups {
+			if g.Person != nil {
+				names = append(names, g.Person.Name)
+			}
+		}
+		Expect(names).To(ConsistOf("A", "B", "C"))
+
+		seen := map[string]int{}
+		for _, g := range resp.Groups {
+			countGroupTeams(g, seen)
+		}
+		Expect(seen).To(HaveLen(3))
+		for id, count := range seen {
+			Expect(count).To(Equal(1), "team %s should appear exactly once", id)
+		}
+	})
+
+	It("leaves a normal acyclic hierarchy unaffected by the cycle check", func() {
+		persons := []queries.PersonNode{
+			{UserID: "root", Name: "Root", LevelID: "director", LevelName: "Director", ParentID: ""},
+			{UserID: "child", Name: "Child", LevelID: "manager", LevelName: "Manager", ParentID: "root"},
+		}
+		overview := &queries.SurveyCompletionOverview{
+			Persons: persons,
+			Teams: []queries.SurveyCompletionTeam{
+				{TeamID: "team-root", TeamName: "Team Root", OwnerUserID: "root", Total: 1, Completed: 1, HealthCheckEnabled: true},
+				{TeamID: "team-child", TeamName: "Team Child", OwnerUserID: "child", Total: 1, Completed: 1, HealthCheckEnabled: true},
+			},
+		}
+
+		resp := buildSurveyCompletionResponse(overview)
+
+		Expect(resp.Groups).To(HaveLen(1))
+		Expect(resp.Groups[0].Person.Name).To(Equal("Root"))
+		Expect(resp.Groups[0].Children).To(HaveLen(1))
+		Expect(resp.Groups[0].Children[0].Person.Name).To(Equal("Child"))
+	})
+})

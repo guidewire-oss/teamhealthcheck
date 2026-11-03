@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Lock, ShieldAlert } from "lucide-react";
 import {
   getOrgSyncDeletionThreshold,
@@ -26,6 +26,25 @@ const PRESETS = [10, 20, 50, 100];
 
 /** At or above this, the threshold stops being much of a guard -- say so. */
 const HIGH_THRESHOLD = 50;
+
+/**
+ * Parses the numeric field. The backend stores the threshold as a double and
+ * accepts any finite value inside [min, max] -- so decimals such as 12.5 are
+ * valid. The pattern is strict on purpose: Number() alone would also accept
+ * "0x10", "1e1", " " and "Infinity". Returns null for anything not usable.
+ */
+function parsePercent(text: string, min: number, max: number): number | null {
+  const trimmed = text.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return null;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value) || value < min || value > max) return null;
+  return value;
+}
+
+/** Canonical text for a stored percentage (12.5 -> "12.5", 20 -> "20"). */
+function formatPercent(value: number): string {
+  return String(value);
+}
 
 /** Explains why editing is disabled, in the terms the admin is looking at. */
 function lockExplanation(config: OrgSyncDeletionThreshold): string {
@@ -73,7 +92,25 @@ export default function MassDeletionThresholdSettings({
   // therefore temporarily invalid; the two are reconciled on every valid edit,
   // so what the slider shows and what a valid field says are never different.
   const [percent, setPercent] = useState(20);
-  const [draft, setDraft] = useState("20");
+  const [draft, setDraftState] = useState("20");
+  // Mirrors of `draft` and the last-saved value for load(), which also runs
+  // from a window-focus listener registered once and so would otherwise read
+  // stale state. `savedRef` is the server value the draft is measured against.
+  const draftRef = useRef("20");
+  const savedRef = useRef<number | null>(null);
+  // Generation of the newest server read. Reads can overlap (mount, a sync
+  // starting, window focus, a refused save), and responses may arrive out of
+  // order; only the newest read's response may change state, or an older one
+  // could put back a stale threshold, lock state, or "saved" baseline.
+  const loadSeqRef = useRef(0);
+  // A value another session saved while this draft had unsaved edits; shown
+  // as a notice rather than silently replacing what the admin typed.
+  const [externalValue, setExternalValue] = useState<number | null>(null);
+
+  const setDraft = (text: string) => {
+    draftRef.current = text;
+    setDraftState(text);
+  };
 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -92,16 +129,35 @@ export default function MassDeletionThresholdSettings({
    * not blank the card the admin is looking at.
    */
   const load = async () => {
+    const seq = ++loadSeqRef.current;
+    const isCurrent = () => seq === loadSeqRef.current;
     setLoadError(null);
     try {
       const loaded = await getOrgSyncDeletionThreshold();
+      if (!isCurrent()) return; // a newer read (or a save) superseded this one
+
+      const previouslySaved = savedRef.current;
+      const hasUnsavedEdit =
+        previouslySaved !== null && draftRef.current !== formatPercent(previouslySaved);
+
+      // Server state (value in force, lock) always refreshes.
       setConfig(loaded);
-      setPercent(loaded.maxDeletePercent);
-      setDraft(String(loaded.maxDeletePercent));
+      savedRef.current = loaded.maxDeletePercent;
+
+      if (!hasUnsavedEdit) {
+        setPercent(loaded.maxDeletePercent);
+        setDraft(formatPercent(loaded.maxDeletePercent));
+        setExternalValue(null);
+      } else if (loaded.maxDeletePercent !== previouslySaved) {
+        // The saved value changed elsewhere while this admin was editing.
+        // Keep their input and say so; saving will overwrite the other value.
+        setExternalValue(loaded.maxDeletePercent);
+      }
     } catch (err: any) {
+      if (!isCurrent()) return;
       setLoadError(err?.message || "Failed to load the deletion threshold");
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   };
 
@@ -120,17 +176,13 @@ export default function MassDeletionThresholdSettings({
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  /** Whether `draft` is a whole percentage inside the allowed range. */
-  const draftValid = (() => {
-    const trimmed = draft.trim();
-    if (trimmed === "") return false;
-    const value = Number(trimmed);
-    return Number.isFinite(value) && Number.isInteger(value) && value >= min && value <= max;
-  })();
+  /** `draft` parsed and range-checked, or null while it is not a usable number. */
+  const draftValue = parsePercent(draft, min, max);
+  const draftValid = draftValue !== null;
 
   const applyValue = (next: number) => {
     setPercent(next);
-    setDraft(String(next));
+    setDraft(formatPercent(next));
     setSaved(false);
     setSaveError(null);
   };
@@ -139,10 +191,15 @@ export default function MassDeletionThresholdSettings({
     setDraft(text);
     setSaved(false);
     setSaveError(null);
-    const value = Number(text.trim());
-    if (text.trim() !== "" && Number.isFinite(value) && Number.isInteger(value) && value >= min && value <= max) {
-      setPercent(value);
-    }
+    const value = parsePercent(text, min, max);
+    if (value !== null) setPercent(value);
+  };
+
+  /** Explicit reset: discard the edit and take the value now saved. */
+  const useSavedValue = () => {
+    if (savedRef.current === null) return;
+    applyValue(savedRef.current);
+    setExternalValue(null);
   };
 
   const handleSave = async () => {
@@ -152,9 +209,14 @@ export default function MassDeletionThresholdSettings({
     setSaved(false);
     try {
       const updated = await updateOrgSyncDeletionThreshold(percent);
+      // The save result is newer than any read still in flight, so those reads
+      // must not overwrite it when they land.
+      loadSeqRef.current += 1;
       setConfig(updated);
+      savedRef.current = updated.maxDeletePercent;
       setPercent(updated.maxDeletePercent);
-      setDraft(String(updated.maxDeletePercent));
+      setDraft(formatPercent(updated.maxDeletePercent));
+      setExternalValue(null);
       setSaved(true);
     } catch (err: any) {
       setSaveError(err?.message || "Failed to save the deletion threshold");
@@ -218,7 +280,7 @@ export default function MassDeletionThresholdSettings({
               type="range"
               min={min}
               max={max}
-              step={1}
+              step={0.5}
               value={percent}
               data-testid="threshold-slider"
               aria-label="Maximum deletion percentage"
@@ -234,10 +296,10 @@ export default function MassDeletionThresholdSettings({
               <input
                 id="threshold-percent-input"
                 type="number"
-                inputMode="numeric"
+                inputMode="decimal"
                 min={min}
                 max={max}
-                step={1}
+                step="any"
                 value={draft}
                 data-testid="threshold-input"
                 aria-invalid={!draftValid}
@@ -274,8 +336,29 @@ export default function MassDeletionThresholdSettings({
 
           {!draftValid && (
             <p className="text-sm text-red-600" data-testid="threshold-validation-error" role="alert">
-              Enter a whole number between {min} and {max}.
+              Enter a number between {min} and {max}, such as 12.5.
             </p>
+          )}
+
+          {externalValue !== null && draftValue !== externalValue && (
+            <div
+              data-testid="threshold-external-change"
+              role="status"
+              className="flex flex-wrap items-center gap-3 p-3 bg-blue-50 border border-blue-200 rounded-lg"
+            >
+              <p className="text-sm text-blue-800">
+                The saved threshold is now {externalValue}%. Your unsaved edit is kept; saving will
+                replace that value.
+              </p>
+              <button
+                type="button"
+                onClick={useSavedValue}
+                data-testid="threshold-use-saved"
+                className="text-sm text-blue-900 underline"
+              >
+                Use the saved value
+              </button>
+            </div>
           )}
 
           {draftValid && percent >= HIGH_THRESHOLD && (

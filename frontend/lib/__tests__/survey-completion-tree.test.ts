@@ -1367,3 +1367,79 @@ describe('getPartialCompletionBadgeClass', () => {
   });
 });
 
+
+describe('computeHierarchyAggregate -- status derives from source pods, not the rounded percentage', () => {
+  function manager(directTeams: SurveyCompletionTeam[]): SurveyCompletionPersonGroup {
+    return {
+      type: 'person',
+      person: person('mgr-agg', 'Aggregate Manager', 'Manager'),
+      totalTeams: directTeams.length,
+      optedInTeams: directTeams.length,
+      completionPercent: 0,
+      remindCount: 0,
+      directTeams,
+      children: [],
+    };
+  }
+
+  it('keeps a lone 1-of-201 pod in_progress even though its percentage rounds to 0', () => {
+    const result = computeHierarchyAggregate(
+      manager([team({ teamId: 'p1', status: 'in_progress', completed: 1, total: 201, postWorkshopCompleted: false })]),
+    );
+    expect(result?.percent).toBe(0);
+    expect(result?.displayStatus).toBe('in_progress');
+  });
+
+  it('stays in_progress when a 0%-rounding in-progress pod sits beside a not_started pod', () => {
+    const result = computeHierarchyAggregate(
+      manager([
+        team({ teamId: 'p1', status: 'in_progress', completed: 1, total: 201, postWorkshopCompleted: false }),
+        team({ teamId: 'p2', status: 'not_started', completed: 0, total: 5, postWorkshopCompleted: false }),
+      ]),
+    );
+    expect(result?.percent).toBe(0);
+    expect(result?.displayStatus).toBe('in_progress');
+  });
+
+  it('is not_started only when every source pod is not_started', () => {
+    const result = computeHierarchyAggregate(
+      manager([
+        team({ teamId: 'p1', status: 'not_started', completed: 0, total: 5, postWorkshopCompleted: false }),
+        team({ teamId: 'p2', status: 'not_started', completed: 0, total: 8, postWorkshopCompleted: false }),
+      ]),
+    );
+    expect(result?.percent).toBe(0);
+    expect(result?.displayStatus).toBe('not_started');
+  });
+
+  it('is in_progress for mixed not_started and complete pods', () => {
+    const result = computeHierarchyAggregate(
+      manager([
+        team({ teamId: 'p1', status: 'not_started', completed: 0, total: 5, postWorkshopCompleted: false }),
+        team({ teamId: 'p2', status: 'complete', completed: 4, total: 4 }),
+      ]),
+    );
+    expect(result?.displayStatus).toBe('in_progress');
+  });
+
+  it('is complete only when every pod is fully completed', () => {
+    const result = computeHierarchyAggregate(
+      manager([
+        team({ teamId: 'p1', status: 'complete', completed: 4, total: 4 }),
+        team({ teamId: 'p2', status: 'complete', completed: 2, total: 2 }),
+      ]),
+    );
+    expect(result?.percent).toBe(100);
+    expect(result?.displayStatus).toBe('complete');
+  });
+
+  it('ignores opted-out pods when deciding the aggregate status', () => {
+    const result = computeHierarchyAggregate(
+      manager([
+        team({ teamId: 'p1', status: 'opted_out', completed: 0, total: 5, postWorkshopCompleted: null }),
+        team({ teamId: 'p2', status: 'not_started', completed: 0, total: 5, postWorkshopCompleted: false }),
+      ]),
+    );
+    expect(result?.displayStatus).toBe('not_started');
+  });
+});
