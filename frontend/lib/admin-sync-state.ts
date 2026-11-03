@@ -222,19 +222,64 @@ export function msUntilStale(state: AdminSyncState, now: number = Date.now()): n
   return Math.max(0, SYNC_STALE_TIMEOUT_MS - (now - state.updatedAt));
 }
 
-const heartbeats = new Map<string, ReturnType<typeof setInterval>>();
+interface HeartbeatTimers {
+  interval: ReturnType<typeof setInterval> | null;
+  expiry: ReturnType<typeof setTimeout>;
+}
+const heartbeats = new Map<string, HeartbeatTimers>();
+
+/**
+ * Requests this tab gave up on because their lease hit SYNC_MAX_LEASE_MS while
+ * the request still had not settled. Their eventual settlement is "late": it
+ * must not release a lease or reset state that now belongs to a newer request.
+ * Entries are removed by takeAbandoned when the late settlement arrives.
+ */
+const abandonedRequests = new Set<string>();
+
+/** Whether requestId was abandoned; consumes the mark so it applies once. */
+export function takeAbandoned(requestId: string | null): boolean {
+  return requestId !== null && abandonedRequests.delete(requestId);
+}
+
+type ExpiryListener = (requestId: string) => void;
+const expiryListeners = new Set<ExpiryListener>();
+
+/**
+ * Subscribes to a request's lease expiring unsettled, so a mounted component
+ * can stop showing "syncing" for it. The module-level cleanup (below) has
+ * already happened by the time listeners run, whether or not any component is
+ * mounted. Returns an unsubscribe function.
+ */
+export function onSyncLeaseExpired(listener: ExpiryListener): () => void {
+  expiryListeners.add(listener);
+  return () => expiryListeners.delete(listener);
+}
 
 /**
  * Keeps the lease for requestId alive until the returned stop function runs
- * (call it when the request settles, however it settles). One interval per
- * requestId: starting again returns a stop for the existing one. The timer
- * belongs to the request, not to a component, so it survives an SPA
+ * (call it when the request settles, however it settles). One heartbeat per
+ * requestId: starting again returns a stop for the existing one. The timers
+ * belong to the request, not to a component, so they survive an SPA
  * unmount/remount while the request is genuinely still running; a hard
- * reload destroys it along with the request, which is exactly what lets the
- * lease expire. onLost fires if another request has taken the slot.
- * The heartbeat also stops by itself once the request has held the lease for
- * maxLeaseMs (SYNC_MAX_LEASE_MS), and onExpired fires, so a request that never
- * settles cannot keep other tabs locked out forever.
+ * reload destroys them along with the request, which is exactly what lets the
+ * lease expire.
+ *
+ * onLost fires if another request has taken the slot (or the record is gone);
+ * the heartbeat then stops writing but the expiry bound below keeps running.
+ *
+ * EXPIRY. A request may hold the lease for at most maxLeaseMs
+ * (SYNC_MAX_LEASE_MS), so one that never settles cannot lock other tabs out
+ * forever. When that bound is reached, whether or not the lease was lost
+ * earlier, the request is abandoned from this tab's point of view:
+ *  - no further heartbeat write can extend the lease, so it ages out;
+ *  - the active-request handles are dropped if they still name this request,
+ *    so a remounted component does not reattach to a request that is not
+ *    expected to settle;
+ *  - the lease record is cleared, scoped to this requestId (a no-op if a newer
+ *    request has since taken the slot);
+ *  - the request is marked abandoned, so a late settlement does not touch a
+ *    newer request's state (see takeAbandoned);
+ *  - expiry listeners and onExpired are called.
  */
 export function startSyncHeartbeat(
   requestId: string,
@@ -243,31 +288,45 @@ export function startSyncHeartbeat(
   maxLeaseMs: number = SYNC_MAX_LEASE_MS,
 ): () => void {
   const stop = () => {
-    const timer = heartbeats.get(requestId);
-    if (timer !== undefined) {
-      clearInterval(timer);
+    const timers = heartbeats.get(requestId);
+    if (timers) {
+      if (timers.interval !== null) clearInterval(timers.interval);
+      clearTimeout(timers.expiry);
       heartbeats.delete(requestId);
     }
   };
   if (heartbeats.has(requestId)) return stop;
 
-  const startedAt = Date.now();
-  const timer = setInterval(() => {
-    // Checked before refreshing: once the bound is reached no further write
-    // may extend the lease, so it ages out and stale recovery unlocks the slot.
-    if (Date.now() - startedAt >= maxLeaseMs) {
-      stop();
-      onExpired?.();
-      return;
+  const stopWriting = () => {
+    const timers = heartbeats.get(requestId);
+    if (timers && timers.interval !== null) {
+      clearInterval(timers.interval);
+      timers.interval = null;
     }
-    void refreshSyncLease(requestId, () => heartbeats.has(requestId)).then((stillOwner) => {
+  };
+
+  const interval = setInterval(() => {
+    void refreshSyncLease(requestId, () => heartbeats.get(requestId)?.interval != null).then((stillOwner) => {
       if (!stillOwner) {
-        stop();
+        stopWriting();
         onLost?.();
       }
     });
   }, SYNC_HEARTBEAT_MS);
-  heartbeats.set(requestId, timer);
+
+  const expiry = setTimeout(() => {
+    stop();
+    abandonedRequests.add(requestId);
+    if (activeRequestId === requestId) {
+      activeSyncPromise = null;
+      activeRequestId = null;
+    }
+    void clearSyncState(requestId);
+    expiryListeners.forEach((listener) => listener(requestId));
+    onExpired?.();
+  }, maxLeaseMs);
+
+  heartbeats.set(requestId, { interval, expiry });
   return stop;
 }
 

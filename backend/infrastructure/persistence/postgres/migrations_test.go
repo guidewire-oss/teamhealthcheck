@@ -63,9 +63,30 @@ func TestMigrations_EveryVersionIsUniqueAndHasUpAndDown(t *testing.T) {
 }
 
 // Versions that have shipped must keep their number and name: databases that
-// already recorded them would otherwise skip the renumbered file.
+// already recorded them would otherwise skip a renamed or renumbered file.
+// This is the complete immutable manifest of every shipped migration present in
+// this tree (000001-000022, identical to main). Versions 000023 and above
+// belong to main and are added here when this branch is rebased onto it.
 func TestMigrations_ShippedVersionsKeepTheirNames(t *testing.T) {
 	shipped := map[int]string{
+		1:  "create_health_dimensions",
+		2:  "create_health_check_sessions",
+		3:  "create_health_check_responses",
+		4:  "seed_health_dimensions",
+		5:  "create_users_and_teams",
+		6:  "add_password_hash",
+		7:  "seed_demo_users",
+		8:  "add_team_cadence",
+		9:  "create_hierarchy_levels",
+		10: "add_hierarchy_level_color",
+		11: "add_hierarchy_permissions",
+		12: "create_password_reset_tokens",
+		13: "add_security_constraints",
+		14: "add_survey_type",
+		15: "create_app_settings",
+		16: "update_cadence_values",
+		17: "add_auth_type",
+		18: "add_branding_settings",
 		19: "add_team_distribution_list_email",
 		20: "create_action_items",
 		21: "add_health_check_enabled",

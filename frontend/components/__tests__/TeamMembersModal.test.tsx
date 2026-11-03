@@ -126,8 +126,10 @@ describe('TeamMembersModal — add-member picker', () => {
 });
 
 describe('TeamMembersModal — membership change notification', () => {
-  it('notifies once per saved add, before the modal closes', async () => {
+  it('notifies only after the add has been saved, and not before', async () => {
     listAllUsers.mockResolvedValue([user('u1')]);
+    let finishSave!: () => void;
+    addTeamMember.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSave = resolve; }));
     const onMembershipChange = vi.fn();
     const onClose = vi.fn();
     const u = userEvent.setup();
@@ -135,23 +137,55 @@ describe('TeamMembersModal — membership change notification', () => {
 
     await u.click(await screen.findByTestId('add-member-btn'));
 
+    // The save is in flight: it was requested with the right arguments, but
+    // nothing may have been announced yet.
+    await waitFor(() => expect(addTeamMember).toHaveBeenCalledWith('t1', 'u1'));
+    expect(onMembershipChange).not.toHaveBeenCalled();
+
+    finishSave();
+
     await waitFor(() => expect(onMembershipChange).toHaveBeenCalledTimes(1));
+    expect(onMembershipChange).toHaveBeenCalledWith();
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('notifies after a saved remove, and not at all when the save fails', async () => {
-    getTeamMembers.mockResolvedValue({ members: [{ userId: 'u1', userName: 'User u1', email: 'u1@x.com' }] });
-    listAllUsers.mockResolvedValue([]);
-    removeTeamMember.mockRejectedValueOnce(new Error('nope')).mockResolvedValueOnce(undefined);
+  it('does not notify when the add fails', async () => {
+    listAllUsers.mockResolvedValue([user('u1')]);
+    addTeamMember.mockRejectedValueOnce(new Error('add refused'));
     const onMembershipChange = vi.fn();
     const u = userEvent.setup();
     render(<TeamMembersModal teamId="t1" teamName="Pod A" onClose={() => {}} onMembershipChange={onMembershipChange} />);
 
+    await u.click(await screen.findByTestId('add-member-btn'));
+
+    expect(await screen.findByText('add refused')).toBeInTheDocument();
+    expect(onMembershipChange).not.toHaveBeenCalled();
+  });
+
+  it('notifies after a saved remove, and not while the remove is pending or if it fails', async () => {
+    getTeamMembers.mockResolvedValue({ members: [{ userId: 'u1', userName: 'User u1', email: 'u1@x.com' }] });
+    listAllUsers.mockResolvedValue([]);
+    let finishRemove!: () => void;
+    removeTeamMember
+      .mockRejectedValueOnce(new Error('nope'))
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finishRemove = resolve; }));
+    const onMembershipChange = vi.fn();
+    const u = userEvent.setup();
+    render(<TeamMembersModal teamId="t1" teamName="Pod A" onClose={() => {}} onMembershipChange={onMembershipChange} />);
+
+    // First attempt fails: no notification.
     await u.click(await screen.findByTestId('remove-member-btn'));
     await screen.findByText('nope');
     expect(onMembershipChange).not.toHaveBeenCalled();
 
+    // Second attempt is pending: still no notification.
     await u.click(screen.getByTestId('remove-member-btn'));
+    await waitFor(() => expect(removeTeamMember).toHaveBeenCalledTimes(2));
+    expect(removeTeamMember).toHaveBeenLastCalledWith('t1', 'u1');
+    expect(onMembershipChange).not.toHaveBeenCalled();
+
+    finishRemove();
+
     await waitFor(() => expect(onMembershipChange).toHaveBeenCalledTimes(1));
   });
 });

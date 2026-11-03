@@ -37,7 +37,9 @@ describe('CompletionBreakdownChart', () => {
     // TeamCompletionBarChart's own tests for the same constraint), so this
     // test deliberately does not inspect sector geometry or count.
     expect(container.querySelector('.recharts-pie')).not.toBeNull();
-    expect(container.querySelector('.recharts-wrapper')).toHaveAttribute('width', '800');
+    // The SVG surface carries the chart's rendered size, which proves the mocked
+    // container's dimensions reached Recharts (it would be 0 without them).
+    expect(container.querySelector('.recharts-surface')).toHaveAttribute('width', '800');
   });
 
   it('displays all four existing statuses in the legend, with their existing labels', async () => {

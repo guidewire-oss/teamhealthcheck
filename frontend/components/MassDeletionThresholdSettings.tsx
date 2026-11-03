@@ -98,6 +98,11 @@ export default function MassDeletionThresholdSettings({
   // stale state. `savedRef` is the server value the draft is measured against.
   const draftRef = useRef("20");
   const savedRef = useRef<number | null>(null);
+  // Generation of the newest server read. Reads can overlap (mount, a sync
+  // starting, window focus, a refused save), and responses may arrive out of
+  // order; only the newest read's response may change state, or an older one
+  // could put back a stale threshold, lock state, or "saved" baseline.
+  const loadSeqRef = useRef(0);
   // A value another session saved while this draft had unsaved edits; shown
   // as a notice rather than silently replacing what the admin typed.
   const [externalValue, setExternalValue] = useState<number | null>(null);
@@ -124,9 +129,13 @@ export default function MassDeletionThresholdSettings({
    * not blank the card the admin is looking at.
    */
   const load = async () => {
+    const seq = ++loadSeqRef.current;
+    const isCurrent = () => seq === loadSeqRef.current;
     setLoadError(null);
     try {
       const loaded = await getOrgSyncDeletionThreshold();
+      if (!isCurrent()) return; // a newer read (or a save) superseded this one
+
       const previouslySaved = savedRef.current;
       const hasUnsavedEdit =
         previouslySaved !== null && draftRef.current !== formatPercent(previouslySaved);
@@ -145,9 +154,10 @@ export default function MassDeletionThresholdSettings({
         setExternalValue(loaded.maxDeletePercent);
       }
     } catch (err: any) {
+      if (!isCurrent()) return;
       setLoadError(err?.message || "Failed to load the deletion threshold");
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   };
 
@@ -199,6 +209,9 @@ export default function MassDeletionThresholdSettings({
     setSaved(false);
     try {
       const updated = await updateOrgSyncDeletionThreshold(percent);
+      // The save result is newer than any read still in flight, so those reads
+      // must not overwrite it when they land.
+      loadSeqRef.current += 1;
       setConfig(updated);
       savedRef.current = updated.maxDeletePercent;
       setPercent(updated.maxDeletePercent);

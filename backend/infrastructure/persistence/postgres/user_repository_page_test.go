@@ -39,13 +39,16 @@ func TestPageOffset(t *testing.T) {
 }
 
 // The naive product wraps negative for the absurd page, which is exactly what
-// PostgreSQL rejects as a negative OFFSET.
+// PostgreSQL rejects as a negative OFFSET. A page size of 100 is used because
+// it is even: (MaxInt-1)*100 wraps to a NEGATIVE value on both 32- and 64-bit
+// ints, whereas an odd size such as 25 wraps to a positive one, which would not
+// exercise the negative-offset case at all.
 func TestPageOffset_NaiveProductWouldWrapNegative(t *testing.T) {
-	page, pageSize := math.MaxInt, 25
+	page, pageSize := math.MaxInt, 100
 	if naive := (page - 1) * pageSize; naive >= 0 {
-		t.Skipf("expected the naive product to wrap on this platform, got %d", naive)
+		t.Fatalf("test premise broken: expected the naive product to wrap negative, got %d", naive)
 	}
-	if _, ok := pageOffset(page, pageSize); ok {
-		t.Fatal("pageOffset must report overflow where the naive product wraps")
+	if got, ok := pageOffset(page, pageSize); ok {
+		t.Fatalf("pageOffset must report overflow where the naive product wraps negative, got (%d, true)", got)
 	}
 }

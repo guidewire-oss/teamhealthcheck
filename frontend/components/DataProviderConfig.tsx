@@ -21,6 +21,8 @@ import {
   isStale,
   msUntilStale,
   startSyncHeartbeat,
+  takeAbandoned,
+  onSyncLeaseExpired,
   SYNC_HEARTBEAT_MS,
   getActiveSyncPromise,
   setActiveSyncPromise,
@@ -112,30 +114,10 @@ export default function DataProviderConfig() {
   // Shared by the original click and by a remount that reattached to the
   // still-running request, so both paths clear state and update the UI
   // identically regardless of which component instance observes completion.
-  const settleSync = async (outcome: { ok: true; result: OrganizationSyncResult } | { ok: false; error: any }) => {
-    if (staleTimerRef.current) clearTimeout(staleTimerRef.current);
-    if (!mountedRef.current) return;
+  type SyncOutcome = { ok: true; result: OrganizationSyncResult } | { ok: false; error: any };
 
-    // Release the lease BEFORE dropping the module-level handle on the
-    // request. Dropping it first leaves a window where a remount finds no
-    // live promise but a still-fresh persisted record, and -- since a tab
-    // gets no `storage` event for its own clear -- would sit in "syncing"
-    // until the stale timer fired. While the clear is pending the handle
-    // still points at the (already settled) promise, so a remount reattaches
-    // to it and settles immediately instead. The clear is serialized behind
-    // any in-flight heartbeat by the sync lock and is a no-op if a newer
-    // request owns the slot; it never rejects.
-    const requestId = requestIdRef.current;
-    if (requestId) {
-      await clearSyncState(requestId);
-    }
-    // Unmounted while the clear was in flight: leave the handle in place so a
-    // remount can still reattach to this settled promise and show the outcome.
-    if (!mountedRef.current) return;
-
-    setActiveSyncPromise(null);
-    setActiveRequestId(null);
-    setSyncing(false);
+  // What the screen shows once a sync's outcome is known.
+  const applyOutcome = (outcome: SyncOutcome) => {
     if (outcome.ok) {
       setSyncResult(outcome.result);
       // The admin client caches users and teams for two minutes. Without this
@@ -151,6 +133,49 @@ export default function DataProviderConfig() {
       }
       setError(outcome.error?.message || "Synchronization failed");
     }
+  };
+
+  // `requestId` is the request that settled, passed explicitly rather than read
+  // from requestIdRef: by the time a long-hung request finally settles, the ref
+  // may name a newer request this call must not touch.
+  const settleSync = async (outcome: SyncOutcome, requestId: string | null) => {
+    // Consumed first so the mark never outlives its one late settlement, even
+    // if this instance has unmounted.
+    const abandoned = takeAbandoned(requestId);
+    if (!mountedRef.current) return;
+
+    if (abandoned) {
+      // This tab already gave up on the request when its lease hit the maximum
+      // duration (see the expiry listener), and the module released its lease
+      // and handles then. There is nothing left to release -- and clearing or
+      // resetting anything here could stomp a newer request -- so only show the
+      // late outcome, and only if no newer request now owns the screen.
+      if (requestIdRef.current === null) applyOutcome(outcome);
+      return;
+    }
+
+    if (staleTimerRef.current) clearTimeout(staleTimerRef.current);
+
+    // Release the lease BEFORE dropping the module-level handle on the
+    // request. Dropping it first leaves a window where a remount finds no
+    // live promise but a still-fresh persisted record, and -- since a tab
+    // gets no `storage` event for its own clear -- would sit in "syncing"
+    // until the stale timer fired. While the clear is pending the handle
+    // still points at the (already settled) promise, so a remount reattaches
+    // to it and settles immediately instead. The clear is serialized behind
+    // any in-flight heartbeat by the sync lock and is a no-op if a newer
+    // request owns the slot; it never rejects.
+    if (requestId) {
+      await clearSyncState(requestId);
+    }
+    // Unmounted while the clear was in flight: leave the handle in place so a
+    // remount can still reattach to this settled promise and show the outcome.
+    if (!mountedRef.current) return;
+
+    setActiveSyncPromise(null);
+    setActiveRequestId(null);
+    setSyncing(false);
+    applyOutcome(outcome);
   };
 
   // Watches a sync that is running somewhere this tab cannot observe (another
@@ -199,8 +224,24 @@ export default function DataProviderConfig() {
     // only learning on its next remount or after the stale timeout -- during
     // which an admin here could otherwise click Sync Now and clobber the
     // other tab's in-progress record.
-    const unsubscribe = onSyncStateChange((state) => {
+    const unsubscribeState = onSyncStateChange((state) => {
       setSyncing(!!state && state.status === "in_progress" && !isStale(state));
+    });
+
+    // A request this tab started can hang without ever settling. Its lease is
+    // bounded (SYNC_MAX_LEASE_MS); when that runs out the module has already
+    // released the lease and the request handles, so this tab must stop
+    // presenting it as running -- otherwise Sync Now stays disabled here
+    // forever while every other tab is free to start one. The request itself
+    // may still be running server-side; the server refuses a second concurrent
+    // sync, so retrying is safe.
+    const unsubscribeExpiry = onSyncLeaseExpired((expiredRequestId) => {
+      if (requestIdRef.current !== expiredRequestId) return;
+      requestIdRef.current = null;
+      setSyncing(false);
+      setError(
+        "The synchronization stopped responding and was released. It may still be running on the server; you can start another, and the server will refuse it if one is still in progress."
+      );
     });
 
     const liveSync = getActiveSyncPromise();
@@ -208,14 +249,15 @@ export default function DataProviderConfig() {
       // SPA navigation/tab switch: the JS module graph survived, so the
       // original request is still genuinely running. Reattach to it instead
       // of guessing from a snapshot -- this is authoritative, not a timeout.
-      requestIdRef.current = getActiveRequestId();
+      const attachedRequestId = getActiveRequestId();
+      requestIdRef.current = attachedRequestId;
       setSyncing(true);
       liveSync.then(
         (result) => {
-          void settleSync({ ok: true, result: result as OrganizationSyncResult });
+          void settleSync({ ok: true, result: result as OrganizationSyncResult }, attachedRequestId);
         },
         (err) => {
-          void settleSync({ ok: false, error: err });
+          void settleSync({ ok: false, error: err }, attachedRequestId);
         }
       );
     } else {
@@ -233,7 +275,8 @@ export default function DataProviderConfig() {
 
     return () => {
       mountedRef.current = false;
-      unsubscribe();
+      unsubscribeState();
+      unsubscribeExpiry();
       if (staleTimerRef.current) clearTimeout(staleTimerRef.current);
     };
   }, []);
@@ -309,9 +352,9 @@ export default function DataProviderConfig() {
     promise.then(stopHeartbeat, stopHeartbeat);
     try {
       const result = await promise;
-      void settleSync({ ok: true, result });
+      void settleSync({ ok: true, result }, requestId);
     } catch (err: any) {
-      void settleSync({ ok: false, error: err });
+      void settleSync({ ok: false, error: err }, requestId);
     }
   };
 

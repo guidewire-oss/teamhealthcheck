@@ -8,6 +8,12 @@ import {
   readSyncState,
   refreshSyncLease,
   startSyncHeartbeat,
+  takeAbandoned,
+  onSyncLeaseExpired,
+  getActiveRequestId,
+  getActiveSyncPromise,
+  setActiveRequestId,
+  setActiveSyncPromise,
   SYNC_HEARTBEAT_MS,
   SYNC_MAX_LEASE_MS,
   SYNC_STALE_TIMEOUT_MS,
@@ -407,13 +413,14 @@ describe('startSyncHeartbeat', () => {
     expect(readSyncState()).toBeNull();
   });
 
-  it('runs a single interval per requestId even if started twice (Strict Mode)', async () => {
+  it('runs a single heartbeat per requestId even if started twice (Strict Mode)', async () => {
     const id = (await acquireSyncLease())!;
     const baseline = vi.getTimerCount();
     const stopA = startSyncHeartbeat(id);
     const stopB = startSyncHeartbeat(id);
 
-    expect(vi.getTimerCount()).toBe(baseline + 1);
+    // One heartbeat = one write interval plus one expiry timer, never doubled.
+    expect(vi.getTimerCount()).toBe(baseline + 2);
     stopB();
     expect(vi.getTimerCount()).toBe(baseline);
     stopA(); // idempotent
@@ -435,17 +442,21 @@ describe('startSyncHeartbeat', () => {
     stopLater();
   });
 
-  it('stops and reports when another request has taken the lease', async () => {
+  it('stops writing and reports when another request has taken the lease', async () => {
     const id = (await acquireSyncLease())!;
     const onLost = vi.fn();
-    startSyncHeartbeat(id, onLost);
+    const stop = startSyncHeartbeat(id, onLost);
 
     seed({ requestId: 'newer-request' });
     await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS);
 
     expect(onLost).toHaveBeenCalledTimes(1);
-    expect(vi.getTimerCount()).toBe(0);
+    const writes = vi.spyOn(Storage.prototype, 'setItem');
+    await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS * 5);
+    expect(writes).not.toHaveBeenCalled(); // heartbeat no longer writes
+    writes.mockRestore();
     expect(readSyncState()?.requestId).toBe('newer-request');
+    stop();
   });
 });
 
@@ -506,23 +517,13 @@ describe('startSyncHeartbeat -- bounded lease for a request that never settles',
     localStorage.clear();
     removeWebLocks();
     vi.useFakeTimers();
+    setActiveSyncPromise(null);
+    setActiveRequestId(null);
   });
   afterEach(() => {
     vi.useRealTimers();
-  });
-
-  it('stops refreshing once the maximum lease duration is reached', async () => {
-    const id = (await acquireSyncLease())!;
-    const onExpired = vi.fn();
-    startSyncHeartbeat(id, undefined, onExpired, 5 * SYNC_HEARTBEAT_MS);
-
-    await vi.advanceTimersByTimeAsync(5 * SYNC_HEARTBEAT_MS + 1);
-
-    expect(onExpired).toHaveBeenCalledTimes(1);
-    const writes = vi.spyOn(Storage.prototype, 'setItem');
-    await vi.advanceTimersByTimeAsync(10 * SYNC_HEARTBEAT_MS);
-    expect(writes).not.toHaveBeenCalled(); // no further heartbeat writes
-    writes.mockRestore();
+    setActiveSyncPromise(null);
+    setActiveRequestId(null);
   });
 
   it('keeps refreshing right up to the bound', async () => {
@@ -535,14 +536,29 @@ describe('startSyncHeartbeat -- bounded lease for a request that never settles',
     expect(await acquireSyncLease()).toBeNull();
   });
 
-  it('after the bound, stale recovery lets another tab reclaim the slot', async () => {
+  it('at the bound it stops refreshing, releases the lease, and calls onExpired once', async () => {
+    const id = (await acquireSyncLease())!;
+    const onExpired = vi.fn();
+    startSyncHeartbeat(id, undefined, onExpired, 5 * SYNC_HEARTBEAT_MS);
+
+    await vi.advanceTimersByTimeAsync(5 * SYNC_HEARTBEAT_MS);
+
+    expect(onExpired).toHaveBeenCalledTimes(1);
+    expect(readSyncState()).toBeNull(); // released immediately, not left to age out
+
+    const writes = vi.spyOn(Storage.prototype, 'setItem');
+    await vi.advanceTimersByTimeAsync(10 * SYNC_HEARTBEAT_MS);
+    expect(writes).not.toHaveBeenCalled(); // no heartbeat writes afterwards
+    expect(onExpired).toHaveBeenCalledTimes(1);
+    writes.mockRestore();
+  });
+
+  it('after the bound another tab can start a sync straight away', async () => {
     const id = (await acquireSyncLease())!;
     startSyncHeartbeat(id, undefined, undefined, 3 * SYNC_HEARTBEAT_MS);
 
-    // Heartbeat dies at 3 beats; the lease then ages out SYNC_STALE_TIMEOUT_MS later.
-    await vi.advanceTimersByTimeAsync(3 * SYNC_HEARTBEAT_MS + SYNC_STALE_TIMEOUT_MS + SYNC_HEARTBEAT_MS);
+    await vi.advanceTimersByTimeAsync(3 * SYNC_HEARTBEAT_MS);
 
-    expect(isStale(readSyncState()!)).toBe(true);
     const next = await acquireSyncLease();
     expect(next).not.toBeNull();
     expect(next).not.toBe(id);
@@ -557,7 +573,97 @@ describe('startSyncHeartbeat -- bounded lease for a request that never settles',
     await vi.advanceTimersByTimeAsync(SYNC_MAX_LEASE_MS - SYNC_HEARTBEAT_MS);
     expect(isStale(readSyncState()!)).toBe(false); // still held just under the default bound
 
-    await vi.advanceTimersByTimeAsync(SYNC_MAX_LEASE_MS + SYNC_STALE_TIMEOUT_MS);
-    expect(isStale(readSyncState()!)).toBe(true); // and gone well after it
+    await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS);
+    expect(readSyncState()).toBeNull(); // released at the bound
+  });
+
+  it('expiry drops the active-request handles when they still name this request', async () => {
+    const id = (await acquireSyncLease())!;
+    setActiveRequestId(id);
+    setActiveSyncPromise(new Promise(() => {}));
+    startSyncHeartbeat(id, undefined, undefined, 2 * SYNC_HEARTBEAT_MS);
+
+    await vi.advanceTimersByTimeAsync(2 * SYNC_HEARTBEAT_MS);
+
+    expect(getActiveRequestId()).toBeNull();
+    expect(getActiveSyncPromise()).toBeNull();
+  });
+
+  it('expiry leaves the handles alone when a newer request already owns them', async () => {
+    const id = (await acquireSyncLease())!;
+    startSyncHeartbeat(id, undefined, undefined, 2 * SYNC_HEARTBEAT_MS);
+    const newerPromise = new Promise(() => {});
+    setActiveRequestId('newer-request');
+    setActiveSyncPromise(newerPromise);
+
+    await vi.advanceTimersByTimeAsync(2 * SYNC_HEARTBEAT_MS);
+
+    expect(getActiveRequestId()).toBe('newer-request');
+    expect(getActiveSyncPromise()).toBe(newerPromise);
+  });
+
+  it('expiry never clears a newer request\'s lease record', async () => {
+    const id = (await acquireSyncLease())!;
+    startSyncHeartbeat(id, undefined, undefined, 2 * SYNC_HEARTBEAT_MS);
+    seed({ requestId: 'newer-request' }); // another tab took the slot
+
+    await vi.advanceTimersByTimeAsync(2 * SYNC_HEARTBEAT_MS);
+
+    expect(readSyncState()?.requestId).toBe('newer-request');
+  });
+
+  it('marks the request abandoned exactly once, so its late settlement can be recognised', async () => {
+    const id = (await acquireSyncLease())!;
+    startSyncHeartbeat(id, undefined, undefined, SYNC_HEARTBEAT_MS);
+    expect(takeAbandoned(id)).toBe(false); // not yet
+
+    await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS);
+
+    expect(takeAbandoned(id)).toBe(true);
+    expect(takeAbandoned(id)).toBe(false); // consumed
+    expect(takeAbandoned(null)).toBe(false);
+  });
+
+  it('a request that settles in time is never marked abandoned', async () => {
+    const id = (await acquireSyncLease())!;
+    const stop = startSyncHeartbeat(id, undefined, undefined, 5 * SYNC_HEARTBEAT_MS);
+
+    await vi.advanceTimersByTimeAsync(2 * SYNC_HEARTBEAT_MS);
+    stop(); // settled
+    await vi.advanceTimersByTimeAsync(10 * SYNC_HEARTBEAT_MS);
+
+    expect(takeAbandoned(id)).toBe(false);
+  });
+
+  it('notifies expiry listeners, and stops notifying after unsubscribe', async () => {
+    const listener = vi.fn();
+    const unsubscribe = onSyncLeaseExpired(listener);
+    const id = (await acquireSyncLease())!;
+    startSyncHeartbeat(id, undefined, undefined, SYNC_HEARTBEAT_MS);
+
+    await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS);
+    expect(listener).toHaveBeenCalledExactlyOnceWith(id);
+
+    unsubscribe();
+    const second = (await acquireSyncLease())!;
+    startSyncHeartbeat(second, undefined, undefined, SYNC_HEARTBEAT_MS);
+    await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('the bound still applies after the lease was lost: a hung request is not unbounded', async () => {
+    const id = (await acquireSyncLease())!;
+    const onLost = vi.fn();
+    const onExpired = vi.fn();
+    startSyncHeartbeat(id, onLost, onExpired, 6 * SYNC_HEARTBEAT_MS);
+
+    seed({ requestId: 'newer-request' });
+    await vi.advanceTimersByTimeAsync(2 * SYNC_HEARTBEAT_MS);
+    expect(onLost).toHaveBeenCalledTimes(1);
+    expect(onExpired).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(4 * SYNC_HEARTBEAT_MS);
+    expect(onExpired).toHaveBeenCalledTimes(1);
+    expect(takeAbandoned(id)).toBe(true);
   });
 });
