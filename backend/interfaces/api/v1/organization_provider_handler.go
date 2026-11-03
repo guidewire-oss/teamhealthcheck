@@ -436,12 +436,20 @@ func mapSyncError(err error) (int, any) {
 		}
 		return http.StatusConflict, response
 
+	case errors.Is(err, services.ErrHoldPersistFailed):
+		logger.Get().WithError(err).Error("organization sync failed closed: hold not persisted")
+		return http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Synchronization failed",
+			Message: "The sync was stopped because its review hold could not be saved. No changes were made. Try again.",
+		}
+
 	default:
 		// Service-side failures are internal errors, so return 500 rather than 502.
+		// The cause is logged, not returned, so storage details stay server-side.
 		logger.Get().WithError(err).Error("organization provider sync failed")
 		return http.StatusInternalServerError, dto.ErrorResponse{
 			Error:   "Synchronization failed",
-			Message: err.Error(),
+			Message: "The synchronization failed unexpectedly. Check the server logs for details.",
 		}
 	}
 }

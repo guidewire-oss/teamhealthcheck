@@ -49,6 +49,9 @@ const (
 var (
 	// ErrSyncInProgress means another synchronization is already running.
 	ErrSyncInProgress = errors.New("a synchronization is already in progress")
+	// ErrHoldPersistFailed means a tripped mass-deletion guard could not be
+	// saved. The run fails closed; the storage cause is logged, not returned.
+	ErrHoldPersistFailed = errors.New("could not persist the sync hold")
 	// ErrProviderNotConfigured means the data provider client is not configured.
 	ErrProviderNotConfigured = errors.New("organization provider is not configured")
 	// ErrInvalidSnapshot means the provider returned data that breaches the contract.
@@ -575,6 +578,7 @@ func (s *OrganizationSyncService) DismissHold(ctx context.Context) (bool, error)
 	if s.holds != nil {
 		existed, err := s.holds.ClearHold(ctx)
 		if err != nil {
+			logger.Get().WithError(err).Error("could not clear the sync hold")
 			return false, fmt.Errorf("could not clear the sync hold: %w", err)
 		}
 		return existed, nil
@@ -596,7 +600,10 @@ func (s *OrganizationSyncService) recordHold(ctx context.Context, threshold floa
 	heldAt := time.Now().UTC()
 	if s.holds != nil {
 		if err := s.holds.SaveHold(ctx, orgsyncrun.Hold{Threshold: threshold, Report: report, HeldAt: heldAt}); err != nil {
-			return fmt.Errorf("could not persist the sync hold: %w", err)
+			// Log the storage cause here; the returned error carries only the
+			// sentinel so raw store errors never reach API clients.
+			logger.Get().WithError(err).Error("could not persist the sync hold")
+			return ErrHoldPersistFailed
 		}
 		return nil
 	}
