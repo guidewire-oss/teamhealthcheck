@@ -92,9 +92,6 @@
   "UpdateHierarchyLevelRequest": {
     "name": "Principal Engineer"
   },
-  "UpdateHierarchyPositionRequest": {
-    "newPosition": "2"
-  },
   "AdminUserDTO": {
     "id": "alice",
     "username": "alice",

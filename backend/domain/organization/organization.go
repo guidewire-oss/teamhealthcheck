@@ -2,7 +2,17 @@ package organization
 
 import (
 	"context"
+	"errors"
 	"time"
+)
+
+// Sentinel errors for hierarchy level operations. Repository implementations
+// wrap these with additional context (e.g. the offending ID/name) using
+// fmt.Errorf("%w: ...", ErrX) so callers can still use errors.Is.
+var (
+	ErrHierarchyLevelNotFound      = errors.New("hierarchy level not found")
+	ErrDuplicateHierarchyLevelName = errors.New("hierarchy level name already exists")
+	ErrDuplicateHierarchyLevelID   = errors.New("hierarchy level id already exists")
 )
 
 // HierarchyLevel defines a level in the organizational hierarchy
@@ -10,7 +20,6 @@ type HierarchyLevel struct {
 	ID          string      `json:"id"`
 	Name        string      `json:"name"`
 	Position    int         `json:"position"` // Renamed from Level to Position for clarity
-	Color       string      `json:"color,omitempty"`
 	Permissions Permissions `json:"permissions"`
 	CreatedAt   time.Time   `json:"createdAt,omitempty"`
 	UpdatedAt   time.Time   `json:"updatedAt,omitempty"`
@@ -80,10 +89,12 @@ type Repository interface {
 	FindHierarchyLevelByID(ctx context.Context, id string) (*HierarchyLevel, error)
 	SaveHierarchyLevel(ctx context.Context, level *HierarchyLevel) error
 	UpdateHierarchyLevel(ctx context.Context, level *HierarchyLevel) error
-	DeleteHierarchyLevel(ctx context.Context, id string) error
+	DeleteHierarchyLevel(ctx context.Context, tx interface{}, id string) error
 	GetMaxHierarchyPosition(ctx context.Context) (int, error)
-	UpdateHierarchyPosition(ctx context.Context, tx interface{}, id string, newPosition int) error
-	ShiftHierarchyPositions(ctx context.Context, tx interface{}, start, end int, delta int) error
+	// CompactHierarchyPositions renumbers all hierarchy levels to consecutive
+	// positions (1..N) in their current position order. Used after a delete
+	// to remove gaps left by the removed level.
+	CompactHierarchyPositions(ctx context.Context, tx interface{}) error
 	CountUsersAtLevel(ctx context.Context, levelID string) (int, error)
 	BeginTx(ctx context.Context) (interface{}, error)
 	CommitTx(tx interface{}) error

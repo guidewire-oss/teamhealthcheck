@@ -252,7 +252,7 @@ Team Leads see detailed breakdowns for their specific team:
 #### Manager/Executive View (`/manager`)
 
 Managers, Directors, and VPs see aggregated data across their supervised teams:
-- **Team Cards**: Quick health overview for each team
+- **Post Workshop Survey Results**: Quick health overview for each team
 - **Radar Comparison**: Compare multiple teams on one chart
 - **Aggregated Trends**: Roll-up trends across all supervised teams
 - **Assessment Period Filter**: Focus on specific time periods
@@ -453,7 +453,6 @@ make db-test-setup   # Setup test database
 - `GET /api/v1/admin/hierarchy-levels` - List all hierarchy levels
 - `POST /api/v1/admin/hierarchy-levels` - Create hierarchy level
 - `PUT /api/v1/admin/hierarchy-levels/:id` - Update hierarchy level
-- `PUT /api/v1/admin/hierarchy-levels/:id/position` - Reorder hierarchy level
 - `DELETE /api/v1/admin/hierarchy-levels/:id` - Delete hierarchy level
 
 ### Admin - Users

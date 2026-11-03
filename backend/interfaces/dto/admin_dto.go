@@ -26,6 +26,10 @@ type HierarchyPermissionsDTO struct {
 } //@name HierarchyPermissionsDTO
 
 // CreateHierarchyLevelRequest represents request to create a hierarchy level
+//
+// Position is intentionally not accepted here: the backend always appends
+// new levels after the current maximum position, so ordering stays
+// authoritative on the server.
 type CreateHierarchyLevelRequest struct {
 	ID          string                  `json:"id"`                      // Optional - will be auto-generated from name if not provided
 	Name        string                  `json:"name" binding:"required"` // Required - used to generate ID if not provided
@@ -37,11 +41,6 @@ type UpdateHierarchyLevelRequest struct {
 	Name        string                   `json:"name"`
 	Permissions *HierarchyPermissionsDTO `json:"permissions"`
 } //@name UpdateHierarchyLevelRequest
-
-// UpdateHierarchyPositionRequest represents request to reorder hierarchy levels
-type UpdateHierarchyPositionRequest struct {
-	NewPosition int `json:"newPosition" binding:"required,min=1"`
-} //@name UpdateHierarchyPositionRequest
 
 // HierarchyLevelsResponse represents response with list of hierarchy levels
 type HierarchyLevelsResponse struct {

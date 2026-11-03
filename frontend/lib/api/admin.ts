@@ -37,19 +37,19 @@ export interface HierarchyLevel {
   updatedAt: string;
 }
 
+/**
+ * Position is intentionally not part of this request: the backend always
+ * appends new levels after the current maximum position, so ordering stays
+ * authoritative on the server. Levels cannot be reordered after creation.
+ */
 export interface CreateHierarchyLevelRequest {
   name: string;
-  position: number;
   permissions: HierarchyPermissions;
 }
 
 export interface UpdateHierarchyLevelRequest {
   name?: string;
   permissions?: HierarchyPermissions;
-}
-
-export interface UpdateHierarchyPositionRequest {
-  position: number;
 }
 
 // ============================================================================
@@ -309,26 +309,6 @@ export async function updateHierarchyLevel(
     `${API_BASE_URL}/api/v1/admin/hierarchy-levels/${levelId}`,
     {
       method: 'PUT',
-      body: JSON.stringify(request),
-    }
-  );
-}
-
-/**
- * Updates hierarchy level position (for reordering)
- *
- * @param levelId - Hierarchy level ID
- * @param request - New position
- * @returns Updated hierarchy level
- */
-export async function updateHierarchyPosition(
-  levelId: string,
-  request: UpdateHierarchyPositionRequest
-): Promise<HierarchyLevel> {
-  return createApiClient<HierarchyLevel>(
-    `${API_BASE_URL}/api/v1/admin/hierarchy-levels/${levelId}/position`,
-    {
-      method: 'PATCH',
       body: JSON.stringify(request),
     }
   );
