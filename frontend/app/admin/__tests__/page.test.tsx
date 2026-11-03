@@ -209,11 +209,24 @@ describe('Admin Users tab — pagination', () => {
   it('resets to page 1 when the search query changes', async () => {
     listUsers.mockResolvedValue({
       users: [makeUser('alice')],
-      pagination: paginationFor(2, 25, 60),
+      pagination: paginationFor(1, 25, 60),
     });
 
     const user = await openUsersTab();
     await waitFor(() => expect(listUsers).toHaveBeenCalled());
+
+    // Actually drive the component to page 2 via the Next button, rather
+    // than asserting against mocked pagination metadata the component never
+    // produced itself.
+    listUsers.mockResolvedValue({
+      users: [makeUser('bob')],
+      pagination: paginationFor(2, 25, 60),
+    });
+    await user.click(screen.getByTestId('users-next-page-btn'));
+    await waitFor(() => {
+      expect(listUsers).toHaveBeenCalledWith(expect.objectContaining({ page: 2 }));
+    });
+    expect(await screen.findByText('User bob')).toBeInTheDocument();
 
     listUsers.mockClear();
     listUsers.mockResolvedValue({
@@ -232,6 +245,7 @@ describe('Admin Users tab — pagination', () => {
       },
       { timeout: 2000 }
     );
+    expect(await screen.findByText('User carl')).toBeInTheDocument();
   });
 
   it('resets to page 1 when the role filter changes', async () => {
@@ -253,15 +267,28 @@ describe('Admin Users tab — pagination', () => {
     ]);
     listUsers.mockResolvedValue({
       users: [makeUser('alice')],
-      pagination: paginationFor(1, 25, 1),
+      pagination: paginationFor(1, 25, 60),
     });
 
     const user = await openUsersTab();
     await waitFor(() => expect(listUsers).toHaveBeenCalled());
 
-    listUsers.mockClear();
+    // Actually drive the component to page 2 via the Next button, rather
+    // than asserting against mocked pagination metadata the component never
+    // produced itself.
     listUsers.mockResolvedValue({
       users: [makeUser('bob')],
+      pagination: paginationFor(2, 25, 60),
+    });
+    await user.click(screen.getByTestId('users-next-page-btn'));
+    await waitFor(() => {
+      expect(listUsers).toHaveBeenCalledWith(expect.objectContaining({ page: 2 }));
+    });
+    expect(await screen.findByText('User bob')).toBeInTheDocument();
+
+    listUsers.mockClear();
+    listUsers.mockResolvedValue({
+      users: [makeUser('dana')],
       pagination: paginationFor(1, 25, 1),
     });
 
@@ -273,6 +300,7 @@ describe('Admin Users tab — pagination', () => {
         expect.objectContaining({ page: 1, role: 'level-1' })
       );
     });
+    expect(await screen.findByText('User dana')).toBeInTheDocument();
   });
 
   it('ignores a stale response that resolves after a newer request supersedes it', async () => {

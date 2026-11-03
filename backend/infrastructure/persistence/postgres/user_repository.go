@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/user"
@@ -371,12 +372,32 @@ func (r *UserRepository) FindAll(ctx context.Context) ([]*user.User, error) {
 	return users, nil
 }
 
+// pageOffset returns the zero-based row offset for a 1-based page, or false
+// when the product (page-1)*pageSize cannot be represented as an int. A page
+// below 1 is treated as the first page; a non-positive pageSize has no valid
+// offset.
+func pageOffset(page, pageSize int) (int, bool) {
+	if pageSize < 1 {
+		return 0, false
+	}
+	if page < 1 {
+		page = 1
+	}
+	if page-1 > math.MaxInt/pageSize {
+		return 0, false
+	}
+	return (page - 1) * pageSize, true
+}
+
 // FindPage retrieves one page of users matching filter, ordered deterministically
 // by username, along with the total count of users matching filter.
 // Filtering and limiting both happen at the SQL level to avoid loading the
 // full user table into memory.
 func (r *UserRepository) FindPage(ctx context.Context, filter user.ListFilter, page, pageSize int) ([]*user.User, int, error) {
-	offset := (page - 1) * pageSize
+	// page comes straight from the query string, so (page-1)*pageSize can
+	// overflow int and wrap negative, which PostgreSQL rejects as a negative
+	// OFFSET (a 500). pageOffset reports overflow instead of wrapping.
+	offset, offsetOK := pageOffset(page, pageSize)
 
 	var total int
 	err := r.db.QueryRowContext(ctx, `
@@ -390,6 +411,13 @@ func (r *UserRepository) FindPage(ctx context.Context, filter user.ListFilter, p
 	`, filter.HierarchyLevel, filter.Search, filter.Status).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count users: %w", err)
+	}
+
+	// A page whose offset is not representable is necessarily past the end of
+	// any real result set: answer with the normal empty page (and the true
+	// total) instead of issuing a query with a bogus offset.
+	if !offsetOK {
+		return []*user.User{}, total, nil
 	}
 
 	rows, err := r.db.QueryContext(ctx, `

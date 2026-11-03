@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strconv"
 	"testing"
 	"time"
 
@@ -120,6 +121,38 @@ func TestResolveMaxDeletePercentRejectsUnusableSavedValue(t *testing.T) {
 	for _, saved := range []float64{0, 0.5, -1, 100.5, 101, math.NaN(), math.Inf(1), math.Inf(-1)} {
 		if _, _, err := services.ResolveMaxDeletePercent(floatPtr(saved)); !errors.Is(err, services.ErrMaxDeletePercentNotConfigured) {
 			t.Fatalf("saved %v: expected ErrMaxDeletePercentNotConfigured, got %v", saved, err)
+		}
+	}
+}
+
+func TestResolveMaxDeletePercentEnvironmentAcceptsRangeBoundaries(t *testing.T) {
+	for _, raw := range []string{"1", "100"} {
+		t.Setenv(services.EnvMaxDeletePercent, raw)
+
+		value, source, err := services.ResolveMaxDeletePercent(nil)
+		if err != nil {
+			t.Fatalf("%q: unexpected error: %v", raw, err)
+		}
+		if source != services.ThresholdSourceEnvironment {
+			t.Fatalf("%q: expected source %q, got %q", raw, services.ThresholdSourceEnvironment, source)
+		}
+		want, _ := strconv.ParseFloat(raw, 64)
+		if value != want {
+			t.Fatalf("%q: expected %v, got %v", raw, want, value)
+		}
+	}
+}
+
+func TestResolveMaxDeletePercentEnvironmentRejectsOutOfRangeAndInvalidValues(t *testing.T) {
+	for _, raw := range []string{"0", "101", "-5", "NaN", "Inf", "-Inf", "not-a-number"} {
+		t.Setenv(services.EnvMaxDeletePercent, raw)
+
+		value, source, err := services.ResolveMaxDeletePercent(nil)
+		if err != nil {
+			t.Fatalf("%q: unexpected error: %v", raw, err)
+		}
+		if value != services.DefaultMaxDeletePercent || source != services.ThresholdSourceDefault {
+			t.Fatalf("%q: expected the built-in default, got %v from %q", raw, value, source)
 		}
 	}
 }

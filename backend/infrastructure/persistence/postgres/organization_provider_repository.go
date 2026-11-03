@@ -236,7 +236,7 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 		return nil, err
 	}
 	stage(string(orgsyncrun.StageSyncingMemberships))
-	if err := reconcileSnapshotMemberships(ctx, tx, in, currentProtectedUserIDs, complete, result); err != nil {
+	if err := reconcileSnapshotMemberships(ctx, tx, in, currentProtectedUserIDSet, complete, result); err != nil {
 		return nil, err
 	}
 	stage(string(orgsyncrun.StageReconcilingRemovals))
@@ -771,7 +771,25 @@ func upsertSnapshotTeams(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyIn
 // result.MembershipsSynced counts pairs reconciled for tracked teams;
 // MembershipsAdded counts inserts/reactivations and MembershipsRemoved counts
 // deactivations.
-func reconcileSnapshotMemberships(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs []string, complete bool, result *orgprovider.ApplyResult) error {
+//
+// A membership entry for a user upsertSnapshotUsers skipped as protected
+// (see that function) is dropped here too, not just left unsynced: inserting
+// it would reference a users.id row that was never written for a protected
+// incoming user absent from THC, violating the team_members foreign key.
+// Protected users keep whatever membership they already have -- the keep
+// list below still carries currentProtectedUserIDs -- this only stops the
+// sync from trying to insert a *new* row for one.
+func reconcileSnapshotMemberships(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, complete bool, result *orgprovider.ApplyResult) error {
+	skipMembershipUserIDs := make(map[string]bool, len(currentProtectedUserIDs))
+	for id := range currentProtectedUserIDs {
+		skipMembershipUserIDs[id] = true
+	}
+	for _, u := range in.Snapshot.Users {
+		if orgprovider.IsProtectedUser(u.ID, u.HierarchyLevelID) {
+			skipMembershipUserIDs[u.ID] = true
+		}
+	}
+
 	membersByTeam := make(map[string][]string, len(in.Snapshot.Teams))
 	for _, t := range in.Snapshot.Teams {
 		if orgprovider.IsProtectedTeam(t.ID) {
@@ -783,6 +801,9 @@ func reconcileSnapshotMemberships(ctx context.Context, tx *sql.Tx, in orgprovide
 		if _, tracked := membersByTeam[m.TeamID]; !tracked {
 			continue // protected team, or a team not in the snapshot's own teams[] (already rejected by validation)
 		}
+		if skipMembershipUserIDs[m.UserID] {
+			continue // protected user: upsertSnapshotUsers never wrote this id, so inserting it here would violate the FK
+		}
 		membersByTeam[m.TeamID] = append(membersByTeam[m.TeamID], m.UserID)
 	}
 
@@ -792,7 +813,9 @@ func reconcileSnapshotMemberships(ctx context.Context, tx *sql.Tx, in orgprovide
 		if complete {
 			keep := append([]string{}, members...)
 			keep = append(keep, in.PreservedMemberUserIDs...)
-			keep = append(keep, currentProtectedUserIDs...)
+			for id := range currentProtectedUserIDs {
+				keep = append(keep, id)
+			}
 
 			res, err := tx.ExecContext(ctx, `
 				UPDATE team_members SET is_active = false, deactivated_at = CURRENT_TIMESTAMP
@@ -874,14 +897,19 @@ func deactivateMissingUsers(ctx context.Context, tx *sql.Tx, missingUserIDs []st
 	}
 	protectedTeamIDs := orgprovider.ProtectedTeamIDs()
 
+	// hierarchy_level_id is re-checked here, not just in the earlier candidate
+	// list: a user promoted to level-admin between that read and this statement
+	// must not be deactivated just because the stale candidate list still names
+	// them.
 	res, err := tx.ExecContext(ctx, `
 		UPDATE users SET is_active = false, deactivated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ANY($1) AND is_active
+		  AND hierarchy_level_id IS DISTINCT FROM $3
 		  AND NOT EXISTS (
 		      SELECT 1 FROM team_supervisors ts
 		      WHERE ts.user_id = users.id AND ts.team_id = ANY($2)
 		  )
-	`, pq.Array(missingUserIDs), pq.Array(protectedTeamIDs))
+	`, pq.Array(missingUserIDs), pq.Array(protectedTeamIDs), orgprovider.ProtectedHierarchyLevelID)
 	if err != nil {
 		return fmt.Errorf("failed to deactivate users: %w", err)
 	}

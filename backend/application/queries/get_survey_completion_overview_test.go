@@ -264,3 +264,52 @@ func TestBuildSurveyCompletionTrend_UsesEarliestCompletion(t *testing.T) {
 		t.Fatalf("got %d%% at the only point, want 100%% (u1's earliest session must count, not its later resubmission)", points[0].Completion)
 	}
 }
+
+// TestBuildSurveyCompletionTrend_IgnoresIneligibleSessions is the regression
+// test for the trend numerator: a completed session from a user outside the
+// team's eligible (Level 4/5) set must not contribute, or the numerator would
+// outgrow the denominator built from that same set.
+//
+// team-1 has one eligible member (u1). u1 completes in week 1; a manager (m1,
+// not eligible) completes three weeks later. Counting m1 would add a second
+// week bucket and push completion past 100%; the correct trend is a single
+// point at 100%.
+func TestBuildSurveyCompletionTrend_IgnoresIneligibleSessions(t *testing.T) {
+	teams := []team.SurveyCompletionRow{{ID: "team-1", HealthCheckEnabled: true}}
+	eligibleMemberIDs := map[string][]string{"team-1": {"u1"}}
+	sessions := []*healthcheck.HealthCheckSession{
+		{TeamID: "team-1", UserID: "u1", SurveyType: healthcheck.SurveyTypeIndividual, Completed: true, Date: "2026-01-01T00:00:00Z"},
+		{TeamID: "team-1", UserID: "m1", SurveyType: healthcheck.SurveyTypeIndividual, Completed: true, Date: "2026-01-22T00:00:00Z"},
+		{TeamID: "unknown-team", UserID: "u1", SurveyType: healthcheck.SurveyTypeIndividual, Completed: true, Date: "2026-01-29T00:00:00Z"},
+	}
+
+	points := buildSurveyCompletionTrend(teams, eligibleMemberIDs, sessions)
+
+	if len(points) != 1 {
+		t.Fatalf("got %d points, want 1 (ineligible and unknown-team sessions must be ignored): %+v", len(points), points)
+	}
+	if points[0].Completion != 100 {
+		t.Fatalf("got %d%%, want 100%%", points[0].Completion)
+	}
+}
+
+// A user eligible in two opted-in teams counts once per team, each against
+// that team's own eligibility; a user eligible only in team-2 completing a
+// team-1 session must not count for team-1.
+func TestBuildSurveyCompletionTrend_EligibilityIsPerTeam(t *testing.T) {
+	teams := []team.SurveyCompletionRow{
+		{ID: "team-1", HealthCheckEnabled: true},
+		{ID: "team-2", HealthCheckEnabled: true},
+	}
+	eligibleMemberIDs := map[string][]string{"team-1": {"u1"}, "team-2": {"u1", "u2"}}
+	sessions := []*healthcheck.HealthCheckSession{
+		{TeamID: "team-1", UserID: "u2", SurveyType: healthcheck.SurveyTypeIndividual, Completed: true, Date: "2026-01-01T00:00:00Z"}, // not eligible in team-1
+		{TeamID: "team-2", UserID: "u2", SurveyType: healthcheck.SurveyTypeIndividual, Completed: true, Date: "2026-01-01T00:00:00Z"},
+	}
+
+	points := buildSurveyCompletionTrend(teams, eligibleMemberIDs, sessions)
+
+	if len(points) != 1 || points[0].Completion != 33 {
+		t.Fatalf("got %+v, want one point at 33%% (1 of 3 eligible slots)", points)
+	}
+}

@@ -237,36 +237,6 @@ export interface DimensionsListResponse {
 }
 
 // ============================================================================
-// NOTIFICATION SETTINGS TYPES
-// ============================================================================
-
-export interface NotificationSettings {
-  emailEnabled: boolean;
-  slackEnabled: boolean;
-  notifyOnSubmission: boolean;
-  notifyManagers: boolean;
-  reminderDaysBefore: number;
-  reminderRecipients: string[];
-  smtpConfigured: boolean;
-}
-
-export interface UpdateNotificationSettingsRequest {
-  emailEnabled?: boolean;
-  slackEnabled?: boolean;
-  notifyOnSubmission?: boolean;
-}
-
-export interface RetentionPolicy {
-  keepSessionsMonths: number;
-  archiveEnabled: boolean;
-  anonymizeAfterDays: number;
-}
-
-export interface UpdateRetentionPolicyRequest {
-  keepSessionsMonths: number;
-}
-
-// ============================================================================
 // HIERARCHY LEVEL API METHODS
 // ============================================================================
 
@@ -379,6 +349,42 @@ export async function listUsers(params: ListUsersParams = {}): Promise<UsersList
     `${API_BASE_URL}/api/v1/admin/users${qs ? `?${qs}` : ''}`,
     signal ? { signal } : undefined
   );
+}
+
+/** The backend clamps pageSize to 100, so asking for more gains nothing. */
+const ALL_USERS_PAGE_SIZE = 100;
+
+/**
+ * Fetches EVERY user matching the optional filters by walking all pages of
+ * listUsers. Use this only where the full set is genuinely needed (e.g. an
+ * add-member picker); listUsers itself stays a single, bounded page so
+ * unrelated callers never trigger an unbounded fetch. Users are deduplicated
+ * by id, since rows can shift between pages if the set changes mid-walk, and
+ * the AbortSignal cancels both the in-flight page and any remaining pages.
+ *
+ * @returns Every matching user, in listing order
+ */
+export async function listAllUsers(
+  params: Pick<ListUsersParams, 'search' | 'role' | 'signal'> = {}
+): Promise<AdminUser[]> {
+  const { signal } = params;
+  const byId = new Map<string, AdminUser>();
+  let page = 1;
+  let totalPages = 1;
+
+  do {
+    if (signal?.aborted) {
+      throw new DOMException('Request aborted', 'AbortError');
+    }
+    const response = await listUsers({ ...params, page, pageSize: ALL_USERS_PAGE_SIZE });
+    for (const user of response.users ?? []) {
+      if (!byId.has(user.id)) byId.set(user.id, user);
+    }
+    totalPages = response.pagination?.totalPages ?? 1;
+    page += 1;
+  } while (page <= totalPages);
+
+  return Array.from(byId.values());
 }
 
 /**
@@ -621,20 +627,6 @@ export async function updateDimension(
   );
 }
 
-/**
- * Deletes a health dimension
- *
- * @param dimensionId - Dimension ID
- */
-export async function deleteDimension(dimensionId: string): Promise<void> {
-  await createApiClient<void>(
-    `${API_BASE_URL}/api/v1/admin/settings/dimensions/${dimensionId}`,
-    {
-      method: 'DELETE',
-    }
-  );
-}
-
 // ============================================================================
 // BRANDING SETTINGS API METHODS
 // ============================================================================
@@ -661,67 +653,6 @@ export async function updateBrandingSettings(
 ): Promise<BrandingSettings> {
   return createApiClient<BrandingSettings>(
     `${API_BASE_URL}/api/v1/admin/settings/branding`,
-    {
-      method: 'PUT',
-      body: JSON.stringify(request),
-    }
-  );
-}
-
-// ============================================================================
-// NOTIFICATION SETTINGS API METHODS
-// ============================================================================
-
-/**
- * Fetches notification settings
- *
- * @returns Current notification settings
- */
-export async function getNotificationSettings(): Promise<NotificationSettings> {
-  return createApiClient<NotificationSettings>(
-    `${API_BASE_URL}/api/v1/admin/settings/notifications`
-  );
-}
-
-/**
- * Updates notification settings
- *
- * @param request - Fields to update
- * @returns Updated notification settings
- */
-export async function updateNotificationSettings(
-  request: UpdateNotificationSettingsRequest
-): Promise<NotificationSettings> {
-  return createApiClient<NotificationSettings>(
-    `${API_BASE_URL}/api/v1/admin/settings/notifications`,
-    {
-      method: 'PUT',
-      body: JSON.stringify(request),
-    }
-  );
-}
-
-// ============================================================================
-// RETENTION POLICY API METHODS
-// ============================================================================
-
-/**
- * Fetches retention policy settings
- */
-export async function getRetentionPolicy(): Promise<RetentionPolicy> {
-  return createApiClient<RetentionPolicy>(
-    `${API_BASE_URL}/api/v1/admin/settings/retention`
-  );
-}
-
-/**
- * Updates retention policy settings
- */
-export async function updateRetentionPolicy(
-  request: UpdateRetentionPolicyRequest
-): Promise<RetentionPolicy> {
-  return createApiClient<RetentionPolicy>(
-    `${API_BASE_URL}/api/v1/admin/settings/retention`,
     {
       method: 'PUT',
       body: JSON.stringify(request),

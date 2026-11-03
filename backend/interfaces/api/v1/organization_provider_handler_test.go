@@ -78,6 +78,26 @@ func (f *fakeFetcher) FetchSnapshot(_ context.Context) (*orgsnapshot.Snapshot, e
 	}, nil
 }
 
+// isolateEnv gives each spec exclusive control of the named process
+// environment variables: they start unset (so values leaking in from the shell
+// or CI cannot change a result) and are restored to their ORIGINAL state when
+// the spec ends -- not merely unset, which would destroy the runner's own
+// values for later suites. Ginkgo runs parallel specs in separate processes
+// and serial specs one at a time, so per-process env mutation is race-free.
+func isolateEnv(keys ...string) {
+	for _, key := range keys {
+		original, had := os.LookupEnv(key)
+		os.Unsetenv(key)
+		DeferCleanup(func() {
+			if had {
+				os.Setenv(key, original)
+			} else {
+				os.Unsetenv(key)
+			}
+		})
+	}
+}
+
 var _ = Describe("Organization Provider Handler: mass-deletion override", func() {
 	var (
 		router      *gin.Engine
@@ -125,6 +145,7 @@ var _ = Describe("Organization Provider Handler: mass-deletion override", func()
 	}
 
 	BeforeEach(func() {
+		isolateEnv("JWT_SECRET", dataprovider.EnvBaseURL, dataprovider.EnvAPIToken, services.EnvMaxDeletePercent)
 		os.Setenv("JWT_SECRET", "test-secret-key-for-handler-tests")
 		os.Setenv(dataprovider.EnvBaseURL, "https://provider.invalid")
 		os.Setenv(dataprovider.EnvAPIToken, "handler-test-token")
@@ -146,13 +167,6 @@ var _ = Describe("Organization Provider Handler: mass-deletion override", func()
 
 		router = gin.New()
 		v1.SetupOrganizationProviderRoutes(router, syncService, &thresholdRepo{}, jwtService)
-	})
-
-	AfterEach(func() {
-		os.Unsetenv("JWT_SECRET")
-		os.Unsetenv(dataprovider.EnvBaseURL)
-		os.Unsetenv(dataprovider.EnvAPIToken)
-		os.Unsetenv(services.EnvMaxDeletePercent)
 	})
 
 	It("returns the deletion counts, percentages and threshold when the sync is held", func() {
@@ -291,6 +305,9 @@ var _ = Describe("Organization Provider Handler: settings", func() {
 	}
 
 	BeforeEach(func() {
+		// Every provider input starts unset so the empty-base-URL spec cannot
+		// inherit DATA_PROVIDER_BASE_URL or a token from the runner.
+		isolateEnv("JWT_SECRET", dataprovider.EnvBaseURL, dataprovider.EnvAPIToken)
 		os.Setenv("JWT_SECRET", "test-secret-key-for-settings-tests")
 		gin.SetMode(gin.TestMode)
 
@@ -302,12 +319,6 @@ var _ = Describe("Organization Provider Handler: settings", func() {
 
 		router = gin.New()
 		v1.SetupOrganizationProviderRoutes(router, syncService, &thresholdRepo{}, jwtService)
-	})
-
-	AfterEach(func() {
-		os.Unsetenv("JWT_SECRET")
-		os.Unsetenv(dataprovider.EnvBaseURL)
-		os.Unsetenv(dataprovider.EnvAPIToken)
 	})
 
 	It("reports the base URL as configured when it is a usable http(s) URL", func() {
@@ -333,5 +344,26 @@ var _ = Describe("Organization Provider Handler: settings", func() {
 		var body dto.OrganizationProviderSettingsDTO
 		Expect(json.Unmarshal(getSettings().Body.Bytes(), &body)).To(Succeed())
 		Expect(body.BaseURLConfigured).To(BeFalse())
+	})
+
+	It("reports neither base URL nor token as configured when the runner's environment has them set but the spec cleared them", func() {
+		// Proves the isolation itself: whatever the process started with, the
+		// spec sees both unset.
+		Expect(os.Getenv(dataprovider.EnvBaseURL)).To(BeEmpty())
+		Expect(os.Getenv(dataprovider.EnvAPIToken)).To(BeEmpty())
+
+		var body dto.OrganizationProviderSettingsDTO
+		Expect(json.Unmarshal(getSettings().Body.Bytes(), &body)).To(Succeed())
+		Expect(body.BaseURLConfigured).To(BeFalse())
+		Expect(body.TokenConfigured).To(BeFalse())
+	})
+
+	It("reports the token as not configured when only the base URL is set", func() {
+		os.Setenv(dataprovider.EnvBaseURL, "https://provider.example.com")
+
+		var body dto.OrganizationProviderSettingsDTO
+		Expect(json.Unmarshal(getSettings().Body.Bytes(), &body)).To(Succeed())
+		Expect(body.BaseURLConfigured).To(BeTrue())
+		Expect(body.TokenConfigured).To(BeFalse())
 	})
 })

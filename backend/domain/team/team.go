@@ -125,9 +125,11 @@ type Repository interface {
 	// status is StatusActive, StatusInactive or StatusAll.
 	FindWithDetailsByStatus(ctx context.Context, status string) ([]Team, error)
 	// FindSurveyCompletionTeams returns the admin survey-completion projection
-	// for every team. Requires the health_check_enabled column on teams —
-	// only this method selects it, so every other team query keeps working
-	// unchanged against databases that haven't added it yet.
+	// for every team. Requires the health_check_enabled column on teams,
+	// added by migration 000021_add_health_check_enabled. Other team
+	// queries in the Postgres repository (FindByID, FindAll, ...) select
+	// that column too, so the migration must be applied before any of
+	// them will run.
 	FindSurveyCompletionTeams(ctx context.Context) ([]SurveyCompletionRow, error)
 	// FindEligibleMemberIDs returns, for every team, the ids of its members
 	// who are eligible to take the individual survey -- authoritatively

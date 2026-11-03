@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ReminderTreeModal from '@/components/ReminderTreeModal';
 import type { ReminderPlan } from '@/lib/reminder-tree';
@@ -67,6 +67,121 @@ describe('ReminderTreeModal — accessibility', () => {
     unmount();
 
     expect(document.body.style.overflow).not.toBe('hidden');
+  });
+});
+
+describe('ReminderTreeModal — focus trap', () => {
+  function renderWithOutsideButtons() {
+    const before = document.createElement('button');
+    before.textContent = 'Before';
+    const after = document.createElement('button');
+    after.textContent = 'After';
+    document.body.prepend(before);
+    document.body.append(after);
+    const utils = render(<ReminderTreeModal plan={plan()} onCancel={() => {}} onSend={() => {}} />);
+    return {
+      ...utils,
+      before,
+      after,
+      cleanup: () => {
+        before.remove();
+        after.remove();
+      },
+    };
+  }
+
+  it('wraps Tab from the last control (Send) back to the first (Close)', async () => {
+    const user = userEvent.setup();
+    const { cleanup, after } = renderWithOutsideButtons();
+
+    screen.getByTestId('reminder-tree-send').focus();
+    await user.tab();
+
+    expect(document.activeElement).toBe(screen.getByTestId('reminder-tree-close'));
+    expect(document.activeElement).not.toBe(after);
+    cleanup();
+  });
+
+  it('wraps Shift+Tab from the first control (Close) to the last (Send)', async () => {
+    const user = userEvent.setup();
+    const { cleanup, before } = renderWithOutsideButtons();
+
+    expect(document.activeElement).toBe(screen.getByTestId('reminder-tree-close'));
+    await user.tab({ shift: true });
+
+    expect(document.activeElement).toBe(screen.getByTestId('reminder-tree-send'));
+    expect(document.activeElement).not.toBe(before);
+    cleanup();
+  });
+
+  it('advances normally between controls inside the dialog', async () => {
+    const user = userEvent.setup();
+    const { cleanup } = renderWithOutsideButtons();
+
+    await user.tab();
+
+    expect(document.activeElement).toBe(screen.getByTestId('reminder-tree-cancel'));
+    cleanup();
+  });
+
+  it('pulls focus back inside when it has escaped the dialog', async () => {
+    const user = userEvent.setup();
+    const { cleanup, after } = renderWithOutsideButtons();
+
+    after.focus();
+    await user.tab();
+
+    expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true);
+    cleanup();
+  });
+
+  it('keeps focus on the dialog when it has no focusable descendants', () => {
+    render(<ReminderTreeModal plan={plan()} onCancel={() => {}} onSend={() => {}} />);
+    const dialog = screen.getByRole('dialog');
+    dialog.querySelectorAll('button').forEach((b) => b.setAttribute('disabled', ''));
+    dialog.focus();
+
+    const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    document.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(dialog);
+  });
+
+  it('does not re-steal focus when the parent re-renders with a new onCancel', () => {
+    const { rerender } = render(<ReminderTreeModal plan={plan()} onCancel={() => {}} onSend={() => {}} />);
+    screen.getByTestId('reminder-tree-send').focus();
+
+    rerender(<ReminderTreeModal plan={plan()} onCancel={() => {}} onSend={() => {}} />);
+
+    expect(document.activeElement).toBe(screen.getByTestId('reminder-tree-send'));
+  });
+
+  it('stops intercepting Tab once closed', () => {
+    const { unmount } = render(<ReminderTreeModal plan={plan()} onCancel={() => {}} onSend={() => {}} />);
+    unmount();
+
+    const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    document.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe('ReminderTreeModal — status exposed to assistive tech', () => {
+  it('gives each team status dot an accessible name from STATUS_LABEL', () => {
+    render(<ReminderTreeModal plan={plan()} onCancel={() => {}} onSend={() => {}} />);
+
+    const node = screen.getByTestId('reminder-tree-team-node');
+    expect(within(node).getByRole('img', { name: 'Not started' })).toBeInTheDocument();
+  });
+
+  it('hides the decorative legend dots so the status is not announced twice', () => {
+    render(<ReminderTreeModal plan={plan()} onCancel={() => {}} onSend={() => {}} />);
+
+    const legend = screen.getAllByTestId('reminder-tree-legend')[0];
+    expect(within(legend).queryByRole('img')).toBeNull();
+    expect(legend).toHaveTextContent('Not started');
   });
 });
 

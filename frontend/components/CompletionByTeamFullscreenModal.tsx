@@ -23,11 +23,47 @@ export default function CompletionByTeamFullscreenModal({
   onClose,
 }: CompletionByTeamFullscreenModalProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
+    const getFocusable = (): HTMLElement[] => {
+      const dialog = dialogRef.current;
+      if (!dialog) return [];
+      return Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab") return;
+
+      const focusable = getFocusable();
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+
+      // Wrap focus at the dialog's edges so Tab/Shift+Tab never escape into
+      // the (invisible, inert-feeling) page behind the overlay.
+      if (e.shiftKey) {
+        if (active === first || !dialogRef.current?.contains(active)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (active === last || !dialogRef.current?.contains(active)) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     document.addEventListener("keydown", handleKeyDown);
 
@@ -58,6 +94,7 @@ export default function CompletionByTeamFullscreenModal({
       data-testid="team-bars-fullscreen-overlay"
     >
       <div
+        ref={dialogRef}
         className="bg-white rounded-xl shadow-xl w-full h-full max-w-6xl max-h-[85vh] flex flex-col"
         data-testid="team-bars-fullscreen-modal"
         role="dialog"
