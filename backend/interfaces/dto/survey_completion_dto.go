@@ -70,3 +70,48 @@ type SurveyCompletionResponse struct {
 	Groups            []SurveyCompletionGroupDTO      `json:"groups"`
 	TimeSeries        []SurveyCompletionTrendPointDTO `json:"timeSeries"`
 }
+
+// Reminder scopes accepted by POST /api/v1/admin/survey-completion/reminders.
+// They match the three Remind buttons on the dashboard.
+const (
+	SurveyReminderScopeTeam   = "team"   // one pod: its owner and its team lead
+	SurveyReminderScopePerson = "person" // one leader: their whole lagging subtree
+	SurveyReminderScopeOrg    = "org"    // every lagging pod in the organization
+)
+
+// SurveyReminderRequest names who to remind. The client sends only a target;
+// the server decides the recipients from the survey-completion data, so a
+// caller can never address an arbitrary email.
+type SurveyReminderRequest struct {
+	Scope            string `json:"scope"`
+	TeamID           string `json:"teamId,omitempty"`   // scope=team
+	PersonID         string `json:"personId,omitempty"` // scope=person
+	AssessmentPeriod string `json:"assessmentPeriod,omitempty"`
+}
+
+// SurveyReminderResponse reports what a reminder run did.
+type SurveyReminderResponse struct {
+	AssessmentPeriod string `json:"assessmentPeriod"`
+	// Mode is "send" for normal delivery, or "log" when email delivery is
+	// switched off (EMAIL_MODE=log): nothing was sent, and each reminder was
+	// written to the server log instead.
+	Mode string `json:"mode"`
+	// RedirectedTo lists the test addresses every email was delivered to
+	// instead of its real recipient (EMAIL_REDIRECT_TO). Empty means no
+	// redirect is in effect; use Mode to tell whether anything was delivered
+	// (nothing is when Mode is "log").
+	RedirectedTo []string `json:"redirectedTo"`
+	// TestPod is set when EMAIL_TEST_POD limited the recipients to one pod.
+	TestPod string   `json:"testPod,omitempty"`
+	Sent    int      `json:"sent"`
+	SentTo  []string `json:"sentTo"`
+	// Logged and LoggedFor are the reminders written to the log in log mode.
+	Logged    int      `json:"logged"`
+	LoggedFor []string `json:"loggedFor"`
+	// SkippedNoEmail are recipients with no email address on file.
+	SkippedNoEmail []string `json:"skippedNoEmail"`
+	// Failed are recipients the mail transport rejected.
+	Failed []string `json:"failed"`
+	// PodsWithoutTeamLead are lagging pods with no team lead to remind.
+	PodsWithoutTeamLead []string `json:"podsWithoutTeamLead"`
+}

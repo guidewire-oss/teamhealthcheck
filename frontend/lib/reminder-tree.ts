@@ -1,8 +1,9 @@
 /**
  * Pure builder for the "reminder target tree" shown when an admin clicks a
- * Remind button on the survey-completion dashboard. Mirrors the same
- * selection logic the real reminder endpoint will eventually use, so the
- * tree is always an accurate preview of who gets mailed.
+ * Remind button on the survey-completion dashboard. Mirrors the selection
+ * logic of the reminders endpoint (planSurveyReminders in
+ * backend/interfaces/api/v1/survey_reminder.go), so the tree is an accurate
+ * preview of who gets mailed. Each plan also carries the request that sends it.
  *
  * Kept dependency-free from React so it can be unit-tested without
  * rendering anything — see lib/__tests__/reminder-tree.test.ts.
@@ -15,6 +16,8 @@ import type {
   SurveyCompletionPerson,
   SurveyCompletionPersonGroup,
   SurveyCompletionTeam,
+  SurveyReminderRequest,
+  SurveyReminderResult,
   SurveyStatus,
 } from '@/lib/api/survey-completion';
 
@@ -23,6 +26,9 @@ export type ReminderTreeNode =
   | { type: 'team'; id: string; name: string; teamLeadName: string; status: SurveyStatus };
 
 export interface ReminderPlan {
+  // What to POST to send this reminder. The server recomputes the recipients
+  // from it; the tree above is only the preview.
+  request: SurveyReminderRequest;
   root: ReminderTreeNode;
   podCount: number;
   subtitle: string;
@@ -43,8 +49,8 @@ function personNode(person: SurveyCompletionPerson, children: ReminderTreeNode[]
   return { type: 'person', id: person.id, name: person.name, level: person.level, children };
 }
 
-function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+function plural(count: number, noun: string, pluralNoun = `${noun}s`): string {
+  return `${count} ${count === 1 ? noun : pluralNoun}`;
 }
 
 /**
@@ -64,6 +70,7 @@ export function buildTeamReminderPlan(
   // notified" — the toast must name them too, or it under-reports who the
   // preview just showed as a recipient.
   return {
+    request: { scope: 'team', teamId: team.teamId },
     root,
     podCount: 1,
     subtitle: context.owner
@@ -122,6 +129,7 @@ export function buildPersonReminderPlan(group: SurveyCompletionPersonGroup): Rem
   const { node, pendingCount, leaderCountInSubtree } = buildSubtree(group);
 
   return {
+    request: { scope: 'person', personId: group.person.id },
     root: node,
     podCount: pendingCount,
     subtitle: `Reminding ${plural(pendingCount, 'pod')} under ${group.person.name}`,
@@ -165,6 +173,7 @@ export function buildOrgReminderPlan(groups: SurveyCompletionGroup[]): ReminderP
   children.push(...otherPending.map(teamNode));
 
   return {
+    request: { scope: 'org' },
     root: { type: 'person', id: 'org-remind-all', name: 'All lagging teams', level: 'Org-wide', children },
     podCount,
     subtitle:
@@ -196,4 +205,47 @@ export function getStatusesInTree(node: ReminderTreeNode): SurveyStatus[] {
   visit(node);
 
   return STATUS_ORDER.filter((status) => seen.has(status));
+}
+
+/**
+ * The toast shown after a reminder run, built from what the server actually
+ * did rather than from the preview: the preview says who was meant to get it,
+ * the result says who did.
+ */
+export function formatReminderResult(result: SurveyReminderResult): string {
+  const parts: string[] = [];
+
+  if (result.mode === 'log') {
+    // Never say "sent" here: nothing left the server.
+    parts.push(
+      `Log mode: no email was sent. ${plural(result.logged, 'reminder')} written to the server log.`,
+    );
+  } else if (result.redirectedTo && result.redirectedTo.length > 0) {
+    // Be explicit that the real recipients did NOT get these.
+    parts.push(
+      result.sent > 0
+        ? `Test mode: ${plural(result.sent, 'reminder')} sent to ${result.redirectedTo.join(', ')} instead of the real recipients.`
+        : 'No reminder was sent.',
+    );
+  } else {
+    parts.push(
+      result.sent > 0
+        ? `Reminder sent to ${plural(result.sent, 'person', 'people')}.`
+        : 'No reminder was sent.',
+    );
+  }
+  if (result.testPod) {
+    parts.push(`Limited to the ${result.testPod} pod.`);
+  }
+  if (result.skippedNoEmail.length > 0) {
+    parts.push(`${plural(result.skippedNoEmail.length, 'person', 'people')} skipped (no email on file).`);
+  }
+  if (result.failed.length > 0) {
+    parts.push(`${plural(result.failed.length, 'email')} failed to send.`);
+  }
+  if (result.podsWithoutTeamLead.length > 0) {
+    parts.push(`${plural(result.podsWithoutTeamLead.length, 'pod')} had no team lead.`);
+  }
+
+  return parts.join(' ');
 }
