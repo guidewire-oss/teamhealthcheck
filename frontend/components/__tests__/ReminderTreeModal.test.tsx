@@ -6,6 +6,7 @@ import type { ReminderPlan } from '@/lib/reminder-tree';
 
 function plan(): ReminderPlan {
   return {
+    request: { scope: 'person', personId: 'mgr-1' },
     root: {
       type: 'person',
       id: 'mgr-1',
@@ -181,5 +182,33 @@ describe('ReminderTreeModal — status exposed to assistive tech', () => {
     const legend = screen.getAllByTestId('reminder-tree-legend')[0];
     expect(within(legend).queryByRole('img')).toBeNull();
     expect(legend).toHaveTextContent('Not started');
+  });
+});
+
+describe('ReminderTreeModal — sending state', () => {
+  it('enables Send and calls onSend when idle', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<ReminderTreeModal plan={plan()} onCancel={() => {}} onSend={onSend} />);
+
+    const send = screen.getByTestId('reminder-tree-send');
+    expect(send).toBeEnabled();
+    expect(send).toHaveTextContent('Send reminder');
+
+    await user.click(send);
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables Send and says Sending while the request is in flight', async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<ReminderTreeModal plan={plan()} onCancel={() => {}} onSend={onSend} isSending />);
+
+    const send = screen.getByTestId('reminder-tree-send');
+    expect(send).toBeDisabled();
+    expect(send).toHaveTextContent('Sending…');
+
+    await user.click(send);
+    expect(onSend).not.toHaveBeenCalled();
   });
 });

@@ -167,3 +167,7 @@ func (h *AdminHandler) UpdateRetentionPolicy(c *gin.Context) {
 func (h *AdminHandler) GetSurveyCompletion(c *gin.Context) {
 	h.SurveyCompletionHandler.GetSurveyCompletion(c)
 }
+
+func (h *AdminHandler) SendSurveyReminders(c *gin.Context) {
+	h.SurveyCompletionHandler.SendReminders(c)
+}
