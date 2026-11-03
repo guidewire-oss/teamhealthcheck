@@ -7,6 +7,7 @@ import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { API_BASE_URL } from '@/lib/api/client';
 import { getAssessmentPeriods } from '@/lib/api/health-checks';
 import { formatScore } from '@/lib/format';
+import { formatPeriodLabel, describePeriodOptions } from '@/lib/assessment-period';
 import { LogOut, Users, ChevronDown, AlertCircle, Activity, LineChart as LineChartIcon, CheckCircle, Clock, ClipboardList, TrendingUp, TrendingDown, Minus, LayoutGrid, Download, ListTodo } from 'lucide-react';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import OnboardingModal from '@/components/OnboardingModal';
@@ -45,6 +46,8 @@ interface RadarData {
 
 interface TrendData {
   period: string;
+  /** User-facing H1/H2 label for `period`; never a quarter label. */
+  label: string;
   [key: string]: string | number;
 }
 
@@ -136,6 +139,11 @@ export default function ManagerPage() {
   const [subordinates, setSubordinates] = useState<Subordinate[]>([]);
 
   // Pre-group subordinates by parent and teams by ID for O(1) lookups in hierarchy tree
+  // Labels for the period filter. Historical quarter labels fold into half-years, so "2026 Q1"
+  // and "2026 Q2" would both read "H1 2026" while each still filters on its own raw period;
+  // describePeriodOptions keeps them apart.
+  const periodLabels = useMemo(() => describePeriodOptions(assessmentPeriodOptions), [assessmentPeriodOptions]);
+
   const childrenByParent = useMemo(() => {
     const map = new Map<string, Subordinate[]>();
     for (const sub of subordinates) {
@@ -285,7 +293,7 @@ export default function ManagerPage() {
         // Frontend: [{ period, mission: 2.5, value: 3.0, ... }]
         if (data.periods && Array.isArray(data.periods) && data.dimensions) {
           const transformed = data.periods.map((period: string, idx: number) => {
-            const row: TrendData = { period };
+            const row: TrendData = { period, label: formatPeriodLabel(period) };
             (data.dimensions || []).forEach((dim: { dimensionId: string; scores: number[] }) => {
               row[dim.dimensionId] = dim.scores[idx] || 0;
             });
@@ -362,7 +370,7 @@ export default function ManagerPage() {
 
   const handleExportToExcel = async () => {
     if (!dashboardData) return;
-    const periodLabel = selectedPeriod || 'All Periods';
+    const periodLabel = selectedPeriod ? formatPeriodLabel(selectedPeriod) : 'All Periods';
 
     // Sheet 1: Team summary
     const teamRows = dashboardData.teams.map(t => ({
@@ -420,6 +428,7 @@ export default function ManagerPage() {
   const dimSparklines = HEALTH_DIMENSIONS.map((dim) => {
     const data = trendsData.map((t) => ({
       period: t.period as string,
+      label: t.label as string,
       value: (t[dim.id] as number) || 0,
     }));
     const validData = data.filter((p) => p.value > 0);
@@ -491,7 +500,7 @@ export default function ManagerPage() {
             >
               <option value="">All Periods</option>
               {assessmentPeriodOptions.map((period) => (
-                <option key={period} value={period}>{period}</option>
+                <option key={period} value={period}>{periodLabels[period] ?? formatPeriodLabel(period)}</option>
               ))}
             </select>
             {dashboardData && dashboardData.teams.length > 0 && (
@@ -815,7 +824,7 @@ export default function ManagerPage() {
                                 data={data}
                                 margin={{ top: 4, right: 4, left: 4, bottom: 4 }}
                               >
-                                <XAxis dataKey="period" hide />
+                                <XAxis dataKey="label" hide />
                                 <YAxis domain={[1, 3]} hide />
                                 <Line
                                   type="monotone"
@@ -851,7 +860,7 @@ export default function ManagerPage() {
                           {/* Latest period label */}
                           {data.length > 0 && (
                             <p className="text-xs text-gray-400 truncate text-right">
-                              {data[data.length - 1].period}
+                              {data[data.length - 1].label}
                             </p>
                           )}
                         </div>
@@ -864,7 +873,7 @@ export default function ManagerPage() {
                     <ResponsiveContainer width="100%" height={500}>
                       <LineChart data={trendsData}>
                         <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="period" />
+                        <XAxis dataKey="label" />
                         <YAxis domain={[0, 3]} />
                         <Tooltip />
                         <Legend />
@@ -1041,7 +1050,7 @@ export default function ManagerPage() {
             {dashboardData.assessmentPeriod && (
               <div className="mt-3 pt-3 border-t border-indigo-200">
                 <span className="text-indigo-700 font-medium">Filtered by:</span>{' '}
-                <span className="text-indigo-900 font-bold">{dashboardData.assessmentPeriod}</span>
+                <span className="text-indigo-900 font-bold">{formatPeriodLabel(dashboardData.assessmentPeriod)}</span>
               </div>
             )}
           </div>

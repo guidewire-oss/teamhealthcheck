@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
+	"github.com/agopalakrishnan/teams360/backend/pkg/orgsnapshot"
 	"github.com/lib/pq"
 )
 
@@ -79,6 +80,16 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 	for _, id := range in.PreservedMemberUserIDs {
 		deletionExemptUserIDs[id] = true
 	}
+
+	// Runs before the deletion scope is measured so a re-keyed user is not
+	// counted as missing. A held sync still writes nothing: the deferred
+	// Rollback discards these re-keys along with everything else. Only the
+	// snapshot and preserved ids are in the set so far; the supervisor
+	// exemptions below apply to deletion only.
+	if err := rekeyUsersToProviderIDs(ctx, tx, in, deletionExemptUserIDs); err != nil {
+		return nil, err
+	}
+
 	// Folding in today's protected-chain supervisors keeps the mass-deletion
 	// guard's count (missingUserIDs, below) in agreement with what
 	// deleteMissingUsers will actually remove: that function independently,
@@ -354,6 +365,157 @@ func countHealthCheckTransitions(ctx context.Context, tx *sql.Tx, in orgprovider
 	}
 
 	return nil
+}
+
+// userIDReferences lists every column that holds a users.id. Re-keying a user
+// must repoint all of them before the old row goes: the foreign keys cascade or
+// null on delete, so removing the old row while anything still pointed at it
+// would silently drop the user's memberships and action items.
+// health_check_sessions.user_id has no foreign key but identifies the
+// submitter, so it moves with the user too.
+var userIDReferences = []struct{ table, column string }{
+	{"team_members", "user_id"},
+	{"team_supervisors", "user_id"},
+	{"action_items", "created_by"},
+	{"action_items", "assigned_to"},
+	{"password_reset_tokens", "user_id"},
+	{"teams", "team_lead_id"},
+	{"users", "reports_to"},
+	{"health_check_sessions", "user_id"},
+}
+
+// UserIDReferenceColumns lists the "table.column" pairs re-keying repoints, so a
+// test can check the list against the foreign keys on users(id).
+func UserIDReferenceColumns() []string {
+	cols := make([]string, len(userIDReferences))
+	for i, ref := range userIDReferences {
+		cols[i] = ref.table + "." + ref.column
+	}
+	return cols
+}
+
+// rekeyUsersToProviderIDs moves an existing SSO user onto the id the provider
+// now sends for them. upsertSnapshotUsers matches on id only, so a person
+// stored under a different id (for example their username) would be inserted
+// as a second row and rejected by the unique email/username constraints.
+//
+// A snapshot user is matched to an existing row by email (case-insensitive) or
+// username. Only SSO rows are matched, never the permanent admin or fixture
+// ids, and never an id in stillPresent: the provider still sends that user, so
+// their history stays with them. A match on more than one row aborts the sync.
+// Administrators are re-keyed too and keep their level, because the row is
+// protected from the upsert afterwards.
+func rekeyUsersToProviderIDs(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, stillPresent map[string]bool) error {
+	existing, err := existingUserIDs(ctx, tx, in.Snapshot.Users)
+	if err != nil {
+		return err
+	}
+
+	for _, u := range in.Snapshot.Users {
+		if existing[u.ID] || orgprovider.IsProtectedUser(u.ID, u.HierarchyLevelID) {
+			continue
+		}
+
+		oldIDs, err := findRekeyCandidates(ctx, tx, u.Email, u.Username, stillPresent)
+		if err != nil {
+			return fmt.Errorf("failed to look up existing user for %q (%s): %w", u.Username, u.ID, err)
+		}
+		if len(oldIDs) > 1 {
+			return fmt.Errorf("provider user %q (%s) matches several existing users %v by email or username; resolve the duplicates before syncing", u.Username, u.ID, oldIDs)
+		}
+		if len(oldIDs) == 1 {
+			if err := rekeyUser(ctx, tx, oldIDs[0], u); err != nil {
+				return fmt.Errorf("failed to re-key user %q from %q to %q: %w", u.Username, oldIDs[0], u.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// existingUserIDs returns which of the snapshot users already have a row under
+// the id the provider sends, in one query.
+func existingUserIDs(ctx context.Context, tx *sql.Tx, users []orgsnapshot.User) (map[string]bool, error) {
+	ids := make([]string, len(users))
+	for i, u := range users {
+		ids[i] = u.ID
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM users WHERE id = ANY($1)`, pq.Array(ids))
+	if err != nil {
+		return nil, fmt.Errorf("failed to look up existing users: %w", err)
+	}
+	defer rows.Close()
+
+	existing := make(map[string]bool, len(ids))
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		existing[id] = true
+	}
+	return existing, rows.Err()
+}
+
+// findRekeyCandidates returns the ids of SSO users that share the given email
+// or username. Administrators are included, since they are real people whose
+// row should follow their provider id. The permanent admin account, the fixed
+// demo/test fixtures and any row whose id is still in the snapshot
+// (stillPresent) are excluded. Passing an empty level to IsProtectedUser checks
+// the id only.
+func findRekeyCandidates(ctx context.Context, tx *sql.Tx, email, username string, stillPresent map[string]bool) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id FROM users
+		WHERE auth_type = 'sso' AND (lower(email) = lower($1) OR username = $2)
+	`, email, username)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if stillPresent[id] || orgprovider.IsProtectedUser(id, "") {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// rekeyUser gives the user stored under oldID the provider's id. users.id is
+// referenced by foreign keys with no ON UPDATE CASCADE, so this takes four
+// steps: free the old row's unique email and username, insert the replacement
+// (keeping the stored hierarchy level, password_hash, auth_type and
+// created_at), repoint every reference, then delete the old row, which nothing
+// points at by then.
+func rekeyUser(ctx context.Context, tx *sql.Tx, oldID string, u orgsnapshot.User) error {
+	// The placeholders must satisfy chk_users_username_format and
+	// chk_users_email_format (migration 000013), and ids can be too long or
+	// contain characters those checks reject, so derive them from a hash.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE users SET username = 'rk_' || left(md5(id), 20), email = 'rk_' || md5(id) || '@rekey.invalid' WHERE id = $1
+	`, oldID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO users (id, username, email, full_name, hierarchy_level_id, reports_to, password_hash, auth_type, created_at, updated_at)
+		SELECT $2, $3, $4, $5, hierarchy_level_id, reports_to, password_hash, auth_type, created_at, CURRENT_TIMESTAMP
+		FROM users WHERE id = $1
+	`, oldID, u.ID, u.Username, u.Email, u.DisplayName); err != nil {
+		return err
+	}
+	for _, ref := range userIDReferences {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE "+ref.table+" SET "+ref.column+" = $2 WHERE "+ref.column+" = $1", oldID, u.ID); err != nil {
+			return fmt.Errorf("failed to repoint %s.%s: %w", ref.table, ref.column, err)
+		}
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, oldID)
+	return err
 }
 
 // upsertSnapshotUsers writes users with reports_to left alone. The column is a

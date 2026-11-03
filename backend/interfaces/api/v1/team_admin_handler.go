@@ -26,6 +26,15 @@ func NewTeamAdminHandler(teamRepo team.Repository, userRepo user.Repository, org
 }
 
 // ListTeams handles GET /api/v1/admin/teams
+//
+// @Summary List all teams (admin)
+// @Description Returns every team in the organization with the full set of admin-facing details: ID, name, team lead ID and name, cadence, distribution list email, member count, and timestamps, along with the total team count. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Teams
+// @Produce json
+// @Success 200 {object} dto.TeamsResponse
+// @Failure 500 {object} dto.ErrorResponse "Failed to query teams"
+// @Security BearerAuth
+// @Router /admin/teams [get]
 func (h *TeamAdminHandler) ListTeams(c *gin.Context) {
 	teams, err := h.teamRepo.FindAllWithDetails(c.Request.Context())
 	if err != nil {
@@ -59,6 +68,18 @@ func (h *TeamAdminHandler) ListTeams(c *gin.Context) {
 }
 
 // CreateTeam handles POST /api/v1/admin/teams
+//
+// @Summary Create a team
+// @Description Creates a new team with a name, cadence, and optional team lead and distribution list email. The team ID is auto-generated from the name when the caller does not supply one. When a team lead is set, the team's supervisor chain is automatically derived by walking that lead's reports-to hierarchy. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Teams
+// @Accept json
+// @Produce json
+// @Param body body dto.CreateTeamRequest true "Team to create"
+// @Success 201 {object} dto.AdminTeamDTO
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body"
+// @Failure 500 {object} dto.ErrorResponse "Failed to create team"
+// @Security BearerAuth
+// @Router /admin/teams [post]
 func (h *TeamAdminHandler) CreateTeam(c *gin.Context) {
 	var req dto.CreateTeamRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -121,6 +142,20 @@ func (h *TeamAdminHandler) CreateTeam(c *gin.Context) {
 }
 
 // UpdateTeam handles PUT /api/v1/admin/teams/:id
+//
+// @Summary Update a team
+// @Description Updates the name, team lead, cadence, and/or distribution list email of the team identified by the path ID; only the fields present in the request body are changed. If the team lead changes, the supervisor chain is re-derived from the new lead's reports-to hierarchy, or cleared entirely if the lead is removed. Returns a 404 if no team exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Teams
+// @Accept json
+// @Produce json
+// @Param id path string true "Team ID"
+// @Param body body dto.UpdateTeamRequest true "Fields to update"
+// @Success 200 {object} dto.AdminTeamDTO
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body"
+// @Failure 404 {object} dto.ErrorResponse "Team not found"
+// @Failure 500 {object} dto.ErrorResponse "Failed to update team"
+// @Security BearerAuth
+// @Router /admin/teams/{id} [put]
 func (h *TeamAdminHandler) UpdateTeam(c *gin.Context) {
 	id := c.Param("id")
 	var req dto.UpdateTeamRequest
@@ -209,6 +244,16 @@ func (h *TeamAdminHandler) UpdateTeam(c *gin.Context) {
 }
 
 // DeleteTeam handles DELETE /api/v1/admin/teams/:id
+//
+// @Summary Delete a team
+// @Description Permanently deletes the team identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Teams
+// @Produce json
+// @Param id path string true "Team ID"
+// @Success 200 {object} dto.MessageResponse
+// @Failure 500 {object} dto.ErrorResponse "Failed to delete team"
+// @Security BearerAuth
+// @Router /admin/teams/{id} [delete]
 func (h *TeamAdminHandler) DeleteTeam(c *gin.Context) {
 	id := c.Param("id")
 
@@ -224,6 +269,17 @@ func (h *TeamAdminHandler) DeleteTeam(c *gin.Context) {
 }
 
 // GetTeamMembers handles GET /api/v1/admin/teams/:id/members
+//
+// @Summary List a team's members (admin)
+// @Description Returns every member of the team identified by the path ID, each with their user ID, name, and email, plus the total member count. Returns a 404 if no team exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Teams
+// @Produce json
+// @Param id path string true "Team ID"
+// @Success 200 {object} dto.TeamMembersResponse
+// @Failure 404 {object} dto.ErrorResponse "Team not found"
+// @Failure 500 {object} dto.ErrorResponse "Failed to fetch team members"
+// @Security BearerAuth
+// @Router /admin/teams/{id}/members [get]
 func (h *TeamAdminHandler) GetTeamMembers(c *gin.Context) {
 	teamID := c.Param("id")
 
@@ -259,6 +315,20 @@ func (h *TeamAdminHandler) GetTeamMembers(c *gin.Context) {
 }
 
 // AddTeamMember handles POST /api/v1/admin/teams/:id/members
+//
+// @Summary Add a member to a team
+// @Description Adds the given user as a member of the team identified by the path ID. Returns a 404 if either the team or the user does not exist. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Teams
+// @Accept json
+// @Produce json
+// @Param id path string true "Team ID"
+// @Param body body dto.AddTeamMemberRequest true "User to add"
+// @Success 201 {object} dto.MessageResponse
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body"
+// @Failure 404 {object} dto.ErrorResponse "Team not found or user not found"
+// @Failure 500 {object} dto.ErrorResponse "Failed to add team member"
+// @Security BearerAuth
+// @Router /admin/teams/{id}/members [post]
 func (h *TeamAdminHandler) AddTeamMember(c *gin.Context) {
 	teamID := c.Param("id")
 
@@ -294,6 +364,18 @@ func (h *TeamAdminHandler) AddTeamMember(c *gin.Context) {
 }
 
 // RemoveTeamMember handles DELETE /api/v1/admin/teams/:id/members/:userId
+//
+// @Summary Remove a member from a team
+// @Description Removes the given user's membership from the team identified by the path ID. Returns a 404 if the user is not currently a member of that team. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Teams
+// @Produce json
+// @Param id path string true "Team ID"
+// @Param userId path string true "User ID"
+// @Success 200 {object} dto.MessageResponse
+// @Failure 404 {object} dto.ErrorResponse "Team member not found"
+// @Failure 500 {object} dto.ErrorResponse "Failed to remove team member"
+// @Security BearerAuth
+// @Router /admin/teams/{id}/members/{userId} [delete]
 func (h *TeamAdminHandler) RemoveTeamMember(c *gin.Context) {
 	teamID := c.Param("id")
 	userID := c.Param("userId")
@@ -314,6 +396,17 @@ func (h *TeamAdminHandler) RemoveTeamMember(c *gin.Context) {
 }
 
 // GetSupervisorChain handles GET /api/v1/admin/teams/:id/supervisors
+//
+// @Summary Get a team's supervisor chain
+// @Description Returns the stored supervisor chain for the team identified by the path ID (originally derived from the team lead's reports-to hierarchy), with each link enriched with the supervisor's name and hierarchy level name. Returns a 404 if no team exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Teams
+// @Produce json
+// @Param id path string true "Team ID"
+// @Success 200 {object} dto.SupervisorChainResponse
+// @Failure 404 {object} dto.ErrorResponse "Team not found"
+// @Failure 500 {object} dto.ErrorResponse "Failed to fetch supervisor chain"
+// @Security BearerAuth
+// @Router /admin/teams/{id}/supervisors [get]
 func (h *TeamAdminHandler) GetSupervisorChain(c *gin.Context) {
 	teamID := c.Param("id")
 
@@ -361,6 +454,20 @@ func (h *TeamAdminHandler) GetSupervisorChain(c *gin.Context) {
 }
 
 // UpdateSupervisorChain handles PUT /api/v1/admin/teams/:id/supervisors
+//
+// @Summary Replace a team's supervisor chain
+// @Description Replaces the entire supervisor chain of the team identified by the path ID with the given list of user/level links, discarding whatever chain was previously derived or set. Returns the updated chain enriched with supervisor and level names. Returns a 404 if no team exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Teams
+// @Accept json
+// @Produce json
+// @Param id path string true "Team ID"
+// @Param body body dto.UpdateSupervisorChainRequest true "New supervisor chain"
+// @Success 200 {object} dto.SupervisorChainResponse
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body"
+// @Failure 404 {object} dto.ErrorResponse "Team not found"
+// @Failure 500 {object} dto.ErrorResponse "Failed to update supervisor chain"
+// @Security BearerAuth
+// @Router /admin/teams/{id}/supervisors [put]
 func (h *TeamAdminHandler) UpdateSupervisorChain(c *gin.Context) {
 	teamID := c.Param("id")
 

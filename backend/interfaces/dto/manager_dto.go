@@ -8,14 +8,14 @@ type TeamHealthSummary struct {
 	SubmissionCount    int                `json:"submissionCount"`
 	Dimensions         []DimensionSummary `json:"dimensions"`
 	PostWorkshopStatus string             `json:"postWorkshopStatus,omitempty"`
-}
+} //@name TeamHealthSummary
 
 // DimensionSummary represents aggregated health for a single dimension
 type DimensionSummary struct {
 	DimensionID   string  `json:"dimensionId"`
 	AvgScore      float64 `json:"avgScore"`
 	ResponseCount int     `json:"responseCount"`
-}
+} //@name DimensionSummary
 
 // ManagerTeamsHealthResponse represents the response for manager's teams health
 type ManagerTeamsHealthResponse struct {
@@ -23,27 +23,27 @@ type ManagerTeamsHealthResponse struct {
 	Teams            []TeamHealthSummary `json:"teams"`
 	TotalTeams       int                 `json:"totalTeams"`
 	AssessmentPeriod string              `json:"assessmentPeriod,omitempty"`
-}
+} //@name ManagerTeamsHealthResponse
 
 // ManagerRadarResponse represents aggregated radar chart data for manager
 type ManagerRadarResponse struct {
 	ManagerID        string             `json:"managerId"`
 	Dimensions       []DimensionSummary `json:"dimensions"`
 	AssessmentPeriod string             `json:"assessmentPeriod,omitempty"`
-}
+} //@name ManagerRadarResponse
 
 // ManagerTrendsResponse represents trend data for manager's teams
 type ManagerTrendsResponse struct {
 	ManagerID  string                  `json:"managerId"`
 	Periods    []string                `json:"periods"`
 	Dimensions []ManagerDimensionTrend `json:"dimensions"`
-}
+} //@name ManagerTrendsResponse
 
 // ManagerDimensionTrend represents trend scores for a dimension across periods
 type ManagerDimensionTrend struct {
 	DimensionID string    `json:"dimensionId"`
 	Scores      []float64 `json:"scores"` // matches periods array order
-}
+} //@name ManagerDimensionTrend
 
 // SubordinateDTO represents a user in the subordinate tree
 type SubordinateDTO struct {
@@ -53,10 +53,10 @@ type SubordinateDTO struct {
 	HierarchyLevelID string   `json:"hierarchyLevelId"`
 	ReportsTo        string   `json:"reportsTo,omitempty"`
 	TeamIDs          []string `json:"teamIds"`
-}
+} //@name SubordinateDTO
 
 // SubordinatesResponse represents the response for a manager's subordinate tree
 type SubordinatesResponse struct {
 	ManagerID    string           `json:"managerId"`
 	Subordinates []SubordinateDTO `json:"subordinates"`
-}
+} //@name SubordinatesResponse
