@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"errors"
 	"net/http"
 	"slices"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"github.com/agopalakrishnan/teams360/backend/domain/organization"
 	"github.com/agopalakrishnan/teams360/backend/domain/team"
 	"github.com/agopalakrishnan/teams360/backend/domain/user"
+	"github.com/agopalakrishnan/teams360/backend/infrastructure/email"
 	"github.com/agopalakrishnan/teams360/backend/interfaces/dto"
 )
 
@@ -20,6 +22,14 @@ import (
 type SurveyCompletionAdminHandler struct {
 	overviewHandler *queries.GetSurveyCompletionOverviewHandler
 	healthCheckRepo healthcheck.Repository
+	// reminderSender mails survey reminders. nil means email is not
+	// configured, and SendReminders answers 503 instead of silently doing
+	// nothing.
+	reminderSender email.Sender
+	// reminderTestPod, when set, limits reminders to that pod's team lead and
+	// members (EMAIL_TEST_POD), so a test run cannot reach anyone else.
+	reminderTestPod string
+	teamRepo        team.Repository
 }
 
 // NewSurveyCompletionAdminHandler creates a new handler.
@@ -27,6 +37,7 @@ func NewSurveyCompletionAdminHandler(teamRepo team.Repository, healthCheckRepo h
 	return &SurveyCompletionAdminHandler{
 		overviewHandler: queries.NewGetSurveyCompletionOverviewHandler(teamRepo, healthCheckRepo, userRepo, orgRepo),
 		healthCheckRepo: healthCheckRepo,
+		teamRepo:        teamRepo,
 	}
 }
 
@@ -40,21 +51,10 @@ func NewSurveyCompletionAdminHandler(teamRepo team.Repository, healthCheckRepo h
 // instead of "you asked for a period that doesn't exist".
 func (h *SurveyCompletionAdminHandler) GetSurveyCompletion(c *gin.Context) {
 	ctx := c.Request.Context()
-	assessmentPeriod := c.Query("assessmentPeriod")
 
-	periods, err := h.healthCheckRepo.FindDistinctAssessmentPeriods(ctx)
+	assessmentPeriod, err := h.resolveAssessmentPeriod(c, c.Query("assessmentPeriod"))
 	if err != nil {
-		dto.RespondErrorWithDetails(c, http.StatusInternalServerError, "Failed to resolve assessment periods", err.Error())
-		return
-	}
-
-	if assessmentPeriod == "" {
-		if len(periods) > 0 {
-			assessmentPeriod = periods[0]
-		}
-	} else if !slices.Contains(periods, assessmentPeriod) {
-		dto.RespondErrorWithDetails(c, http.StatusBadRequest, "Unknown assessment period", assessmentPeriod)
-		return
+		return // resolveAssessmentPeriod already responded
 	}
 
 	overview, err := h.overviewHandler.Handle(ctx, queries.GetSurveyCompletionOverviewQuery{AssessmentPeriod: assessmentPeriod})
@@ -64,6 +64,119 @@ func (h *SurveyCompletionAdminHandler) GetSurveyCompletion(c *gin.Context) {
 	}
 
 	dto.RespondSuccess(c, http.StatusOK, buildSurveyCompletionResponse(overview))
+}
+
+// resolveAssessmentPeriod applies the period rule shared by the dashboard and
+// the reminders: an empty request means the most recent period with data, and
+// a named period must be one of the known ones. On failure it has already
+// written the error response, so the caller only returns.
+func (h *SurveyCompletionAdminHandler) resolveAssessmentPeriod(c *gin.Context, requested string) (string, error) {
+	periods, err := h.healthCheckRepo.FindDistinctAssessmentPeriods(c.Request.Context())
+	if err != nil {
+		dto.RespondErrorWithDetails(c, http.StatusInternalServerError, "Failed to resolve assessment periods", err.Error())
+		return "", err
+	}
+
+	if requested == "" {
+		if len(periods) > 0 {
+			return periods[0], nil
+		}
+		return "", nil
+	}
+	if !slices.Contains(periods, requested) {
+		dto.RespondErrorWithDetails(c, http.StatusBadRequest, "Unknown assessment period", requested)
+		return "", errors.New("unknown assessment period")
+	}
+	return requested, nil
+}
+
+// SendReminders handles POST /api/v1/admin/survey-completion/reminders.
+//
+// The body names a target (a pod, a leader, or the whole org) and the server
+// works out the recipients from the same survey-completion data the dashboard
+// shows, so the reminder reaches exactly the people the dashboard's preview
+// listed and a caller cannot address an arbitrary email.
+func (h *SurveyCompletionAdminHandler) SendReminders(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	if h.reminderSender == nil {
+		dto.RespondErrorWithDetails(c, http.StatusServiceUnavailable, "Email is not configured", "Email is not configured on this server, so reminders cannot be sent.")
+		return
+	}
+
+	var req dto.SurveyReminderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		dto.RespondErrorWithDetails(c, http.StatusBadRequest, "Invalid request body", err.Error())
+		return
+	}
+
+	assessmentPeriod, err := h.resolveAssessmentPeriod(c, req.AssessmentPeriod)
+	if err != nil {
+		return
+	}
+
+	overview, err := h.overviewHandler.Handle(ctx, queries.GetSurveyCompletionOverviewQuery{AssessmentPeriod: assessmentPeriod})
+	if err != nil {
+		dto.RespondErrorWithDetails(c, http.StatusInternalServerError, "Failed to build survey completion overview", err.Error())
+		return
+	}
+
+	teamLeadEmail := make(map[string]string, len(overview.Teams))
+	for _, t := range overview.Teams {
+		teamLeadEmail[t.TeamID] = t.TeamLeadEmail
+	}
+
+	plan, err := planSurveyReminders(buildSurveyCompletionResponse(overview).Groups, teamLeadEmail, req)
+	switch {
+	case errors.Is(err, errInvalidReminderRequest):
+		dto.RespondErrorWithDetails(c, http.StatusBadRequest, "Invalid reminder request", "scope must be team, person or org, with teamId or personId for the first two.")
+		return
+	case errors.Is(err, errReminderTargetNotFound):
+		dto.RespondErrorWithDetails(c, http.StatusNotFound, "Reminder target not found", "That team or leader is not in the survey completion data for this period.")
+		return
+	case errors.Is(err, errNothingToRemind):
+		dto.RespondErrorWithDetails(c, http.StatusUnprocessableEntity, "Nothing to remind", "No pods are in progress or not started, so there is nobody to remind.")
+		return
+	case err != nil:
+		dto.RespondErrorWithDetails(c, http.StatusInternalServerError, "Failed to plan reminders", err.Error())
+		return
+	}
+
+	if h.reminderTestPod != "" {
+		plan, err = restrictPlanToTestPod(ctx, plan, h.reminderTestPod, overview.Teams, h.teamRepo)
+		switch {
+		case errors.Is(err, errTestPodNotFound):
+			dto.RespondErrorWithDetails(c, http.StatusUnprocessableEntity, "Test pod not found",
+				"EMAIL_TEST_POD is set to \""+h.reminderTestPod+"\" but no pod has that name, so nothing was sent.")
+			return
+		case errors.Is(err, errTestPodAmbiguous):
+			dto.RespondErrorWithDetails(c, http.StatusUnprocessableEntity, "Test pod is ambiguous",
+				"EMAIL_TEST_POD is set to \""+h.reminderTestPod+"\" but more than one pod has that name, so nothing was sent.")
+			return
+		case err != nil:
+			dto.RespondErrorWithDetails(c, http.StatusInternalServerError, "Failed to apply the test pod restriction", err.Error())
+			return
+		case len(plan.Recipients) == 0:
+			dto.RespondErrorWithDetails(c, http.StatusUnprocessableEntity, "Nothing to remind in the test pod",
+				"EMAIL_TEST_POD limits reminders to \""+h.reminderTestPod+"\", and that pod has nobody to remind for this request (it may already be complete).")
+			return
+		}
+	}
+
+	result := sendReminderPlan(ctx, h.reminderSender, overview.AssessmentPeriod, req.Scope, plan)
+	result.TestPod = h.reminderTestPod
+	result.RedirectedTo = email.RedirectTargetsOf(h.reminderSender)
+	if result.RedirectedTo == nil {
+		result.RedirectedTo = []string{}
+	}
+	if result.Sent == 0 && len(result.Failed) > 0 {
+		// Every deliverable recipient failed: the transport is down, not a
+		// partial success, so don't report 200.
+		dto.RespondErrorWithDetails(c, http.StatusBadGateway, "Failed to send reminders", "The mail server rejected every reminder. Nothing was sent.")
+		return
+	}
+
+	dto.RespondSuccess(c, http.StatusOK, result)
 }
 
 // nodeBuilder accumulates one PersonNode's direct teams and child nodes

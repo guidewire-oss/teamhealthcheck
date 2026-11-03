@@ -10,6 +10,9 @@ interface ReminderTreeModalProps {
   plan: ReminderPlan;
   onCancel: () => void;
   onSend: () => void;
+  // True while the send request is in flight: the Send button is disabled so a
+  // double click can't mail everyone twice.
+  isSending?: boolean;
 }
 
 const TITLE_ID = 'reminder-tree-title';
@@ -94,7 +97,7 @@ function Legend({ statuses, align }: { statuses: SurveyStatus[]; align: 'left' |
   );
 }
 
-export default function ReminderTreeModal({ plan, onCancel, onSend }: ReminderTreeModalProps) {
+export default function ReminderTreeModal({ plan, onCancel, onSend, isSending = false }: ReminderTreeModalProps) {
   const statuses = getStatusesInTree(plan.root);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
@@ -178,11 +181,12 @@ export default function ReminderTreeModal({ plan, onCancel, onSend }: ReminderTr
           <button
             type="button"
             onClick={onSend}
+            disabled={isSending}
             data-testid="reminder-tree-send"
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <Send className="w-4 h-4" />
-            Send reminder
+            {isSending ? 'Sending…' : 'Send reminder'}
           </button>
         </div>
       </div>

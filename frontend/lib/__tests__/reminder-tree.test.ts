@@ -3,6 +3,7 @@ import {
   buildOrgReminderPlan,
   buildPersonReminderPlan,
   buildTeamReminderPlan,
+  formatReminderResult,
   getStatusesInTree,
 } from '@/lib/reminder-tree';
 import type {
@@ -10,6 +11,7 @@ import type {
   SurveyCompletionPerson,
   SurveyCompletionPersonGroup,
   SurveyCompletionTeam,
+  SurveyReminderResult,
 } from '@/lib/api/survey-completion';
 
 function team(overrides: Partial<SurveyCompletionTeam> = {}): SurveyCompletionTeam {
@@ -414,3 +416,103 @@ describe('buildPersonReminderPlan with the reported duplicate-pod names', () => 
     expect(new Set(allLeafIds).size).toBe(allLeafIds.length);
   });
 });
+
+// Each plan carries the request that sends it; the server recomputes the
+// recipients from that target, so the target has to be exactly what the
+// plan was built for.
+describe('the request each reminder plan carries', () => {
+  it('targets the pod for a team plan, with or without an owner', () => {
+    const owner = person('mgr1', 'Manager One', 'Manager');
+
+    expect(buildTeamReminderPlan(team({ teamId: 'goa' }), { owner }).request).toEqual({ scope: 'team', teamId: 'goa' });
+    expect(buildTeamReminderPlan(team({ teamId: 'goa' }), {}).request).toEqual({ scope: 'team', teamId: 'goa' });
+  });
+
+  it('targets the leader for a person plan', () => {
+    const group: SurveyCompletionPersonGroup = {
+      type: 'person',
+      person: person('dir1', 'Director One', 'Director'),
+      totalTeams: 1,
+      optedInTeams: 1,
+      completionPercent: 0,
+      remindCount: 1,
+      directTeams: [team()],
+      children: [],
+    };
+
+    expect(buildPersonReminderPlan(group).request).toEqual({ scope: 'person', personId: 'dir1' });
+  });
+
+  it('targets the whole org for the bulk plan', () => {
+    expect(buildOrgReminderPlan([]).request).toEqual({ scope: 'org' });
+  });
+});
+
+describe('formatReminderResult', () => {
+  const result = (overrides: Partial<SurveyReminderResult> = {}): SurveyReminderResult => ({
+    assessmentPeriod: '2026 - 1st Half',
+    mode: 'send',
+    sent: 0,
+    sentTo: [],
+    logged: 0,
+    loggedFor: [],
+    skippedNoEmail: [],
+    failed: [],
+    podsWithoutTeamLead: [],
+    ...overrides,
+  });
+
+  it('reports who the reminder actually reached', () => {
+    expect(formatReminderResult(result({ sent: 3, sentTo: ['A', 'B', 'C'] }))).toBe('Reminder sent to 3 people.');
+  });
+
+  it('uses the singular for one person', () => {
+    expect(formatReminderResult(result({ sent: 1, sentTo: ['A'] }))).toBe('Reminder sent to 1 person.');
+  });
+
+  it('says so when nothing was sent', () => {
+    expect(formatReminderResult(result())).toBe('No reminder was sent.');
+  });
+
+  it('adds what was skipped, what failed, and which pods had no team lead', () => {
+    expect(
+      formatReminderResult(
+        result({
+          sent: 2,
+          skippedNoEmail: ['X'],
+          failed: ['Y', 'Z'],
+          podsWithoutTeamLead: ['Pod A'],
+        }),
+      ),
+    ).toBe('Reminder sent to 2 people. 1 person skipped (no email on file). 2 emails failed to send. 1 pod had no team lead.');
+  });
+
+  it('says nothing was sent in log mode, and never claims a reminder was sent', () => {
+    const message = formatReminderResult(result({ mode: 'log', logged: 2, loggedFor: ['A', 'B'] }));
+
+    expect(message).toBe('Log mode: no email was sent. 2 reminders written to the server log.');
+    expect(message).not.toMatch(/Reminder sent/);
+  });
+
+  it('names the test pod when recipients were limited to it', () => {
+    expect(formatReminderResult(result({ mode: 'log', logged: 1, loggedFor: ['A'], testPod: 'Hopefarm' }))).toBe(
+      'Log mode: no email was sent. 1 reminder written to the server log. Limited to the Hopefarm pod.',
+    );
+  });
+
+  it('says the real recipients were not emailed when mail is redirected to test addresses', () => {
+    const message = formatReminderResult(
+      result({ sent: 2, sentTo: ['A', 'B'], redirectedTo: ['cw1@x.com', 'cw2@x.com'], testPod: 'Hopefarm' }),
+    );
+
+    expect(message).toBe(
+      'Test mode: 2 reminders sent to cw1@x.com, cw2@x.com instead of the real recipients. Limited to the Hopefarm pod.',
+    );
+    expect(message).not.toMatch(/Reminder sent to \d+ (person|people)/);
+  });
+
+  it('does not claim a redirect when none is configured', () => {
+    expect(formatReminderResult(result({ sent: 1, sentTo: ['A'], redirectedTo: [] }))).toBe('Reminder sent to 1 person.');
+  });
+});
+

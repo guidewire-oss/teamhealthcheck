@@ -2,13 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import SurveyCompletionDashboard, { GroupHeaderRow, TeamRow } from '@/components/SurveyCompletionDashboard';
-import { getSurveyCompletion } from '@/lib/api/survey-completion';
+import { getSurveyCompletion, sendSurveyReminders } from '@/lib/api/survey-completion';
 import { getAssessmentPeriods } from '@/lib/api/health-checks';
 import type { SurveyCompletionOverview, SurveyCompletionTeam, SurveyStatus } from '@/lib/api/survey-completion';
 
 vi.mock('@/lib/api/survey-completion', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api/survey-completion')>()),
   getSurveyCompletion: vi.fn(),
+  sendSurveyReminders: vi.fn(),
 }));
 vi.mock('@/lib/api/health-checks', () => ({
   getAssessmentPeriods: vi.fn(),
@@ -793,3 +794,122 @@ describe('SurveyCompletionDashboard mobile toolbar layout', () => {
     expect(searchInput.className).toMatch(/w-full/);
   });
 });
+
+// The Send button posts the plan's target to the reminders endpoint and
+// reports what the server says it did -- not what the preview promised.
+describe('SurveyCompletionDashboard — sending a reminder', () => {
+  const laggingOverview = () =>
+    overview({
+      assessmentPeriod: '2026 H1',
+      totalTeams: 1,
+      optedIn: 1,
+      inProgress: 1,
+      groups: [
+        {
+          type: 'other',
+          label: 'Other',
+          totalTeams: 1,
+          optedInTeams: 1,
+          completionPercent: 0,
+          remindCount: 1,
+          teams: [team({ teamId: 'pod-1', teamName: 'Sunnyvale', status: 'in_progress', teamLeadName: 'Alice' })],
+        },
+      ],
+    });
+
+  const openOrgReminder = async () => {
+    render(<SurveyCompletionDashboard />);
+    await screen.findByTestId('survey-card-total');
+    await userEvent.click(screen.getByTestId('survey-card-opted-in'));
+    await userEvent.click(screen.getByTestId('survey-remind-all'));
+    await screen.findByTestId('reminder-tree-modal');
+  };
+
+  beforeEach(() => {
+    vi.mocked(getAssessmentPeriods).mockResolvedValue(['2026 H1']);
+    vi.mocked(getSurveyCompletion).mockResolvedValue(laggingOverview());
+    vi.mocked(sendSurveyReminders).mockReset();
+  });
+
+  it('posts the org target for the period on screen, then reports who it reached and closes the preview', async () => {
+    vi.mocked(sendSurveyReminders).mockResolvedValue({
+      assessmentPeriod: '2026 H1',
+      mode: 'send',
+      logged: 0,
+      loggedFor: [],
+      sent: 2,
+      sentTo: ['Alice', 'Bob'],
+      skippedNoEmail: [],
+      failed: [],
+      podsWithoutTeamLead: [],
+    });
+    await openOrgReminder();
+
+    await userEvent.click(screen.getByTestId('reminder-tree-send'));
+
+    expect(sendSurveyReminders).toHaveBeenCalledWith({ scope: 'org', assessmentPeriod: '2026 H1' });
+    expect(await screen.findByTestId('survey-toast')).toHaveTextContent('Reminder sent to 2 people.');
+    expect(screen.queryByTestId('reminder-tree-modal')).not.toBeInTheDocument();
+  });
+
+  it('keeps the preview open and says why when sending fails', async () => {
+    vi.mocked(sendSurveyReminders).mockRejectedValue(new Error('Email is not configured on this server'));
+    await openOrgReminder();
+
+    await userEvent.click(screen.getByTestId('reminder-tree-send'));
+
+    expect(await screen.findByTestId('survey-toast')).toHaveTextContent(
+      'Could not send reminder: Email is not configured on this server',
+    );
+    expect(screen.getByTestId('reminder-tree-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('reminder-tree-send')).toBeEnabled();
+  });
+
+  it('sends once even if Send is clicked twice while the request is in flight', async () => {
+    const inFlight = deferredPromise<Awaited<ReturnType<typeof sendSurveyReminders>>>();
+    vi.mocked(sendSurveyReminders).mockReturnValue(inFlight.promise);
+    await openOrgReminder();
+
+    await userEvent.click(screen.getByTestId('reminder-tree-send'));
+    await userEvent.click(screen.getByTestId('reminder-tree-send'));
+
+    expect(sendSurveyReminders).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('reminder-tree-send')).toBeDisabled();
+
+    inFlight.resolve({
+      assessmentPeriod: '2026 H1',
+      mode: 'send',
+      logged: 0,
+      loggedFor: [],
+      sent: 1,
+      sentTo: ['Alice'],
+      skippedNoEmail: [],
+      failed: [],
+      podsWithoutTeamLead: [],
+    });
+    await waitFor(() => expect(screen.queryByTestId('reminder-tree-modal')).not.toBeInTheDocument());
+  });
+
+  it('tells the admin nothing was sent when the server is in log mode', async () => {
+    vi.mocked(sendSurveyReminders).mockResolvedValue({
+      assessmentPeriod: '2026 H1',
+      mode: 'log',
+      testPod: 'Hopefarm',
+      logged: 1,
+      loggedFor: ['Alice'],
+      sent: 0,
+      sentTo: [],
+      skippedNoEmail: [],
+      failed: [],
+      podsWithoutTeamLead: [],
+    });
+    await openOrgReminder();
+
+    await userEvent.click(screen.getByTestId('reminder-tree-send'));
+
+    const toast = await screen.findByTestId('survey-toast');
+    expect(toast).toHaveTextContent('Log mode: no email was sent.');
+    expect(toast).not.toHaveTextContent('Reminder sent');
+  });
+});
+

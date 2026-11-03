@@ -106,3 +106,47 @@ export async function getSurveyCompletion(assessmentPeriod?: string): Promise<Su
   const response = await apiRequest(url);
   return handleResponse<SurveyCompletionOverview>(response);
 }
+
+/** Who a reminder is for. The server works out the recipients from this. */
+export type SurveyReminderRequest =
+  | { scope: 'team'; teamId: string; assessmentPeriod?: string }
+  | { scope: 'person'; personId: string; assessmentPeriod?: string }
+  | { scope: 'org'; assessmentPeriod?: string };
+
+export interface SurveyReminderResult {
+  assessmentPeriod: string;
+  // 'log' means email delivery is switched off on the server (EMAIL_MODE=log):
+  // nothing was sent, and each reminder was written to the server log instead.
+  mode: 'send' | 'log';
+  // Set when the server limited recipients to one test pod (EMAIL_TEST_POD).
+  testPod?: string;
+  // The test addresses every email was delivered to INSTEAD of its real
+  // recipient (EMAIL_REDIRECT_TO). Empty when emails went to real recipients.
+  redirectedTo?: string[];
+  sent: number;
+  sentTo: string[];
+  // Who the reminder would have gone to, in log mode.
+  logged: number;
+  loggedFor: string[];
+  // Recipients with no email address on file.
+  skippedNoEmail: string[];
+  // Recipients the mail server rejected.
+  failed: string[];
+  // Lagging pods that have no team lead to remind.
+  podsWithoutTeamLead: string[];
+}
+
+/**
+ * Emails the people behind a Remind button. The server decides who from the
+ * same data the dashboard shows, so the reminder reaches the people the
+ * preview listed.
+ *
+ * Backend: POST /api/v1/admin/survey-completion/reminders
+ */
+export async function sendSurveyReminders(request: SurveyReminderRequest): Promise<SurveyReminderResult> {
+  const response = await apiRequest(`${API_BASE_URL}/api/v1/admin/survey-completion/reminders`, {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+  return handleResponse<SurveyReminderResult>(response);
+}
