@@ -103,3 +103,34 @@ describe('TeamMembersModal — add-member picker', () => {
     expect(listAllUsers.mock.calls[0][0].signal).toBeInstanceOf(AbortSignal);
   });
 });
+
+describe('TeamMembersModal — membership change notification', () => {
+  it('notifies once per saved add, before the modal closes', async () => {
+    listAllUsers.mockResolvedValue([user('u1')]);
+    const onMembershipChange = vi.fn();
+    const onClose = vi.fn();
+    const u = userEvent.setup();
+    render(<TeamMembersModal teamId="t1" teamName="Pod A" onClose={onClose} onMembershipChange={onMembershipChange} />);
+
+    await u.click(await screen.findByTestId('add-member-btn'));
+
+    await waitFor(() => expect(onMembershipChange).toHaveBeenCalledTimes(1));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('notifies after a saved remove, and not at all when the save fails', async () => {
+    getTeamMembers.mockResolvedValue({ members: [{ userId: 'u1', userName: 'User u1', email: 'u1@x.com' }] });
+    listAllUsers.mockResolvedValue([]);
+    removeTeamMember.mockRejectedValueOnce(new Error('nope')).mockResolvedValueOnce(undefined);
+    const onMembershipChange = vi.fn();
+    const u = userEvent.setup();
+    render(<TeamMembersModal teamId="t1" teamName="Pod A" onClose={() => {}} onMembershipChange={onMembershipChange} />);
+
+    await u.click(await screen.findByTestId('remove-member-btn'));
+    await screen.findByText('nope');
+    expect(onMembershipChange).not.toHaveBeenCalled();
+
+    await u.click(screen.getByTestId('remove-member-btn'));
+    await waitFor(() => expect(onMembershipChange).toHaveBeenCalledTimes(1));
+  });
+});

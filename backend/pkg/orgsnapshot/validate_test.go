@@ -493,3 +493,101 @@ func hasError(errs orgsnapshot.ValidationErrors, entity orgsnapshot.EntityType, 
 	}
 	return false
 }
+
+// PostgreSQL VARCHAR(255) counts characters, so the limit is 255 code points:
+// a value of exactly 255 passes, 256 fails, and multi-byte characters are
+// counted once each (a byte-length check would wrongly reject 200 of them).
+func TestValidate_LengthLimitsCountCharactersNotBytes(t *testing.T) {
+	const emailSuffix = "@example.com" // 12 characters
+	type fieldCase struct {
+		name   string
+		entity orgsnapshot.EntityType
+		field  string
+		set    func(*orgsnapshot.Snapshot, string)
+		value  func(n int) string
+	}
+	ascii := func(n int) string { return strings.Repeat("x", n) }
+	cjk := func(n int) string { return strings.Repeat("é", n) } // 2 bytes per character
+	cases := []fieldCase{
+		{"user id", orgsnapshot.EntityUser, "id", func(s *orgsnapshot.Snapshot, v string) {
+			s.Users[1].ID = v
+			s.Memberships[1].UserID = v
+		}, ascii},
+		{"team id", orgsnapshot.EntityTeam, "id", func(s *orgsnapshot.Snapshot, v string) {
+			s.Teams[3].ID = v
+		}, ascii},
+		{"display name", orgsnapshot.EntityUser, "displayName", func(s *orgsnapshot.Snapshot, v string) { s.Users[0].DisplayName = v }, ascii},
+		{"team name", orgsnapshot.EntityTeam, "name", func(s *orgsnapshot.Snapshot, v string) { s.Teams[0].Name = v }, ascii},
+		{"email", orgsnapshot.EntityUser, "email", func(s *orgsnapshot.Snapshot, v string) { s.Users[0].Email = v + emailSuffix },
+			func(n int) string { return ascii(n - len(emailSuffix)) }},
+	}
+	for _, c := range cases {
+		t.Run(c.name+" at 255 is accepted", func(t *testing.T) {
+			snap := validSnapshot()
+			c.set(&snap, c.value(255))
+			if hasError(snap.Validate(), c.entity, c.field, "255") {
+				t.Fatalf("255 characters must be accepted: %v", snap.Validate())
+			}
+		})
+		t.Run(c.name+" at 256 is rejected with a field-specific error", func(t *testing.T) {
+			snap := validSnapshot()
+			c.set(&snap, c.value(256))
+			if !hasError(snap.Validate(), c.entity, c.field, "255") {
+				t.Fatalf("256 characters must be rejected: %v", snap.Validate())
+			}
+		})
+	}
+
+	// Unicode: 255 two-byte characters is 510 bytes but exactly at the
+	// character limit; 256 is over it.
+	t.Run("display name: 255 multi-byte characters accepted", func(t *testing.T) {
+		snap := validSnapshot()
+		snap.Users[0].DisplayName = cjk(255)
+		if hasError(snap.Validate(), orgsnapshot.EntityUser, "displayName", "255") {
+			t.Fatal("255 two-byte characters fit VARCHAR(255) and must be accepted")
+		}
+	})
+	t.Run("display name: 256 multi-byte characters rejected", func(t *testing.T) {
+		snap := validSnapshot()
+		snap.Users[0].DisplayName = cjk(256)
+		if !hasError(snap.Validate(), orgsnapshot.EntityUser, "displayName", "255") {
+			t.Fatal("256 characters must be rejected")
+		}
+	})
+	t.Run("team name: 255 multi-byte characters accepted", func(t *testing.T) {
+		snap := validSnapshot()
+		snap.Teams[0].Name = strings.Repeat("日", 255) // 3 bytes each
+		if hasError(snap.Validate(), orgsnapshot.EntityTeam, "name", "255") {
+			t.Fatal("255 three-byte characters fit VARCHAR(255) and must be accepted")
+		}
+	})
+	t.Run("user id: 255 multi-byte characters accepted", func(t *testing.T) {
+		snap := validSnapshot()
+		id := strings.Repeat("é", 255)
+		snap.Users[1].ID = id
+		snap.Memberships[1].UserID = id
+		if hasError(snap.Validate(), orgsnapshot.EntityUser, "id", "255") {
+			t.Fatal("255 characters must be accepted")
+		}
+	})
+}
+
+// An over-long id must not be echoed back in full as the record identifier.
+func TestValidate_TooLongIDIsIdentifiedByPositionNotEchoedInFull(t *testing.T) {
+	snap := validSnapshot()
+	long := strings.Repeat("x", 300)
+	snap.Teams[3].ID = long
+
+	for _, e := range snap.Validate() {
+		if e.Field == "id" && strings.Contains(e.Message, "255") {
+			if strings.Contains(e.Identifier, long) {
+				t.Fatalf("identifier echoed the whole oversized id: %q", e.Identifier)
+			}
+			if e.Identifier != "index 3" {
+				t.Fatalf("want identifier %q, got %q", "index 3", e.Identifier)
+			}
+			return
+		}
+	}
+	t.Fatal("expected an id length error")
+}

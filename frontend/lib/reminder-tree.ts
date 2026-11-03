@@ -59,20 +59,32 @@ export function buildTeamReminderPlan(
   const leaf = teamNode(team);
   const root = context.owner ? personNode(context.owner, [leaf]) : leaf;
 
+  // A lead exists only when the team carries a lead id; a display name alone
+  // (or a blank id) is not a recipient, so the toast must not claim one.
+  const hasLead = !!team.teamLeadId?.trim();
+
   // The preview tree shows the owner as a node right alongside the pod when
   // there is one, which reads as "this leader is also part of who gets
   // notified" — the toast must name them too, or it under-reports who the
   // preview just showed as a recipient.
-  return {
-    root,
-    podCount: 1,
-    subtitle: context.owner
-      ? `Reminding 1 pod under ${context.owner.name}`
-      : `Reminding the team lead for ${team.teamName}`,
-    toastMessage: context.owner
-      ? `Reminder sent to ${context.owner.name} and the team lead for ${team.teamName}.`
-      : `Reminder sent to the team lead for ${team.teamName}.`,
-  };
+  const subtitle = context.owner
+    ? `Reminding 1 pod under ${context.owner.name}`
+    : hasLead
+      ? `Reminding the team lead for ${team.teamName}`
+      : `${team.teamName} has no team lead assigned`;
+
+  let toastMessage: string;
+  if (context.owner && hasLead) {
+    toastMessage = `Reminder sent to ${context.owner.name} and the team lead for ${team.teamName}.`;
+  } else if (context.owner) {
+    toastMessage = `Reminder sent to ${context.owner.name}. ${team.teamName} has no team lead assigned.`;
+  } else if (hasLead) {
+    toastMessage = `Reminder sent to the team lead for ${team.teamName}.`;
+  } else {
+    toastMessage = `No reminder sent: ${team.teamName} has no team lead assigned and no supervisor to notify.`;
+  }
+
+  return { root, podCount: 1, subtitle, toastMessage };
 }
 
 interface Subtree {

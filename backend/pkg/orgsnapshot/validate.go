@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var usernamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{2,50}$`)
@@ -27,6 +28,25 @@ const (
 )
 
 // ValidationError represents a single validation failure.
+// maxIDChars, maxNameChars and maxEmailChars mirror the VARCHAR(255) columns
+// the snapshot is written to (users.id, users.full_name, users.email,
+// teams.id, teams.name). PostgreSQL counts VARCHAR(n) in characters, not
+// bytes, so lengths here are Unicode code points: a 200-character name in a
+// multi-byte script is valid, and 256 ASCII characters are not.
+const (
+	maxIDChars    = 255
+	maxNameChars  = 255
+	maxEmailChars = 255
+	// maxLevelIDChars bounds hierarchyLevelId, which this contract caps at 50.
+	maxLevelIDChars = 50
+)
+
+func charCount(s string) int { return utf8.RuneCountInString(s) }
+
+// tooLongIdentifier labels a record by its position when its own id is too long
+// to be useful (or safe) to echo back in an error.
+func tooLongIdentifier(i int) string { return fmt.Sprintf("index %d", i) }
+
 type ValidationError struct {
 	Entity     EntityType `json:"entity"`
 	Identifier string     `json:"identifier"`
@@ -129,6 +149,14 @@ func (s Snapshot) Validate() ValidationErrors {
 		} else {
 			userIDs[u.ID] = true
 		}
+		if charCount(u.ID) > maxIDChars {
+			errs = append(errs, ValidationError{
+				Entity:     EntityUser,
+				Identifier: tooLongIdentifier(i),
+				Field:      "id",
+				Message:    fmt.Sprintf("id must not exceed %d characters", maxIDChars),
+			})
+		}
 		if !usernamePattern.MatchString(u.Username) {
 			errs = append(errs, ValidationError{
 				Entity:     EntityUser,
@@ -137,7 +165,7 @@ func (s Snapshot) Validate() ValidationErrors {
 				Message:    "username must be 2-50 characters containing only letters, numbers, underscores, or hyphens",
 			})
 		}
-		if u.DisplayName == "" || len(u.DisplayName) > 255 {
+		if u.DisplayName == "" || charCount(u.DisplayName) > maxNameChars {
 			errs = append(errs, ValidationError{
 				Entity:     EntityUser,
 				Identifier: identifier,
@@ -145,7 +173,7 @@ func (s Snapshot) Validate() ValidationErrors {
 				Message:    "displayName is required and must not exceed 255 characters",
 			})
 		}
-		if u.HierarchyLevelID == "" || len(u.HierarchyLevelID) > 50 {
+		if u.HierarchyLevelID == "" || charCount(u.HierarchyLevelID) > maxLevelIDChars {
 			errs = append(errs, ValidationError{
 				Entity:     EntityUser,
 				Identifier: identifier,
@@ -153,7 +181,7 @@ func (s Snapshot) Validate() ValidationErrors {
 				Message:    "hierarchyLevelId is required and must not exceed 50 characters",
 			})
 		}
-		if !emailPattern.MatchString(u.Email) || len(u.Email) > 255 {
+		if !emailPattern.MatchString(u.Email) || charCount(u.Email) > maxEmailChars {
 			errs = append(errs, ValidationError{
 				Entity:     EntityUser,
 				Identifier: identifier,
@@ -188,7 +216,15 @@ func (s Snapshot) Validate() ValidationErrors {
 		} else {
 			teamIDs[t.ID] = true
 		}
-		if t.Name == "" || len(t.Name) > 255 {
+		if charCount(t.ID) > maxIDChars {
+			errs = append(errs, ValidationError{
+				Entity:     EntityTeam,
+				Identifier: tooLongIdentifier(i),
+				Field:      "id",
+				Message:    fmt.Sprintf("id must not exceed %d characters", maxIDChars),
+			})
+		}
+		if t.Name == "" || charCount(t.Name) > maxNameChars {
 			errs = append(errs, ValidationError{
 				Entity:     EntityTeam,
 				Identifier: identifier,

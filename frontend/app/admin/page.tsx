@@ -363,6 +363,17 @@ export default function AdminPage() {
     }
   };
 
+  // Drops cached user pages without refetching. A team-membership change makes
+  // every cached page's `teamIds` stale, but the Users list is not on screen
+  // while the members modal is open; the next visit to the tab refetches its
+  // page from the now-empty cache, so no eager refetch is needed.
+  const invalidateUsersPageCache = () => {
+    usersAbortControllerRef.current?.abort();
+    usersAbortControllerRef.current = null;
+    usersInFlightKeyRef.current = null;
+    usersPageCacheRef.current.clear();
+  };
+
   // Clears cached user pages and re-fetches the current page. Call after any
   // mutation (create/update/delete) so the list reflects the change.
   const reloadUsersData = async () => {
@@ -1146,6 +1157,7 @@ export default function AdminPage() {
               <TeamMembersModal
                 teamId={membersTeam.id}
                 teamName={membersTeam.name}
+                onMembershipChange={invalidateUsersPageCache}
                 onClose={() => {
                   setMembersTeam(null);
                   fetchAdminTeams(); // Refresh member counts

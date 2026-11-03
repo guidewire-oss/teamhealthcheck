@@ -15,12 +15,19 @@ interface TeamMembersModalProps {
   teamId: string;
   teamName: string;
   onClose: () => void;
+  /**
+   * Called after a membership change has been saved (add or remove), not
+   * merely when the modal closes: anything caching per-user team membership,
+   * such as the admin Users list, is stale from that moment.
+   */
+  onMembershipChange?: () => void;
 }
 
 export default function TeamMembersModal({
   teamId,
   teamName,
   onClose,
+  onMembershipChange,
 }: TeamMembersModalProps) {
   const [members, setMembers] = useState<TeamMemberAdmin[]>([]);
   const [allUsers, setAllUsers] = useState<AdminUser[]>([]);
@@ -70,6 +77,7 @@ export default function TeamMembersModal({
     setError(null);
     try {
       await addTeamMember(teamId, userId);
+      onMembershipChange?.();
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add member');
@@ -83,6 +91,7 @@ export default function TeamMembersModal({
     setError(null);
     try {
       await removeTeamMember(teamId, userId);
+      onMembershipChange?.();
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to remove member');

@@ -236,3 +236,19 @@ describe('CompletionByTeamPanel — scroll area', () => {
     expect(screen.getAllByTestId('team-bars-scroll-area')).toHaveLength(1);
   });
 });
+
+describe('CompletionByTeamPanel — search field accessibility', () => {
+  it('exposes the search field by a persistent accessible name, not only its placeholder', async () => {
+    const user = userEvent.setup();
+    render(<CompletionByTeamPanel teamStats={[team('Alpha Pod')]} />);
+
+    const search = screen.getByRole('textbox', { name: 'Search teams' });
+    expect(search).toHaveAttribute('aria-label', 'Search teams');
+
+    await user.type(search, 'alp');
+
+    // Still named once the placeholder has disappeared.
+    expect(search).toHaveValue('alp');
+    expect(screen.getByRole('textbox', { name: 'Search teams' })).toBe(search);
+  });
+});

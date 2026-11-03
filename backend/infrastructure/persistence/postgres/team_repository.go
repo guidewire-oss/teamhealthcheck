@@ -186,7 +186,7 @@ func (r *TeamRepository) FindBySupervisorID(ctx context.Context, supervisorID st
 // (GetSurveyCompletionOverviewHandler) resolves everything above that one
 // supervisor purely via users.reports_to.
 //
-// health_check_enabled is added by migration 000023_add_health_check_enabled
+// health_check_enabled is added by migration 000021_add_health_check_enabled
 // — the migration must be applied first. Other methods on this repository
 // (FindByID, FindAll, FindByLeadID, ...) also select it, so none of them
 // work against a database that lacks the column.

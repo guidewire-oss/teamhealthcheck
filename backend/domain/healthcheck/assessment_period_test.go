@@ -128,3 +128,42 @@ func TestSortAssessmentPeriodsDescending_RepeatedCallsAreStable(t *testing.T) {
 		}
 	}
 }
+
+// TestSortAssessmentPeriodsDescending_SameYearChronologicalDiffersFromLexical
+// pins the claimed regression: within ONE year, string order and
+// chronological order disagree. Lexically (descending) these sort
+// Sep, Q4, Mar, H2, Dec; chronologically they are Dec (Dec = month 11), Q4
+// (starts Oct), Sep, H2 (starts Jul), Mar. A string sort, or a sort that only
+// compared the year, fails this.
+func TestSortAssessmentPeriodsDescending_SameYearChronologicalDiffersFromLexical(t *testing.T) {
+	periods := []string{"2026 Mar", "2026 Q4", "2026 Dec", "2026 H2", "2026 Sep"}
+	SortAssessmentPeriodsDescending(periods)
+
+	want := []string{"2026 Dec", "2026 Q4", "2026 Sep", "2026 H2", "2026 Mar"}
+	for i := range want {
+		if periods[i] != want[i] {
+			t.Fatalf("index %d: got %q, want %q (full result: %v)", i, periods[i], want[i], periods)
+		}
+	}
+}
+
+func TestSortAssessmentPeriodsDescending_ChronologicalAcrossYearBoundary(t *testing.T) {
+	// "2025 Dec" is later than "2025 Q1" but earlier than "2026 Jan".
+	periods := []string{"2025 Q1", "2026 Jan", "2025 Dec"}
+	SortAssessmentPeriodsDescending(periods)
+
+	want := []string{"2026 Jan", "2025 Dec", "2025 Q1"}
+	for i := range want {
+		if periods[i] != want[i] {
+			t.Fatalf("index %d: got %q, want %q (full result: %v)", i, periods[i], want[i], periods)
+		}
+	}
+}
+
+func TestAssessmentPeriodSortKey_RejectsMalformedValues(t *testing.T) {
+	for _, bad := range []string{"", "2026 Q5", "2026 Q0", "2026 H3", "2026 Foo", "26 Jan", "2026-Jan", "Jan 2026"} {
+		if key, ok := AssessmentPeriodSortKey(bad); ok {
+			t.Errorf("AssessmentPeriodSortKey(%q) = %d, true; want not ok", bad, key)
+		}
+	}
+}

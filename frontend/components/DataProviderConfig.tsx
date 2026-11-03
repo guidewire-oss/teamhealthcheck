@@ -88,6 +88,10 @@ export default function DataProviderConfig() {
   // button rather than firing the request.
   const [confirmingOverride, setConfirmingOverride] = useState(false);
   const [dismissingHold, setDismissingHold] = useState(false);
+  // A failed dismissal is reported inside the hold panel, separate from
+  // `error` (the sync's own failure): the hold must stay visible and
+  // actionable, and `error` is hidden while a hold is showing.
+  const [dismissError, setDismissError] = useState<string | null>(null);
   const staleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The requestId of the sync this component instance is following -- either
   // one it started itself, or one it reattached to after a remount. Scoping
@@ -266,6 +270,7 @@ export default function DataProviderConfig() {
     setActiveRequestId(requestId);
     const stopHeartbeat = startSyncHeartbeat(requestId);
     setError(null);
+    setDismissError(null);
     setSyncResult(null);
     setHold(null);
     setConfirmingOverride(false);
@@ -300,12 +305,17 @@ export default function DataProviderConfig() {
    */
   const handleDismissHold = async () => {
     setDismissingHold(true);
+    setDismissError(null);
     try {
       await dismissMassDeletionHold();
       setHold(null);
+      // The "Synchronization held" error belonged to this hold; leaving it
+      // would resurface it as a generic failure the moment the hold panel
+      // (which suppresses it) disappears.
+      setError(null);
       setConfirmingOverride(false);
     } catch (err: any) {
-      setError(err?.message || "Failed to dismiss the hold");
+      setDismissError(err?.message || "Failed to dismiss the hold");
     } finally {
       setDismissingHold(false);
     }
@@ -438,6 +448,16 @@ export default function DataProviderConfig() {
               The deletion threshold is frozen at this sync&apos;s value until the hold is resolved,
               so raising it is not a way past this review.
             </p>
+
+            {dismissError && (
+              <p
+                data-testid="sync-hold-dismiss-error"
+                role="alert"
+                className="mt-3 text-sm font-medium text-red-900"
+              >
+                Couldn&apos;t dismiss the hold: {dismissError} The hold is still in place.
+              </p>
+            )}
 
             {!confirmingOverride ? (
               <div className="mt-3 flex items-center gap-2">

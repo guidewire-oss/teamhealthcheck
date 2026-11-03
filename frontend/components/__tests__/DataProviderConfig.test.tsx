@@ -725,6 +725,59 @@ describe('DataProviderConfig — mass-deletion hold and Sync Anyway override', (
   });
 });
 
+describe('DataProviderConfig — hold dismissal feedback', () => {
+  it('shows a dismissal failure in the hold panel and keeps the hold visible', async () => {
+    const user = userEvent.setup();
+    sync.mockRejectedValue(holdError());
+    dismissHold.mockRejectedValueOnce(new Error('A sync is running'));
+    await renderReady();
+    await user.click(screen.getByTestId('sync-now-btn'));
+    await screen.findByTestId('sync-mass-deletion-hold');
+
+    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
+
+    const failure = await screen.findByTestId('sync-hold-dismiss-error');
+    expect(failure).toHaveTextContent('A sync is running');
+    expect(failure).toHaveTextContent('still in place');
+    expect(screen.getByTestId('sync-mass-deletion-hold')).toBeInTheDocument();
+    // Dismissal feedback is its own message, not the sync's generic error box.
+    expect(screen.queryByTestId('provider-error')).not.toBeInTheDocument();
+    // And the admin can try again.
+    expect(screen.getByTestId('sync-hold-dismiss-btn')).toBeEnabled();
+  });
+
+  it('clears the old hold error after a successful dismissal instead of resurfacing it as a generic failure', async () => {
+    const user = userEvent.setup();
+    sync.mockRejectedValue(holdError());
+    await renderReady();
+    await user.click(screen.getByTestId('sync-now-btn'));
+    await screen.findByTestId('sync-mass-deletion-hold');
+
+    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
+
+    await waitFor(() => expect(screen.queryByTestId('sync-mass-deletion-hold')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('provider-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sync-hold-dismiss-error')).not.toBeInTheDocument();
+  });
+
+  it('retries after a failed dismissal and then clears both the failure and the hold', async () => {
+    const user = userEvent.setup();
+    sync.mockRejectedValue(holdError());
+    dismissHold.mockRejectedValueOnce(new Error('temporary failure'));
+    await renderReady();
+    await user.click(screen.getByTestId('sync-now-btn'));
+    await screen.findByTestId('sync-mass-deletion-hold');
+    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
+    await screen.findByTestId('sync-hold-dismiss-error');
+
+    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
+
+    await waitFor(() => expect(screen.queryByTestId('sync-mass-deletion-hold')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('sync-hold-dismiss-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('provider-error')).not.toBeInTheDocument();
+  });
+});
+
 describe('DataProviderConfig — sync lease (long-running sync, heartbeat, cross-tab)', () => {
   const click = async () => {
     await act(async () => {

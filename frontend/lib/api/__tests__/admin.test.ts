@@ -1,8 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { listAllUsers, listUsers, listUsersLite } from '../admin';
+import { AdminAPIError, listAllUsers, listUsers, listUsersLite } from '../admin';
+import { APIRequestError } from '../client';
 
-// Mock the API client module so API_BASE_URL is always '' and auth is bypassed.
-vi.mock('../client', () => ({
+// Mock the API client so API_BASE_URL is always '' and auth is bypassed. Keep
+// the rest of the module real (importOriginal) so everything admin.ts imports
+// or re-exports from it -- APIError, APIRequestError (re-exported as
+// AdminAPIError) -- exists, matching production's module surface.
+vi.mock('../client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../client')>()),
   API_BASE_URL: '',
   createApiClient: vi.fn(),
 }));
@@ -153,5 +158,12 @@ describe('listAllUsers', () => {
     await listUsers();
 
     expect(createApiClient).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('module surface', () => {
+  it('re-exports the real APIRequestError as AdminAPIError', () => {
+    expect(AdminAPIError).toBe(APIRequestError);
+    expect(new AdminAPIError('boom', 400)).toBeInstanceOf(Error);
   });
 });

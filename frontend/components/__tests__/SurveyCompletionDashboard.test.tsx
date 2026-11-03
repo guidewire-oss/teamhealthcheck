@@ -314,12 +314,30 @@ describe('TeamRow (Pods section) — pale red row background', () => {
     expect(row?.className).not.toMatch(/bg-red-50/);
   });
 
-  it('applies the pale red background even to an in_progress pod that rounds up to 100% and displays as Completed', () => {
-    // 199/200 rounds to Completed display -- the row background must
-    // follow that SAME effective display status, not the raw backend one.
-    const { container } = renderRow(team({ status: 'in_progress', completed: 200, total: 200 }));
-    const row = container.querySelector('tr');
-    expect(row?.className).not.toMatch(/bg-red-50/);
+  // The rounding edge: 199/200 is 99.5%, which rounds to 100%, while the
+  // backend status stays in_progress (completed < total). The row background
+  // follows the pod's EFFECTIVE display status (getPodDisplayStatus), the same
+  // one its Status column renders, so it reads Completed and gets no red. If
+  // the row used the raw backend status instead, in_progress would turn it red.
+  it('does not paint a pod red when 199/200 rounds up to 100% and the Status column shows Completed', () => {
+    const { container } = renderRow(team({ status: 'in_progress', completed: 199, total: 200 }));
+    expect(screen.getByTestId('survey-team-individual-completed')).toHaveTextContent('199 / 200');
+    expect(container.querySelector('tr')?.className).not.toMatch(/bg-red-50/);
+  });
+
+  it('still paints the pod red one response below the rounding edge (198/200 = 99%)', () => {
+    const { container } = renderRow(team({ status: 'in_progress', completed: 198, total: 200 }));
+    expect(container.querySelector('tr')?.className).toMatch(/bg-red-50/);
+  });
+
+  it('keeps an exactly-complete pod (200/200) unpainted', () => {
+    const { container } = renderRow(team({ status: 'complete', completed: 200, total: 200 }));
+    expect(container.querySelector('tr')?.className).not.toMatch(/bg-red-50/);
+  });
+
+  it('paints a not_started pod red', () => {
+    const { container } = renderRow(team({ status: 'not_started', completed: 0, total: 200, postWorkshopCompleted: false }));
+    expect(container.querySelector('tr')?.className).toMatch(/bg-red-50/);
   });
 });
 

@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"context"
 	"errors"
 	"io"
 	"math"
@@ -163,19 +164,19 @@ func (h *OrganizationProviderHandler) UpdateDeletionThreshold(c *gin.Context) {
 		return
 	}
 
-	// Re-checked after validation and immediately before the write: a sync that
-	// started while this request was being parsed must not have its threshold
-	// moved out from under it.
-	if state := h.lockState(); state.Locked() {
-		c.JSON(http.StatusConflict, dto.ErrorResponse{
-			Error:   "Deletion threshold is locked",
-			Message: thresholdLockMessage(state),
-			Code:    dto.CodeThresholdLocked,
-		})
-		return
-	}
-
-	if err := h.settingsRepo.UpdateOrgSyncMaxDeletePercent(c.Request.Context(), percent); err != nil {
+	// The lock check and the write happen together inside the sync service,
+	// under the same mutex that admits a sync, so a sync cannot start between
+	// them. (The earlier lockState() read above is only a cheap early refusal.)
+	if err := h.saveThreshold(c.Request.Context(), percent); err != nil {
+		var locked *services.ThresholdLockedError
+		if errors.As(err, &locked) {
+			c.JSON(http.StatusConflict, dto.ErrorResponse{
+				Error:   "Deletion threshold is locked",
+				Message: thresholdLockMessage(locked.State),
+				Code:    dto.CodeThresholdLocked,
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
 			Error:   "Failed to save deletion threshold",
 			Message: err.Error(),
@@ -201,8 +202,10 @@ func (h *OrganizationProviderHandler) DismissMassDeletionHold(c *gin.Context) {
 		return
 	}
 
-	// A hold cannot be dismissed out from under a running sync.
-	if h.syncService.LockState().Syncing {
+	// A hold cannot be dismissed out from under a running sync. The check and
+	// the clear are one operation inside the sync service, serialized with
+	// sync admission and hold creation.
+	if _, err := h.syncService.DismissHoldIfIdle(); err != nil {
 		c.JSON(http.StatusConflict, dto.ErrorResponse{
 			Error:   "A synchronization is already running",
 			Message: "Wait for the running synchronization to finish, then try again.",
@@ -210,8 +213,6 @@ func (h *OrganizationProviderHandler) DismissMassDeletionHold(c *gin.Context) {
 		})
 		return
 	}
-
-	h.syncService.DismissHold()
 
 	saved, err := h.settingsRepo.GetOrgSyncMaxDeletePercent(c.Request.Context())
 	if err != nil {
@@ -231,6 +232,16 @@ func (h *OrganizationProviderHandler) DismissMassDeletionHold(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, h.thresholdResponse(saved, value, source))
+}
+
+// saveThreshold persists the threshold through the sync service when there is
+// one, so the write is serialized with sync admission. With no sync service no
+// sync can ever run, so a plain repository write is safe.
+func (h *OrganizationProviderHandler) saveThreshold(ctx context.Context, percent float64) error {
+	if h.syncService == nil {
+		return h.settingsRepo.UpdateOrgSyncMaxDeletePercent(ctx, percent)
+	}
+	return h.syncService.UpdateMaxDeletePercent(ctx, percent, h.settingsRepo.UpdateOrgSyncMaxDeletePercent)
 }
 
 // thresholdLockMessage explains a refusal in the terms the admin is looking at.

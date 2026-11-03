@@ -99,7 +99,7 @@ type Repository interface {
 	FindAllWithDetails(ctx context.Context) ([]Team, error)
 	// FindSurveyCompletionTeams returns the admin survey-completion projection
 	// for every team. Requires the health_check_enabled column on teams,
-	// added by migration 000023_add_health_check_enabled. Other team
+	// added by migration 000021_add_health_check_enabled. Other team
 	// queries in the Postgres repository (FindByID, FindAll, ...) select
 	// that column too, so the migration must be applied before any of
 	// them will run.

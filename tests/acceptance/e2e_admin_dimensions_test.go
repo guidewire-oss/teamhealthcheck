@@ -91,11 +91,12 @@ var _ = Describe("E2E: Admin Dimension Management", func() {
 			// Restore the real "mission" dimension's description so other tests
 			// (and the survey page, which now reads live dimension text from the
 			// database) don't see this test's temporary edit after it completes.
-			db.Exec(`
+			_, err := db.Exec(`
 				UPDATE health_dimensions
 				SET description = 'We know exactly why we are here, and we are really excited about it'
 				WHERE id = 'mission'
 			`)
+			Expect(err).NotTo(HaveOccurred(), "restoring the mission dimension must not fail or later specs see this test's edit")
 		})
 
 		It("should allow editing dimension name and descriptions", func() {
@@ -186,7 +187,11 @@ var _ = Describe("E2E: Admin Dimension Management", func() {
 			// dimension that every other concurrently-running or later survey test
 			// sees, breaking any test that assumes exactly 11 dimensions (e.g.
 			// never reaching the "Submit Responses" button on the last page).
-			db.Exec("DELETE FROM health_dimensions WHERE name = 'E2E Test Dimension'")
+			// A failed delete (e.g. a foreign-key restriction) must fail the
+			// spec rather than silently leave the dimension behind. Zero rows
+			// deleted is fine: the spec may have failed before creating it.
+			_, err := db.Exec("DELETE FROM health_dimensions WHERE name = 'E2E Test Dimension'")
+			Expect(err).NotTo(HaveOccurred(), "cleaning up 'E2E Test Dimension' must not fail or it leaks into later specs")
 		})
 
 		It("should allow adding a new health dimension", func() {
