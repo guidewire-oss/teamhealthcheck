@@ -46,7 +46,11 @@ func (m *memStore) CreatePending(_ context.Context, p orgsyncrun.NewParams) (*or
 			return &c, false, orgsyncrun.ErrActiveRunExists
 		}
 	}
-	r := &orgsyncrun.Run{ID: p.ID, Status: orgsyncrun.StatusPending, Stage: orgsyncrun.StageQueued, CreatedAt: time.Now()}
+	trigger := p.Trigger
+	if trigger == "" {
+		trigger = orgsyncrun.TriggerManual
+	}
+	r := &orgsyncrun.Run{ID: p.ID, Status: orgsyncrun.StatusPending, Stage: orgsyncrun.StageQueued, CreatedAt: time.Now(), Trigger: trigger}
 	m.runs[p.ID] = r
 	m.order = append(m.order, p.ID)
 	if p.IdempotencyKey != "" {
@@ -101,6 +105,10 @@ func (m *memStore) move(id string, to orgsyncrun.Status, apply func(*orgsyncrun.
 	}
 	r.Status = to
 	apply(r)
+	if to.Terminal() {
+		now := time.Now()
+		r.CompletedAt = &now
+	}
 	return nil
 }
 

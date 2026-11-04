@@ -11,6 +11,7 @@ import (
 
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
 	"github.com/agopalakrishnan/teams360/backend/domain/orgsyncrun"
+	"github.com/agopalakrishnan/teams360/backend/domain/orgsyncschedule"
 	"github.com/agopalakrishnan/teams360/backend/pkg/logger"
 	"github.com/lib/pq"
 )
@@ -47,7 +48,7 @@ const runColumns = `id, status, stage, initiated_by, snapshot_type, source_gener
 	created_at, started_at, completed_at, heartbeat_at,
 	inserted_users, updated_users, inserted_teams, updated_teams, membership_changes,
 	unchanged_users, unchanged_teams, deactivated_records, retry_count, error_code, error_message, failed_stage, worker_id, hold_report,
-	health_checks_disabled, health_checks_enabled, mass_deletion_overridden`
+	health_checks_disabled, health_checks_enabled, mass_deletion_overridden, trigger_type`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -58,15 +59,17 @@ func scanRun(row rowScanner) (*orgsyncrun.Run, error) {
 		srcAt, started, completed, heartbeat   sql.NullTime
 		errCode, errMsg, failedStage, workerID sql.NullString
 		hold                                   []byte
+		trigger                                string
 	)
 	if err := row.Scan(&r.ID, &status, &stage, &r.InitiatedBy, &snapType, &srcAt,
 		&r.CreatedAt, &started, &completed, &heartbeat,
 		&r.InsertedUsers, &r.UpdatedUsers, &r.InsertedTeams, &r.UpdatedTeams, &r.MembershipChanges,
 		&r.UnchangedUsers, &r.UnchangedTeams, &r.DeactivatedRecords, &r.RetryCount, &errCode, &errMsg, &failedStage, &workerID, &hold,
-		&r.HealthChecksDisabled, &r.HealthChecksEnabled, &r.MassDeletionOverridden); err != nil {
+		&r.HealthChecksDisabled, &r.HealthChecksEnabled, &r.MassDeletionOverridden, &trigger); err != nil {
 		return nil, err
 	}
 	r.Status = orgsyncrun.Status(status)
+	r.Trigger = orgsyncrun.Trigger(trigger)
 	r.Stage = orgsyncrun.Stage(stage)
 	r.SnapshotType = orgprovider.SnapshotType(snapType)
 	r.SourceGeneratedAt = nullTime(srcAt)
@@ -115,10 +118,14 @@ func (r *OrgSyncRunRepository) CreatePending(ctx context.Context, p orgsyncrun.N
 	if p.IdempotencyKey != "" {
 		key = p.IdempotencyKey
 	}
+	trigger := p.Trigger
+	if trigger == "" {
+		trigger = orgsyncrun.TriggerManual
+	}
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO org_sync_runs (id, status, stage, initiated_by, idempotency_key, snapshot_type)
-		VALUES ($1, 'PENDING', $5, $2, $3, $4)
-	`, p.ID, p.InitiatedBy, key, string(p.SnapshotType), string(orgsyncrun.StageQueued))
+		INSERT INTO org_sync_runs (id, status, stage, initiated_by, idempotency_key, snapshot_type, trigger_type)
+		VALUES ($1, 'PENDING', $5, $2, $3, $4, $6)
+	`, p.ID, p.InitiatedBy, key, string(p.SnapshotType), string(orgsyncrun.StageQueued), string(trigger))
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
@@ -176,6 +183,27 @@ func (r *OrgSyncRunRepository) Get(ctx context.Context, id string) (*orgsyncrun.
 // Latest returns the most recently created run, or nil when there is none.
 func (r *OrgSyncRunRepository) Latest(ctx context.Context) (*orgsyncrun.Run, error) {
 	run, err := scanRun(r.db.QueryRowContext(ctx, `SELECT `+runColumns+` FROM org_sync_runs ORDER BY created_at DESC LIMIT 1`))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return run, err
+}
+
+// LatestByTrigger returns the newest run started by the given trigger, or nil.
+func (r *OrgSyncRunRepository) LatestByTrigger(ctx context.Context, t orgsyncrun.Trigger) (*orgsyncrun.Run, error) {
+	run, err := scanRun(r.db.QueryRowContext(ctx,
+		`SELECT `+runColumns+` FROM org_sync_runs WHERE trigger_type = $1 ORDER BY created_at DESC LIMIT 1`, string(t)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return run, err
+}
+
+// LatestSuccessByTrigger returns the newest SUCCESS run for the trigger, or nil.
+func (r *OrgSyncRunRepository) LatestSuccessByTrigger(ctx context.Context, t orgsyncrun.Trigger) (*orgsyncrun.Run, error) {
+	run, err := scanRun(r.db.QueryRowContext(ctx,
+		`SELECT `+runColumns+` FROM org_sync_runs WHERE trigger_type = $1 AND status = 'SUCCESS'
+		 ORDER BY completed_at DESC NULLS LAST, created_at DESC LIMIT 1`, string(t)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -283,4 +311,7 @@ func (r *OrgSyncRunRepository) expectOne(ctx context.Context, query string, args
 	return nil
 }
 
-var _ orgsyncrun.Store = (*OrgSyncRunRepository)(nil)
+var (
+	_ orgsyncrun.Store           = (*OrgSyncRunRepository)(nil)
+	_ orgsyncschedule.RunHistory = (*OrgSyncRunRepository)(nil)
+)

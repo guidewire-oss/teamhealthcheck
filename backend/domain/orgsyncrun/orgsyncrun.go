@@ -76,6 +76,15 @@ func ActiveStatuses() []string {
 	return active
 }
 
+// Trigger records what started a run, so automatic and manual attempts can be
+// reported separately.
+type Trigger string
+
+const (
+	TriggerManual    Trigger = "MANUAL"
+	TriggerScheduled Trigger = "SCHEDULED"
+)
+
 // Stage is the step a run is on, reported to the UI and recorded on failure.
 type Stage string
 
@@ -113,6 +122,7 @@ type Run struct {
 	Status            Status
 	Stage             Stage
 	InitiatedBy       string
+	Trigger           Trigger
 	SnapshotType      orgprovider.SnapshotType
 	SourceGeneratedAt *time.Time
 	CreatedAt         time.Time
@@ -181,6 +191,8 @@ type NewParams struct {
 	InitiatedBy    string
 	IdempotencyKey string
 	SnapshotType   orgprovider.SnapshotType
+	// Trigger defaults to TriggerManual when empty.
+	Trigger Trigger
 }
 
 // Store persists runs and provides the cross-instance lock.

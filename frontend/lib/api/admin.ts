@@ -991,3 +991,47 @@ export async function getLatestSyncRun(): Promise<SyncRun | null> {
   if (response.status === 204) return null;
   return handleResponse<SyncRun>(response);
 }
+
+/** How often an automatic organization sync runs. */
+export type AutoSyncFrequency = 'DAILY' | 'WEEKLY' | 'MONTHLY';
+
+/** One automatic run. `startedAt` is when the attempt was recorded (UTC). */
+export interface AutoSyncAttempt {
+  runId: string;
+  status: SyncRunStatus;
+  startedAt: string;
+  completedAt: string | null;
+  /** Safe to show an administrator; never contains credentials. */
+  errorMessage: string | null;
+}
+
+/** Saved automatic-sync schedule plus automatic-run history. All times are UTC. */
+export interface AutoSyncSchedule {
+  enabled: boolean;
+  frequency: AutoSyncFrequency;
+  /** e.g. "Weekly on Monday at 02:00 UTC" */
+  description: string;
+  timezone: string;
+  /** null when auto-sync is disabled. */
+  nextRunAt: string | null;
+  lastAttempt: AutoSyncAttempt | null;
+  /** Completion time of the last SUCCESSFUL automatic sync. */
+  lastSuccessAt: string | null;
+}
+
+export async function getAutoSyncSchedule(): Promise<AutoSyncSchedule> {
+  return createApiClient<AutoSyncSchedule>(
+    `${API_BASE_URL}/api/v1/admin/organization-provider/auto-sync`
+  );
+}
+
+/** Saves the schedule. This never starts a sync. */
+export async function updateAutoSyncSchedule(
+  enabled: boolean,
+  frequency: AutoSyncFrequency
+): Promise<AutoSyncSchedule> {
+  return createApiClient<AutoSyncSchedule>(
+    `${API_BASE_URL}/api/v1/admin/organization-provider/auto-sync`,
+    { method: 'PUT', body: JSON.stringify({ enabled, frequency }) }
+  );
+}

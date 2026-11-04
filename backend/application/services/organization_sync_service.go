@@ -178,6 +178,10 @@ type SyncOptions struct {
 	// ActorUserID identifies who asked, for the audit record written when an
 	// override is used.
 	ActorUserID string
+
+	// Trigger records what started the run (manual by default). It only labels
+	// the run for reporting; it never changes validation, guards or mapping.
+	Trigger orgsyncrun.Trigger
 }
 
 // heldSync is the in-process record of an unresolved mass-deletion hold. It is
@@ -924,6 +928,7 @@ func (s *OrganizationSyncService) StartRun(ctx context.Context, opts SyncOptions
 	}
 	run, created, err := s.runs.CreatePending(ctx, orgsyncrun.NewParams{
 		ID: id, InitiatedBy: actor, IdempotencyKey: idempotencyKey, SnapshotType: orgprovider.SnapshotComplete,
+		Trigger: opts.Trigger,
 	})
 	if err != nil {
 		return run, err

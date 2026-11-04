@@ -36,3 +36,31 @@ type SyncRunDTO struct {
 	// was already in flight rather than a new one.
 	AlreadyActive bool `json:"alreadyActive,omitempty"`
 }
+
+// AutoSyncAttemptDTO is one automatic run, as shown in Settings.
+type AutoSyncAttemptDTO struct {
+	RunID        string     `json:"runId"`
+	Status       string     `json:"status"` // PENDING | RUNNING | SUCCESS | FAILED
+	StartedAt    time.Time  `json:"startedAt"`
+	CompletedAt  *time.Time `json:"completedAt"`
+	ErrorMessage *string    `json:"errorMessage"`
+}
+
+// AutoSyncScheduleDTO is the saved automatic-sync schedule and its history.
+// All timestamps are UTC (RFC 3339); Timezone names the schedule's zone.
+type AutoSyncScheduleDTO struct {
+	Enabled       bool                `json:"enabled"`
+	Frequency     string              `json:"frequency"` // DAILY | WEEKLY | MONTHLY
+	Description   string              `json:"description"`
+	Timezone      string              `json:"timezone"`
+	NextRunAt     *time.Time          `json:"nextRunAt"`
+	LastAttempt   *AutoSyncAttemptDTO `json:"lastAttempt"`
+	LastSuccessAt *time.Time          `json:"lastSuccessAt"`
+}
+
+// UpdateAutoSyncScheduleRequest is the body of PUT .../auto-sync.
+// Frequency may be omitted when only disabling.
+type UpdateAutoSyncScheduleRequest struct {
+	Enabled   *bool  `json:"enabled" binding:"required"`
+	Frequency string `json:"frequency"`
+}

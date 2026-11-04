@@ -262,6 +262,16 @@ func main() {
 		services.WithRunStore(postgres.NewOrgSyncRunRepository(db)),
 		services.WithHoldStore(postgres.NewOrgSyncHoldRepository(db)))
 
+	// Automatic sync: the schedule lives in the database and every replica polls
+	// it; an occurrence is claimed by compare-and-swap so it fires once. Runs go
+	// through the same StartRun path as the manual endpoint.
+	orgSyncRunRepo := postgres.NewOrgSyncRunRepository(db)
+	orgSyncScheduler := services.NewOrganizationSyncScheduler(
+		postgres.NewOrgSyncScheduleRepository(db), orgSyncRunRepo, orgSyncService)
+	schedulerCtx, stopScheduler := context.WithCancel(context.Background())
+	defer stopScheduler()
+	go orgSyncScheduler.Start(schedulerCtx)
+
 	// Initialize router (use gin.New() instead of gin.Default() to disable default logger)
 	router := gin.New()
 	router.Use(gin.Recovery()) // Keep panic recovery
@@ -292,7 +302,7 @@ func main() {
 	v1.SetupUserRoutes(router, db, jwtService)          // User routes with JWT + same-user-or-manager
 	v1.SetupProtectedUserRoutes(router, db, jwtService) // Protected routes requiring JWT
 	v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, healthCheckRepo, jwtService, v1.WithReminderSender(reminderSender), v1.WithReminderTestPod(email.TestPod()))
-	v1.SetupOrganizationProviderRoutes(router, orgSyncService, orgRepo, jwtService)
+	v1.SetupOrganizationProviderRoutes(router, orgSyncService, orgRepo, jwtService, v1.WithAutoSyncScheduler(orgSyncScheduler))
 	v1.SetupPasswordResetRoutes(router, passwordResetService, userRepo)
 
 	// Swagger UI - dev/staging only, disabled by default (never expose in production)

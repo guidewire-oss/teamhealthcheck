@@ -49,6 +49,7 @@ import {
 import HierarchyConfig from "@/components/HierarchyConfig";
 import DimensionConfig from "@/components/DimensionConfig";
 import DataProviderConfig from "@/components/DataProviderConfig";
+import AutoSyncSettings from "@/components/AutoSyncSettings";
 import SupervisorChainModal from "@/components/SupervisorChainModal";
 import TeamMembersModal from "@/components/TeamMembersModal";
 import SurveyCompletionDashboard from "@/components/SurveyCompletionDashboard";
@@ -1882,6 +1883,7 @@ export default function AdminPage() {
               <div className="space-y-6">
                 <div className="border rounded-lg p-4" data-testid="data-provider-settings">
                   <DataProviderConfig />
+                  <AutoSyncSettings />
                 </div>
 
                 <div data-testid="dimensions-settings">
