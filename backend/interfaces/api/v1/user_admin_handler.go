@@ -42,7 +42,9 @@ func NewUserAdminHandler(userRepo user.Repository, teamRepo team.Repository) *Us
 // @Param pageSize query int false "Users per page (max 100)" default(25) maximum(100)
 // @Param search query string false "Case-insensitive substring match on username, full name or email"
 // @Param role query string false "Exact hierarchy level id, for example level-5"
+// @Param status query string false "Limit to active or inactive people; omit or use all for everyone" Enums(active, inactive, all)
 // @Success 200 {object} dto.UsersResponse
+// @Failure 400 {object} dto.ErrorResponse "Invalid status filter"
 // @Failure 500 {object} dto.ErrorResponse "Failed to query users"
 // @Security BearerAuth
 // @Router /admin/users [get]
@@ -50,9 +52,23 @@ func (h *UserAdminHandler) ListUsers(c *gin.Context) {
 	page := parsePositiveIntParam(c, "page", 1)
 	pageSize := min(parsePositiveIntParam(c, "pageSize", defaultUsersPageSize), maxUsersPageSize)
 
+	status := strings.ToLower(strings.TrimSpace(c.Query("status")))
+	switch status {
+	case "", "all":
+		status = "" // everyone, inactive people included
+	case user.StatusActive, user.StatusInactive:
+	default:
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Error:   "Invalid status filter",
+			Message: "status must be one of: active, inactive, all",
+		})
+		return
+	}
+
 	filter := user.ListFilter{
 		Search:         strings.TrimSpace(c.Query("search")),
 		HierarchyLevel: strings.TrimSpace(c.Query("role")),
+		Status:         status,
 	}
 
 	users, total, err := h.userRepo.FindPage(c.Request.Context(), filter, page, pageSize)
@@ -83,6 +99,8 @@ func (h *UserAdminHandler) ListUsers(c *gin.Context) {
 			AuthType:       string(usr.AuthType),
 			CreatedAt:      usr.CreatedAt,
 			UpdatedAt:      usr.UpdatedAt,
+			IsActive:       usr.IsActive,
+			DeactivatedAt:  usr.DeactivatedAt,
 		}
 	}
 
@@ -226,6 +244,7 @@ func (h *UserAdminHandler) CreateUser(c *gin.Context) {
 		AuthType:       string(usr.AuthType),
 		CreatedAt:      usr.CreatedAt,
 		UpdatedAt:      usr.UpdatedAt,
+		IsActive:       true, // a newly created person is always active
 	}
 
 	c.JSON(http.StatusCreated, responseDTO)
@@ -362,6 +381,8 @@ func (h *UserAdminHandler) UpdateUser(c *gin.Context) {
 		AuthType:       string(usr.AuthType),
 		CreatedAt:      usr.CreatedAt,
 		UpdatedAt:      usr.UpdatedAt,
+		IsActive:       usr.IsActive,
+		DeactivatedAt:  usr.DeactivatedAt,
 	}
 
 	c.JSON(http.StatusOK, responseDTO)
@@ -369,27 +390,40 @@ func (h *UserAdminHandler) UpdateUser(c *gin.Context) {
 
 // DeleteUser handles DELETE /api/v1/admin/users/:id
 //
-// @Summary Delete a user
-// @Description Permanently deletes the user identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// The route keeps its name for existing callers, but people are never
+// hard-deleted: this soft-deactivates the person. They stay in the system and
+// in every historical record, their memberships end, and they stop receiving
+// surveys. A later provider sync that reports them again reactivates them.
+//
+// @Summary Deactivate a user
+// @Description Soft-deactivates the user identified by the path ID. The person is never deleted: they stay listed and searchable as Inactive, their surveys, responses and action items are kept, and their team memberships end. Repeating the call for an already inactive user changes nothing. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
 // @Tags Admin Users
 // @Produce json
 // @Param id path string true "User ID"
 // @Success 200 {object} dto.MessageResponse
-// @Failure 500 {object} dto.ErrorResponse "Failed to delete user"
+// @Failure 404 {object} dto.ErrorResponse "User not found"
+// @Failure 500 {object} dto.ErrorResponse "Failed to deactivate user"
 // @Security BearerAuth
 // @Router /admin/users/{id} [delete]
 func (h *UserAdminHandler) DeleteUser(c *gin.Context) {
 	id := c.Param("id")
 
-	if err := h.userRepo.Delete(c.Request.Context(), id); err != nil {
+	if err := h.userRepo.Deactivate(c.Request.Context(), id); err != nil {
+		if strings.Contains(err.Error(), "user not found") {
+			c.JSON(http.StatusNotFound, dto.ErrorResponse{
+				Error:   "User not found",
+				Message: err.Error(),
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
-			Error:   "Failed to delete user",
+			Error:   "Failed to deactivate user",
 			Message: err.Error(),
 		})
 		return
 	}
 
-	dto.RespondMessage(c, http.StatusOK, "User deleted successfully")
+	dto.RespondMessage(c, http.StatusOK, "User deactivated successfully")
 }
 
 // generateUserIDFromUsername creates a URL-safe ID from a username

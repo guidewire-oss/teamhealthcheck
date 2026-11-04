@@ -1,10 +1,9 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { AlertCircle, CheckCircle2, Loader2, RefreshCw, ShieldAlert } from "lucide-react";
 import {
   getOrganizationProviderSettings,
-  syncOrganizationProvider,
   getMassDeletionHold,
   dismissMassDeletionHold,
   clearAdminCache,
@@ -12,24 +11,10 @@ import {
   DeletionMetric,
   MassDeletionReport,
   OrganizationProviderSettings,
-  OrganizationSyncResult,
 } from "@/lib/api/admin";
-import {
-  readSyncState,
-  acquireSyncLease,
-  clearSyncState,
-  isStale,
-  msUntilStale,
-  startSyncHeartbeat,
-  takeAbandoned,
-  onSyncLeaseExpired,
-  SYNC_HEARTBEAT_MS,
-  getActiveSyncPromise,
-  setActiveSyncPromise,
-  getActiveRequestId,
-  setActiveRequestId,
-  onSyncStateChange,
-} from "@/lib/admin-sync-state";
+import { useSyncRun } from "@/lib/useSyncRun";
+import { isActive } from "@/lib/sync-progress";
+import SyncProgressBar from "./SyncProgressBar";
 import MassDeletionThresholdSettings from "./MassDeletionThresholdSettings";
 
 /**
@@ -37,9 +22,12 @@ import MassDeletionThresholdSettings from "./MassDeletionThresholdSettings";
  *
  * The provider credential (DATA_PROVIDER_BASE_URL / DATA_PROVIDER_API_TOKEN)
  * is environment configuration on the backend -- there is deliberately no
- * token-entry UI here. Syncing can create, update, and hard-delete users,
- * teams, and memberships, so it is deliberately manual: an admin decides when
- * the organization changes shape.
+ * token-entry UI here. A sync upserts users, teams and memberships and marks
+ * anyone no longer reported as inactive; it never deletes people. It is
+ * deliberately manual: an admin decides when the organization changes shape.
+ *
+ * The sync runs in the background on the server and its status is persisted, so
+ * this component only starts it and follows the stored run.
  */
 /** Renders a percentage the way the backend calculated it, e.g. "25.0%". */
 function formatPercent(value: number): string {
@@ -52,7 +40,7 @@ function formatPercent(value: number): string {
  * deletion: those rows go because the database removes them with their owner.
  */
 function metricSentence(metric: DeletionMetric): string {
-  const label = metric.kind === "cascaded" ? "cascaded" : "deleted";
+  const label = metric.kind === "cascaded" ? "cascaded" : "deactivated";
   return `${metric.deleting} ${label} / ${metric.existing} existing = ${formatPercent(metric.percent)}`;
 }
 
@@ -69,217 +57,39 @@ function incomingSentence(metric: DeletionMetric): string {
 export default function DataProviderConfig() {
   const [settings, setSettings] = useState<OrganizationProviderSettings | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-// Distinguish an unfetched/failed settings request from an unconfigured provider
+  // Distinguish an unfetched/failed settings request from an unconfigured provider
   const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
 
-  // Initialized synchronously from localStorage so a remount (tab switch,
-  // navigation, or page reload) never paints an enabled button before the
-  // persisted in-progress state has a chance to disable it.
-  const [syncing, setSyncing] = useState(() => {
-    const persisted = readSyncState();
-    return !!persisted && persisted.status === "in_progress" && !isStale(persisted);
-  });
-  const [syncResult, setSyncResult] = useState<OrganizationSyncResult | null>(null);
-  // The counts behind a backend hold. Present only while a hold is unresolved:
-  // it is what the admin reviews before deciding whether to override, and it is
-  // cleared the moment another sync starts so a stale hold can never authorize
-  // a later run.
-  const [hold, setHold] = useState<MassDeletionReport | null>(null);
+  const { run, loading: runLoading, starting, startError, pollError, start } = useSyncRun();
+
   // Two-step confirmation for the override, matching the destructive-action
   // pattern used elsewhere in admin: clicking Sync Anyway reveals a confirm
   // button rather than firing the request.
   const [confirmingOverride, setConfirmingOverride] = useState(false);
   const [dismissingHold, setDismissingHold] = useState(false);
-  // A failed dismissal is reported inside the hold panel, separate from
-  // `error` (the sync's own failure): the hold must stay visible and
-  // actionable, and `error` is hidden while a hold is showing.
   const [dismissError, setDismissError] = useState<string | null>(null);
-  const staleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // The requestId of the sync this component instance is following -- either
-  // one it started itself, or one it reattached to after a remount. Scoping
-  // clearSyncState to it means this tab only ever erases the record it is
-  // actually settling, never a newer one a different tab has since written.
-  const requestIdRef = useRef<string | null>(null);
-  // True for the lifetime of this component instance. If the sync this
-  // instance started resolves after it has unmounted (navigated away and
-  // back before the request finished), settleSync must not clear the shared
-  // promise/requestId/persisted record -- doing so would erase the only way
-  // a later remount could reattach to the now-resolved promise and show its
-  // result. Left untouched, the remount's own liveSync.then() fires against
-  // the already-settled promise and calls settleSync again, this time from
-  // a mounted instance that actually clears state and renders the outcome.
-  const mountedRef = useRef(true);
+  // The run whose hold the admin dismissed, so the banner stays hidden for
+  // exactly that run after a poll or refresh re-reads it.
+  const [dismissedRunId, setDismissedRunId] = useState<string | null>(null);
 
-  // Shared by the original click and by a remount that reattached to the
-  // still-running request, so both paths clear state and update the UI
-  // identically regardless of which component instance observes completion.
-  type SyncOutcome = { ok: true; result: OrganizationSyncResult } | { ok: false; error: any };
-
-  // What the screen shows once a sync's outcome is known.
-  const applyOutcome = (outcome: SyncOutcome) => {
-    if (outcome.ok) {
-      setSyncResult(outcome.result);
-      // The admin client caches users and teams for two minutes. Without this
-      // the screen would keep showing pre-sync counts.
-      clearAdminCache();
-    } else {
-      // A hold is not a failure to retry blindly -- it is a decision the admin
-      // has to make, so it gets its own state and its own banner.
-      const heldReport = getMassDeletionHold(outcome.error);
-      if (heldReport) {
-        setHold(heldReport);
-        setConfirmingOverride(false);
-      }
-      setError(outcome.error?.message || "Synchronization failed");
-    }
-  };
-
-  // `requestId` is the request that settled, passed explicitly rather than read
-  // from requestIdRef: by the time a long-hung request finally settles, the ref
-  // may name a newer request this call must not touch.
-  const settleSync = async (outcome: SyncOutcome, requestId: string | null) => {
-    // Consumed first so the mark never outlives its one late settlement, even
-    // if this instance has unmounted.
-    const abandoned = takeAbandoned(requestId);
-    if (!mountedRef.current) return;
-
-    if (abandoned) {
-      // This tab already gave up on the request when its lease hit the maximum
-      // duration (see the expiry listener), and the module released its lease
-      // and handles then. There is nothing left to release -- and clearing or
-      // resetting anything here could stomp a newer request -- so only show the
-      // late outcome, and only if no newer request now owns the screen.
-      if (requestIdRef.current === null) applyOutcome(outcome);
-      return;
-    }
-
-    if (staleTimerRef.current) clearTimeout(staleTimerRef.current);
-
-    // Release the lease BEFORE dropping the module-level handle on the
-    // request. Dropping it first leaves a window where a remount finds no
-    // live promise but a still-fresh persisted record, and -- since a tab
-    // gets no `storage` event for its own clear -- would sit in "syncing"
-    // until the stale timer fired. While the clear is pending the handle
-    // still points at the (already settled) promise, so a remount reattaches
-    // to it and settles immediately instead. The clear is serialized behind
-    // any in-flight heartbeat by the sync lock and is a no-op if a newer
-    // request owns the slot; it never rejects.
-    if (requestId) {
-      await clearSyncState(requestId);
-    }
-    // Unmounted while the clear was in flight: leave the handle in place so a
-    // remount can still reattach to this settled promise and show the outcome.
-    if (!mountedRef.current) return;
-
-    setActiveSyncPromise(null);
-    setActiveRequestId(null);
-    setSyncing(false);
-    applyOutcome(outcome);
-  };
-
-  // Watches a sync that is running somewhere this tab cannot observe (another
-  // tab, or a request a reload orphaned). Each check re-reads the lease: a
-  // fresh heartbeat reschedules the check for when it would next go stale,
-  // while a record that has stopped being refreshed is cleared (scoped to
-  // that exact requestId, so a newer sync that took the slot is untouched).
-  const followPersistedSync = () => {
-    if (staleTimerRef.current) clearTimeout(staleTimerRef.current);
-    const check = () => {
-      const persisted = readSyncState();
-      if (!persisted || persisted.status !== "in_progress") {
-        setSyncing(false);
-        return;
-      }
-      if (isStale(persisted)) {
-        void clearSyncState(persisted.requestId).then(() => {
-          if (!mountedRef.current) return;
-          const fresh = readSyncState();
-          setSyncing(!!fresh && fresh.status === "in_progress" && !isStale(fresh));
-        });
-        return;
-      }
-      setSyncing(true);
-      // Re-check at the stale boundary, but never wait longer than one
-      // heartbeat: this tab gets no `storage` event for a clear it (or a
-      // just-settled sibling instance) made itself, so a bounded poll is what
-      // guarantees a released lease is noticed within seconds rather than a
-      // full stale timeout. +1ms lands just past the boundary.
-      staleTimerRef.current = setTimeout(check, Math.min(msUntilStale(persisted) + 1, SYNC_HEARTBEAT_MS));
-    };
-    check();
-  };
-  // Blocks a second click from starting a second acquire while the first is
-  // still waiting on the lock.
-  const startingRef = useRef(false);
+  const syncing = starting || isActive(run);
+  // A sync must not be started until the latest persisted run is known: until
+  // then an already-active run is invisible, so a click could start a duplicate.
+  // This only blocks starting; it is not "syncing", so the label stays "Sync Now".
+  const startBlocked = syncing || runLoading;
+  const rawHold = getMassDeletionHold(run);
+  const hold = rawHold && run && run.runId !== dismissedRunId ? rawHold : null;
 
   useEffect(() => {
-    mountedRef.current = true;
     loadSettings();
-
-    // A different tab writing or clearing the shared record never fires
-    // `storage` in the tab that made the change, which is exactly the signal
-    // this tab needs: if it mounted before that tab started syncing, this is
-    // how it finds out in real time and disables its own button, instead of
-    // only learning on its next remount or after the stale timeout -- during
-    // which an admin here could otherwise click Sync Now and clobber the
-    // other tab's in-progress record.
-    const unsubscribeState = onSyncStateChange((state) => {
-      setSyncing(!!state && state.status === "in_progress" && !isStale(state));
-    });
-
-    // A request this tab started can hang without ever settling. Its lease is
-    // bounded (SYNC_MAX_LEASE_MS); when that runs out the module has already
-    // released the lease and the request handles, so this tab must stop
-    // presenting it as running -- otherwise Sync Now stays disabled here
-    // forever while every other tab is free to start one. The request itself
-    // may still be running server-side; the server refuses a second concurrent
-    // sync, so retrying is safe.
-    const unsubscribeExpiry = onSyncLeaseExpired((expiredRequestId) => {
-      if (requestIdRef.current !== expiredRequestId) return;
-      requestIdRef.current = null;
-      setSyncing(false);
-      setError(
-        "The synchronization stopped responding and was released. It may still be running on the server; you can start another, and the server will refuse it if one is still in progress."
-      );
-    });
-
-    const liveSync = getActiveSyncPromise();
-    if (liveSync) {
-      // SPA navigation/tab switch: the JS module graph survived, so the
-      // original request is still genuinely running. Reattach to it instead
-      // of guessing from a snapshot -- this is authoritative, not a timeout.
-      const attachedRequestId = getActiveRequestId();
-      requestIdRef.current = attachedRequestId;
-      setSyncing(true);
-      liveSync.then(
-        (result) => {
-          void settleSync({ ok: true, result: result as OrganizationSyncResult }, attachedRequestId);
-        },
-        (err) => {
-          void settleSync({ ok: false, error: err }, attachedRequestId);
-        }
-      );
-    } else {
-      // No live promise in this session -- either nothing is running, or a
-      // hard reload destroyed the module graph along with the real request
-      // (which the backend also aborts server-side; see admin-sync-state.ts).
-      // Fall back to the persisted lease, which the owning tab keeps fresh
-      // with a heartbeat while it is alive, so a record that stops being
-      // refreshed for SYNC_STALE_TIMEOUT_MS is genuinely abandoned.
-      const persisted = readSyncState();
-      if (persisted && persisted.status === "in_progress") {
-        followPersistedSync();
-      }
-    }
-
-    return () => {
-      mountedRef.current = false;
-      unsubscribeState();
-      unsubscribeExpiry();
-      if (staleTimerRef.current) clearTimeout(staleTimerRef.current);
-    };
   }, []);
+
+  // The admin client caches users and teams for two minutes. Without this the
+  // screen would keep showing pre-sync counts once a run succeeds.
+  const succeededRunId = run?.status === "SUCCESS" ? run.runId : null;
+  useEffect(() => {
+    if (succeededRunId) clearAdminCache();
+  }, [succeededRunId]);
 
   const loadSettings = async () => {
     setLoading(true);
@@ -294,46 +104,19 @@ export default function DataProviderConfig() {
   };
 
   /**
-   * Runs a sync. `overrideMassDeletion` is only ever true on the explicit,
+   * Starts a sync. `overrideMassDeletion` is only ever true on the explicit,
    * confirmed Sync Anyway path -- a hold is never retried automatically, and
    * the plain Sync Now button always sends a normal request.
    *
-   * `confirmedReport` is the exact hold this override is confirming (always
-   * the currently displayed `hold`, passed by the caller). Every sync
-   * re-fetches the provider snapshot fresh, so the backend needs these
-   * numbers to verify nothing changed between the hold and this confirmation
-   * -- a bare override flag would otherwise waive the guard for whatever the
-   * fresh fetch turns up, not what was actually reviewed.
+   * `confirmedReport` is the exact hold this override is confirming. Every sync
+   * re-fetches the provider snapshot fresh, so the backend needs these numbers
+   * to verify nothing changed between the hold and this confirmation.
    */
   const handleSync = async (overrideMassDeletion = false, confirmedReport?: MassDeletionReport) => {
-    // Guard as well as disable: a double-submit must not reach the backend,
-    // which would answer the second call with a 409.
-    if (syncing || startingRef.current) return;
-    startingRef.current = true;
-    setSyncing(true);
-
-    // Claimed before the request starts so a reload/navigation immediately
-    // after the click still finds an in-progress record to restore. Refused
-    // when another tab already holds a live lease: that tab's sync is the one
-    // running, so this click must not start a duplicate.
-    let requestId: string | null;
-    try {
-      requestId = await acquireSyncLease();
-    } finally {
-      startingRef.current = false;
-    }
-    if (!requestId) {
-      if (mountedRef.current) followPersistedSync();
-      return;
-    }
-    requestIdRef.current = requestId;
-    setActiveRequestId(requestId);
-    const stopHeartbeat = startSyncHeartbeat(requestId);
-    setError(null);
-    setDismissError(null);
-    setSyncResult(null);
-    setHold(null);
+    // Guard as well as disable: a double-submit must not reach the backend.
+    if (startBlocked) return;
     setConfirmingOverride(false);
+    setDismissError(null);
 
     const confirmedMassDeletion: ConfirmedMassDeletion | undefined = confirmedReport
       ? {
@@ -344,35 +127,21 @@ export default function DataProviderConfig() {
         }
       : undefined;
 
-    const promise = syncOrganizationProvider({ overrideMassDeletion, confirmedMassDeletion });
-    setActiveSyncPromise(promise);
-    // The heartbeat is tied to the request, not this component: it must keep
-    // the lease alive across an SPA unmount/remount while the request is
-    // still running, and stop the moment it settles either way.
-    promise.then(stopHeartbeat, stopHeartbeat);
-    try {
-      const result = await promise;
-      void settleSync({ ok: true, result }, requestId);
-    } catch (err: any) {
-      void settleSync({ ok: false, error: err }, requestId);
-    }
+    await start({ overrideMassDeletion, confirmedMassDeletion });
   };
 
   /**
    * Resolves a hold the admin has decided not to override -- because the
    * provider's data is what needs fixing. It applies nothing; it only clears
-   * the review, which is also what unfreezes the deletion threshold.
+   * the review, which is also what unfreezes the deactivation threshold.
    */
   const handleDismissHold = async () => {
+    if (!run) return;
     setDismissingHold(true);
     setDismissError(null);
     try {
       await dismissMassDeletionHold();
-      setHold(null);
-      // The "Synchronization held" error belonged to this hold; leaving it
-      // would resurface it as a generic failure the moment the hold panel
-      // (which suppresses it) disappears.
-      setError(null);
+      setDismissedRunId(run.runId);
       setConfirmingOverride(false);
     } catch (err: any) {
       setDismissError(err?.message || "Failed to dismiss the hold");
@@ -403,7 +172,7 @@ export default function DataProviderConfig() {
         <button
           data-testid="sync-now-btn"
           onClick={() => handleSync()}
-          disabled={syncing || !readyToSync || !!settingsLoadError}
+          disabled={startBlocked || !readyToSync || !!settingsLoadError}
           aria-label="Sync organization data from provider"
           aria-busy={syncing}
           className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -417,9 +186,16 @@ export default function DataProviderConfig() {
         </button>
       </div>
 
-      <p className="text-sm text-gray-500 mb-4">
-        Pulls people, teams and team membership from Data Provider and applies them to Team360. The Data Provider is
-        authoritative: a user or team no longer reported by Data Provider is removed from Team360.
+      <SyncProgressBar run={run} errorMessage={run?.status === "FAILED" && !hold ? run.errorMessage : null} />
+
+      <p className="text-sm text-gray-500 my-4">
+        Pulls people, teams and team membership from Data Provider and applies them to Team360. Existing records are
+        updated and new ones added. Anyone no longer reported by a complete Data Provider snapshot is marked inactive,
+        never deleted, so past surveys and history are kept.
+      </p>
+
+      <p className="sr-only" role="status" aria-live="polite" data-testid="sync-last-status">
+        {runLoading ? "Loading last synchronization status" : ""}
       </p>
 
       {settingsLoadError && (
@@ -494,8 +270,7 @@ export default function DataProviderConfig() {
             </ul>
             <p className="text-xs text-red-700 mt-2" data-testid="sync-hold-threshold">
               &quot;Existing&quot; counts only the users/teams the provider is allowed to manage &mdash; it
-              excludes the permanent admin and the fixed demo/E2E accounts and teams, which can
-              never be deleted by a sync. Configured threshold: {formatPercent(hold.threshold)}.
+              excludes the permanent admin and the fixed demo/E2E accounts and teams, which a sync never changes. Configured threshold: {formatPercent(hold.threshold)}.
             </p>
             <p className="text-xs text-red-700 mt-2" data-testid="sync-hold-incoming-hint">
               A low incoming count means the provider&apos;s snapshot is missing those records.
@@ -505,19 +280,9 @@ export default function DataProviderConfig() {
             </p>
 
             <p className="text-xs text-red-700 mt-1" data-testid="sync-hold-threshold-locked">
-              The deletion threshold is frozen at this sync&apos;s value until the hold is resolved,
+              The deactivation threshold is frozen at this sync&apos;s value until the hold is resolved,
               so raising it is not a way past this review.
             </p>
-
-            {dismissError && (
-              <p
-                data-testid="sync-hold-dismiss-error"
-                role="alert"
-                className="mt-3 text-sm font-medium text-red-900"
-              >
-                Couldn&apos;t dismiss the hold: {dismissError} The hold is still in place.
-              </p>
-            )}
 
             {!confirmingOverride ? (
               <div className="mt-3 flex items-center gap-2">
@@ -541,8 +306,8 @@ export default function DataProviderConfig() {
             ) : (
               <div data-testid="sync-anyway-confirm" className="mt-3">
                 <p className="text-sm font-medium text-red-900">
-                  Apply this sync and permanently delete {hold.users.deleting} user(s) and{" "}
-                  {hold.teams.deleting} team(s)? This cannot be undone.
+                  Apply this sync and mark {hold.users.deleting} user(s) and{" "}
+                  {hold.teams.deleting} team(s) inactive? Their history is kept, and they are reactivated if the provider reports them again.
                 </p>
                 <div className="flex gap-2 mt-2">
                   <button
@@ -567,7 +332,7 @@ export default function DataProviderConfig() {
         </div>
       )}
 
-      {error && !hold && (
+      {(startError || dismissError) && (
         <div
           data-testid="provider-error"
           className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3"
@@ -575,12 +340,18 @@ export default function DataProviderConfig() {
           <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 flex-shrink-0" />
           <div>
             <p className="font-medium text-red-900">Error</p>
-            <p className="text-sm text-red-700">{error}</p>
+            <p className="text-sm text-red-700">{startError || dismissError}</p>
           </div>
         </div>
       )}
 
-      {syncResult && (
+      {pollError && syncing && (
+        <p data-testid="sync-poll-error" role="status" className="mb-4 text-sm text-amber-700">
+          Lost contact with the server while checking progress. Retrying&hellip; ({pollError})
+        </p>
+      )}
+
+      {run?.status === "SUCCESS" && (
         <div
           data-testid="sync-result"
           className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg flex items-start gap-3"
@@ -588,49 +359,38 @@ export default function DataProviderConfig() {
           <CheckCircle2 className="w-5 h-5 text-green-600 mt-0.5 flex-shrink-0" />
           <div>
             <p className="font-medium text-green-900">Sync complete</p>
-            {syncResult.massDeletionOverridden && (
-              <p className="text-sm text-amber-700" data-testid="sync-override-applied">
-                Applied with an administrator override of the mass-deletion hold.
+            {run.completedAt && (
+              <p className="text-sm text-green-700" data-testid="sync-completed-at">
+                Completed {new Date(run.completedAt).toLocaleString()}
               </p>
             )}
-            <p className="text-sm text-green-700">
-              {syncResult.usersSynced} users, {syncResult.teamsSynced} teams and{" "}
-              {syncResult.membershipsSynced} team memberships synchronized.
+            <p className="text-sm text-green-700" data-testid="sync-counts">
+              Users: {run.insertedUsers} added, {run.updatedUsers} updated, {run.unchangedUsers} unchanged; Teams:{" "}
+              {run.insertedTeams} added, {run.updatedTeams} updated, {run.unchangedTeams} unchanged; Membership
+              changes: {run.membershipChanges}.
             </p>
-            {(syncResult.usersDeleted > 0 || syncResult.teamsDeleted > 0) && (
-              <p className="text-sm text-green-700 mt-1" data-testid="sync-deleted">
-                {syncResult.usersDeleted} user(s) and {syncResult.teamsDeleted} team(s) removed
-                (no longer reported by the provider).
+            {run.deactivatedRecords > 0 && (
+              <p className="text-sm text-green-700 mt-1" data-testid="sync-deactivated">
+                {run.deactivatedRecords} user(s) or team(s) marked inactive (no longer reported by the provider).
+                Their history is kept.
               </p>
             )}
-            {syncResult.membershipsRemoved > 0 && (
-              <p className="text-sm text-green-700 mt-1">
-                {syncResult.membershipsRemoved} stale team membership(s) removed.
+            {run.healthChecksDisabled > 0 && (
+              <p className="text-sm text-amber-700 mt-1" data-testid="sync-health-checks-disabled">
+                Health checks were switched off for {run.healthChecksDisabled} team(s). They are excluded from
+                survey-completion figures until the provider enables them again.
               </p>
             )}
-            {syncResult.actionItemsDeleted > 0 && (
-              <p className="text-sm text-amber-700 mt-1" data-testid="sync-action-items-deleted">
-                {syncResult.actionItemsDeleted} action item(s) removed along with their deleted
-                user or team.
+            {run.healthChecksEnabled > 0 && (
+              <p className="text-sm text-green-700 mt-1" data-testid="sync-health-checks-enabled">
+                Health checks were switched on for {run.healthChecksEnabled} team(s).
               </p>
             )}
-          </div>
-        </div>
-      )}
-
-      {syncResult && syncResult.healthChecksDisabled > 0 && (
-        <div
-          data-testid="sync-health-check-warning"
-          className="mb-4 flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg"
-        >
-          <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
-          <div>
-            <p className="text-sm font-medium text-amber-800">
-              Health checks switched off for {syncResult.healthChecksDisabled} team(s)
-            </p>
-            <p className="text-sm text-amber-700 mt-1">
-              The provider reported these teams as not participating in health checks.
-            </p>
+            {run.massDeletionOverridden && (
+              <p className="text-sm text-amber-700 mt-1" data-testid="sync-override-applied">
+                Applied with the mass-deletion hold overridden.
+              </p>
+            )}
           </div>
         </div>
       )}

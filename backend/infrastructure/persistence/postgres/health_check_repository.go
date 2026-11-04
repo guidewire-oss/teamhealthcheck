@@ -487,7 +487,7 @@ func (r *HealthCheckRepository) GetTeamSubmissionStatus(ctx context.Context, tea
 		FROM team_members tm
 		LEFT JOIN health_check_sessions hcs ON tm.user_id = hcs.user_id AND tm.team_id = hcs.team_id
 			AND hcs.assessment_period = $2 AND hcs.survey_type = 'individual'
-		WHERE tm.team_id = $1
+		WHERE tm.team_id = $1 AND tm.is_active
 	`
 
 	var totalMembers, submittedMembers int

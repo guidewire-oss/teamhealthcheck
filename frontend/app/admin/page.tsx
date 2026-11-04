@@ -1,5 +1,6 @@
 "use client";
 
+import StatusBadge from "@/components/StatusBadge";
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { getCurrentUser, logout } from "@/lib/auth";
@@ -48,6 +49,7 @@ import {
 import HierarchyConfig from "@/components/HierarchyConfig";
 import DimensionConfig from "@/components/DimensionConfig";
 import DataProviderConfig from "@/components/DataProviderConfig";
+import AutoSyncSettings from "@/components/AutoSyncSettings";
 import SupervisorChainModal from "@/components/SupervisorChainModal";
 import TeamMembersModal from "@/components/TeamMembersModal";
 import SurveyCompletionDashboard from "@/components/SurveyCompletionDashboard";
@@ -81,6 +83,8 @@ export default function AdminPage() {
   const [availableTeamLeads, setAvailableTeamLeads] = useState<UserLite[]>([]);
   const [teamLeadsLoading, setTeamLeadsLoading] = useState(false);
   const [teamSearchQuery, setTeamSearchQuery] = useState("");
+  // "" = every team: inactive teams stay visible and searchable for history.
+  const [teamStatusFilter, setTeamStatusFilter] = useState<"" | "active" | "inactive">("");
 
   const [showNewUserForm, setShowNewUserForm] = useState(false);
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
@@ -108,6 +112,8 @@ export default function AdminPage() {
   const [userSearchQuery, setUserSearchQuery] = useState("");
   const [debouncedUserSearchQuery, setDebouncedUserSearchQuery] = useState("");
   const [userRoleFilter, setUserRoleFilter] = useState("");
+  // "" = everyone: inactive people stay visible and searchable for history.
+  const [userStatusFilter, setUserStatusFilter] = useState<"" | "active" | "inactive">("");
   const [currentUsersPage, setCurrentUsersPage] = useState(1);
   const [usersPagination, setUsersPagination] = useState<PaginationMeta | null>(null);
   const [usersPageLoading, setUsersPageLoading] = useState(false);
@@ -118,7 +124,7 @@ export default function AdminPage() {
   const usersAbortControllerRef = useRef<AbortController | null>(null);
   const usersInFlightKeyRef = useRef<string | null>(null);
   const usersPageCacheRef = useRef<Map<string, UsersListResponse>>(new Map());
-  const prevUsersFiltersRef = useRef({ search: "", role: "" });
+  const prevUsersFiltersRef = useRef({ search: "", role: "", status: "" });
 
   // Settings tab state
   const [settingsLoading, setSettingsLoading] = useState(false);
@@ -191,12 +197,14 @@ export default function AdminPage() {
 
     const filtersChanged =
       prevUsersFiltersRef.current.search !== debouncedUserSearchQuery ||
-      prevUsersFiltersRef.current.role !== userRoleFilter;
+      prevUsersFiltersRef.current.role !== userRoleFilter ||
+      prevUsersFiltersRef.current.status !== userStatusFilter;
 
     if (filtersChanged) {
       prevUsersFiltersRef.current = {
         search: debouncedUserSearchQuery,
         role: userRoleFilter,
+        status: userStatusFilter,
       };
       if (currentUsersPage !== 1) {
         setCurrentUsersPage(1);
@@ -204,9 +212,9 @@ export default function AdminPage() {
       }
     }
 
-    loadUsersPage(currentUsersPage, debouncedUserSearchQuery, userRoleFilter);
+    loadUsersPage(currentUsersPage, debouncedUserSearchQuery, userRoleFilter, userStatusFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, currentUsersPage, debouncedUserSearchQuery, userRoleFilter]);
+  }, [activeTab, currentUsersPage, debouncedUserSearchQuery, userRoleFilter, userStatusFilter]);
 
   // Fetch settings when activeTab changes to 'settings'
   useEffect(() => {
@@ -296,8 +304,8 @@ export default function AdminPage() {
   // Guards against duplicate requests for the same page/filter combination,
   // caches previously loaded pages for this session, and ignores stale
   // responses from a request that's been superseded by a newer one.
-  const loadUsersPage = async (page: number, search: string, role: string) => {
-    const cacheKey = `${page}|${USERS_PAGE_SIZE}|${search}|${role}`;
+  const loadUsersPage = async (page: number, search: string, role: string, status: "" | "active" | "inactive" = "") => {
+    const cacheKey = `${page}|${USERS_PAGE_SIZE}|${search}|${role}|${status}`;
 
     if (usersInFlightKeyRef.current === cacheKey) {
       return; // Already loading this exact page/filter combination
@@ -337,6 +345,7 @@ export default function AdminPage() {
         pageSize: USERS_PAGE_SIZE,
         search: search || undefined,
         role: role || undefined,
+        status: status || undefined,
         signal: controller.signal,
       });
 
@@ -386,7 +395,7 @@ export default function AdminPage() {
     usersPageCacheRef.current.clear();
     await Promise.all([
       loadUsersTabMeta(),
-      loadUsersPage(currentUsersPage, debouncedUserSearchQuery, userRoleFilter),
+      loadUsersPage(currentUsersPage, debouncedUserSearchQuery, userRoleFilter, userStatusFilter),
     ]);
   };
 
@@ -526,10 +535,20 @@ export default function AdminPage() {
     }
   };
 
+  // Search and the status filter combine. A team without the flag (an older
+  // API) counts as active, so nothing is hidden by mistake.
+  const filteredTeams = teams.filter((team) => {
+    if (teamStatusFilter === "active" && team.isActive === false) return false;
+    if (teamStatusFilter === "inactive" && team.isActive !== false) return false;
+    if (!teamSearchQuery) return true;
+    const q = teamSearchQuery.toLowerCase();
+    return team.name.toLowerCase().includes(q) || (team.teamLeadName || "").toLowerCase().includes(q);
+  });
+
   const handleDeleteTeam = async (teamId: string) => {
     if (
       !confirm(
-        "Are you sure you want to delete this team? This action cannot be undone.",
+        "Are you sure you want to deactivate this team? It will stay in the system and remain visible as Inactive, its past surveys and history are kept, and it will stop receiving new surveys.",
       )
     ) {
       return;
@@ -543,8 +562,8 @@ export default function AdminPage() {
       clearAdminCache();
       await fetchAdminTeams();
     } catch (err: any) {
-      console.error("Failed to delete team:", err);
-      alert(err.message || "Failed to delete team");
+      console.error("Failed to deactivate team:", err);
+      alert(err.message || "Failed to deactivate team");
     } finally {
       setDeletingTeamId(null);
     }
@@ -686,13 +705,13 @@ export default function AdminPage() {
   const handleDeleteUser = async (userId: string) => {
     // Prevent deleting self or admin user
     if (userId === user?.id) {
-      alert("You cannot delete your own account");
+      alert("You cannot deactivate your own account");
       return;
     }
 
     const userToDelete = users.find((u) => u.id === userId);
     if (userToDelete?.username === "admin") {
-      alert("Cannot delete the admin user");
+      alert("Cannot deactivate the admin user");
       return;
     }
 
@@ -708,8 +727,8 @@ export default function AdminPage() {
       await reloadUsersData();
       setDeleteConfirmUserId(null);
     } catch (err: any) {
-      console.error("Failed to delete user:", err);
-      alert(err.message || "Failed to delete user. Please try again.");
+      console.error("Failed to deactivate user:", err);
+      alert(err.message || "Failed to deactivate user. Please try again.");
     }
   };
 
@@ -1011,7 +1030,7 @@ export default function AdminPage() {
             )}
 
             {!teamsLoading && teams.length > 0 && (
-              <div className="mb-4">
+              <div className="mb-4 flex items-center">
                 <input
                   type="text"
                   data-testid="team-search-input"
@@ -1020,6 +1039,17 @@ export default function AdminPage() {
                   className="w-full max-w-md px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                   placeholder="Search teams by name or team lead..."
                 />
+                <select
+                  data-testid="team-status-filter"
+                  aria-label="Filter teams by status"
+                  value={teamStatusFilter}
+                  onChange={(e) => setTeamStatusFilter(e.target.value as "" | "active" | "inactive")}
+                  className="ml-4 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                >
+                  <option value="">All Statuses</option>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
               </div>
             )}
 
@@ -1031,6 +1061,10 @@ export default function AdminPage() {
             ) : teams.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
                 No teams found. Add your first team to get started.
+              </div>
+            ) : filteredTeams.length === 0 ? (
+              <div className="text-center py-8 text-gray-500" data-testid="teams-empty-filtered">
+                No teams match your search or filters.
               </div>
             ) : (
               <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
@@ -1058,14 +1092,15 @@ export default function AdminPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {teams.filter((team) => {
-                      if (!teamSearchQuery) return true;
-                      const q = teamSearchQuery.toLowerCase();
-                      return team.name.toLowerCase().includes(q) || (team.teamLeadName || '').toLowerCase().includes(q);
-                    }).map((team) => (
+                    {filteredTeams.map((team) => (
                       <tr key={team.id} data-testid="team-row">
                         <td className="px-6 py-4">
-                          <div className="font-semibold text-gray-900">
+                          <div
+                            className={`font-semibold ${
+                              team.isActive === false ? "text-gray-500" : "text-gray-900"
+                            }`}
+                          >
+                            <StatusBadge isActive={team.isActive} testId="team-status-badge" />
                             {team.name}
                           </div>
                         </td>
@@ -1121,10 +1156,16 @@ export default function AdminPage() {
                               <GitBranch className="w-4 h-4" />
                             </button>
                             <button
-                              data-testid="delete-team-btn"
+                              data-testid="deactivate-team-btn"
+                              aria-label={`Deactivate ${team.name}`}
+                              title={team.isActive === false ? "Already inactive" : "Deactivate team"}
                               onClick={() => handleDeleteTeam(team.id)}
-                              className="text-red-600 hover:text-red-900 disabled:opacity-50"
-                              disabled={deletingTeamId === team.id}
+                              className={`disabled:opacity-50 ${
+                                team.isActive === false
+                                  ? "text-gray-400 cursor-not-allowed"
+                                  : "text-red-600 hover:text-red-900"
+                              }`}
+                              disabled={team.isActive === false || deletingTeamId === team.id}
                             >
                               {deletingTeamId === team.id ? (
                                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-600"></div>
@@ -1608,6 +1649,17 @@ export default function AdminPage() {
                     <option key={level.id} value={level.id}>{level.name}</option>
                   ))}
                 </select>
+                <select
+                  data-testid="user-status-filter"
+                  aria-label="Filter by status"
+                  value={userStatusFilter}
+                  onChange={(e) => setUserStatusFilter(e.target.value as "" | "active" | "inactive")}
+                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                >
+                  <option value="">All Statuses</option>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
                 {usersPageLoading && (
                   <div
                     data-testid="users-page-loading"
@@ -1625,7 +1677,7 @@ export default function AdminPage() {
               </div>
             ) : users.length === 0 ? (
               <div className="text-center py-8 text-gray-500" data-testid="users-empty-state">
-                {userSearchQuery || userRoleFilter
+                {userSearchQuery || userRoleFilter || userStatusFilter
                   ? "No users match your search or filters."
                   : "No users found. Add your first user to get started."}
               </div>
@@ -1661,7 +1713,12 @@ export default function AdminPage() {
                     {users.map((userItem) => (
                       <tr key={userItem.id} data-testid="user-row">
                         <td className="px-6 py-4">
-                          <div className="font-medium text-gray-900">
+                          <div
+                            className={`font-medium ${
+                              userItem.isActive === false ? "text-gray-500" : "text-gray-900"
+                            }`}
+                          >
+                            <StatusBadge isActive={userItem.isActive} />
                             {userItem.fullName}
                           </div>
                         </td>
@@ -1708,13 +1765,21 @@ export default function AdminPage() {
                               <Edit2 className="w-4 h-4" />
                             </button>
                             <button
-                              data-testid="delete-user-btn"
+                              data-testid="deactivate-user-btn"
+                              aria-label={`Deactivate ${userItem.fullName}`}
+                              title={
+                                userItem.isActive === false
+                                  ? "Already inactive"
+                                  : "Deactivate user"
+                              }
                               onClick={() => handleDeleteUser(userItem.id)}
                               disabled={
+                                userItem.isActive === false ||
                                 userItem.id === user?.id ||
                                 userItem.username === "admin"
                               }
                               className={`${
+                                userItem.isActive === false ||
                                 userItem.id === user?.id ||
                                 userItem.username === "admin"
                                   ? "text-gray-400 cursor-not-allowed"
@@ -1773,17 +1838,19 @@ export default function AdminPage() {
               <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
                 <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
                   <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                    Confirm Delete
+                    Confirm Deactivate
                   </h3>
                   <p className="text-gray-600 mb-6">
-                    Are you sure you want to delete user{" "}
+                    Are you sure you want to deactivate user{" "}
                     <strong>
                       {
                         users.find((u) => u.id === deleteConfirmUserId)
                           ?.fullName
                       }
                     </strong>
-                    ? This action cannot be undone.
+                    ? They will stay in the system and remain visible as Inactive,
+                    their past surveys and history are kept, and they will stop
+                    receiving new surveys.
                   </p>
                   <div className="flex gap-4 justify-end">
                     <button
@@ -1793,10 +1860,11 @@ export default function AdminPage() {
                       Cancel
                     </button>
                     <button
+                      data-testid="confirm-deactivate"
                       onClick={confirmDeleteUser}
                       className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
                     >
-                      Delete User
+                      Deactivate User
                     </button>
                   </div>
                 </div>
@@ -1815,6 +1883,7 @@ export default function AdminPage() {
               <div className="space-y-6">
                 <div className="border rounded-lg p-4" data-testid="data-provider-settings">
                   <DataProviderConfig />
+                  <AutoSyncSettings />
                 </div>
 
                 <div data-testid="dimensions-settings">

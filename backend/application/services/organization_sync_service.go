@@ -2,6 +2,9 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
+	"github.com/agopalakrishnan/teams360/backend/domain/orgsyncrun"
 	"github.com/agopalakrishnan/teams360/backend/domain/team"
 	"github.com/agopalakrishnan/teams360/backend/domain/user"
 	"github.com/agopalakrishnan/teams360/backend/pkg/logger"
@@ -44,6 +48,9 @@ const (
 var (
 	// ErrSyncInProgress means another synchronization is already running.
 	ErrSyncInProgress = errors.New("a synchronization is already in progress")
+	// ErrHoldPersistFailed means a tripped mass-deletion guard could not be
+	// saved. The run fails closed; the storage cause is logged, not returned.
+	ErrHoldPersistFailed = errors.New("could not persist the sync hold")
 	// ErrProviderNotConfigured means the data provider client is not configured.
 	ErrProviderNotConfigured = errors.New("organization provider is not configured")
 	// ErrInvalidSnapshot means the provider returned data that breaches the contract.
@@ -83,6 +90,24 @@ func WithDeleteThresholdStore(store DeleteThresholdStore) Option {
 	}
 }
 
+// WithRunStore enables persisted, asynchronous runs and the cross-instance lock.
+// Without it the service only offers the synchronous Sync path.
+func WithRunStore(store orgsyncrun.Store) Option {
+	return func(s *OrganizationSyncService) {
+		s.runs = store
+	}
+}
+
+// WithHoldStore persists the unresolved mass-deletion hold in the shared
+// database so every API replica sees the same frozen threshold. Without it the
+// hold lives in this process's memory only, which is correct for a single
+// instance but invisible to other replicas and lost on restart.
+func WithHoldStore(store orgsyncrun.HoldStore) Option {
+	return func(s *OrganizationSyncService) {
+		s.holds = store
+	}
+}
+
 // SnapshotFetcher fetches a complete organization snapshot from an external
 // provider. The sync service depends on this interface, not a concrete
 // client, so a second provider can be added without touching orchestration.
@@ -101,13 +126,21 @@ type SyncResult struct {
 	UsersSynced        int `json:"usersSynced"`
 	MembershipsSynced  int `json:"membershipsSynced"`
 	MembershipsRemoved int `json:"membershipsRemoved"`
+	// MembershipChanges is real additions, reactivations and removals only.
+	MembershipChanges int `json:"membershipChanges"`
 
 	HealthChecksDisabled int `json:"healthChecksDisabled"`
 	HealthChecksEnabled  int `json:"healthChecksEnabled"`
 
-	UsersDeleted       int `json:"usersDeleted"`
-	TeamsDeleted       int `json:"teamsDeleted"`
-	ActionItemsDeleted int `json:"actionItemsDeleted"`
+	UsersDeactivated int `json:"usersDeactivated"`
+	TeamsDeactivated int `json:"teamsDeactivated"`
+
+	InsertedUsers  int `json:"insertedUsers"`
+	UpdatedUsers   int `json:"updatedUsers"`
+	UnchangedUsers int `json:"unchangedUsers"`
+	InsertedTeams  int `json:"insertedTeams"`
+	UpdatedTeams   int `json:"updatedTeams"`
+	UnchangedTeams int `json:"unchangedTeams"`
 
 	UsersSkipped         int                       `json:"usersSkipped"`
 	SkippedUsers         []orgprovider.SkippedUser `json:"skippedUsers,omitempty"`
@@ -145,11 +178,15 @@ type SyncOptions struct {
 	// ActorUserID identifies who asked, for the audit record written when an
 	// override is used.
 	ActorUserID string
+
+	// Trigger records what started the run (manual by default). It only labels
+	// the run for reporting; it never changes validation, guards or mapping.
+	Trigger orgsyncrun.Trigger
 }
 
-// heldSync is the server-side memory of an unresolved mass-deletion hold. It
-// lives in the process rather than the database deliberately: a hold belongs to
-// a sync attempt, and a restart ends every attempt in flight along with it.
+// heldSync is the in-process record of an unresolved mass-deletion hold. It is
+// only used when no HoldStore is wired (single instance, tests); otherwise the
+// hold lives in the database so all replicas share it.
 type heldSync struct {
 	// threshold is the value the held attempt was judged against, and the value
 	// every further attempt uses until the hold is resolved.
@@ -187,12 +224,22 @@ type OrganizationSyncService struct {
 	// variable and the built-in default decide.
 	thresholds DeleteThresholdStore
 
-	// mu is the single serialization boundary for everything that decides
-	// whether the mass-deletion guard may change: sync admission (running),
-	// the unresolved-hold record (held), threshold writes, and hold dismissal.
-	// Each of those is one critical section under mu, so a check ("is a sync
-	// running?") and the action it gates ("write the threshold", "clear the
-	// hold", "start the sync") can never be separated by another request.
+	// runs persists run status and provides the cross-instance lock. Nil in
+	// deployments/tests that only use the synchronous path.
+	runs orgsyncrun.Store
+
+	// holds persists the unresolved hold across replicas. Nil falls back to the
+	// in-process held record below.
+	holds orgsyncrun.HoldStore
+
+	// mu is the single in-process serialization boundary for everything that
+	// decides whether the mass-deletion guard may change: sync admission
+	// (running), the in-process unresolved-hold record (held), threshold
+	// writes, and hold dismissal. Each of those is one critical section under
+	// mu, so a check ("is a sync running?") and the action it gates ("write the
+	// threshold", "clear the hold", "start the sync") cannot be separated by
+	// another request on this replica. Across replicas the persisted run and
+	// hold stores are the authority.
 	mu sync.Mutex
 	// held records a sync that the mass-deletion guard stopped and that nobody
 	// has resolved yet. Its presence freezes the threshold: the whole point of
@@ -256,6 +303,33 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 	}
 	defer s.release()
 
+	// With a run store, persisted runs on any replica serialize on the
+	// cross-instance advisory lock. This synchronous path must take the same
+	// lock, or it could apply concurrently with one of them. A busy lock is
+	// rejected rather than waited for, like the in-process flag above.
+	if s.runs != nil {
+		release, ok, err := s.runs.TryLock(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("could not take the synchronization lock: %w", err)
+		}
+		if !ok {
+			return nil, ErrSyncInProgress
+		}
+		defer release()
+	}
+
+	return s.syncCore(ctx, opts, "", nil)
+}
+
+// syncCore is the one implementation of fetch -> validate -> apply. Both the
+// synchronous path and persisted runs call it, so there is a single sync
+// behaviour. runID and onStage are empty/nil for the synchronous path.
+func (s *OrganizationSyncService) syncCore(ctx context.Context, opts SyncOptions, runID string, onStage func(orgsyncrun.Stage)) (*SyncResult, error) {
+	stage := func(st orgsyncrun.Stage) {
+		if onStage != nil {
+			onStage(st)
+		}
+	}
 	log := logger.Get()
 	startedAt := time.Now().UTC()
 
@@ -272,6 +346,7 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 		return nil, err
 	}
 
+	stage(orgsyncrun.StageFetching)
 	snapshot, err := s.fetcher.FetchSnapshot(ctx)
 	if err != nil {
 		return nil, errors.Join(ErrProviderFetchFailed, err)
@@ -280,6 +355,7 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 		return nil, errors.Join(ErrInvalidSnapshot, errors.New("provider returned no snapshot"))
 	}
 
+	stage(orgsyncrun.StageValidating)
 	knownLevels, err := s.repo.KnownHierarchyLevelIDs(ctx)
 	if err != nil {
 		return nil, err
@@ -299,7 +375,12 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 	}
 
 	applied, err := s.repo.ApplySnapshot(ctx, orgprovider.ApplyInput{
-		Snapshot: filtered.Snapshot,
+		Snapshot:     filtered.Snapshot,
+		SnapshotType: snapshotTypeOf(snapshot),
+		RunID:        runID,
+		OnStage: func(name string) {
+			stage(orgsyncrun.Stage(name))
+		},
 		// The raw, pre-filter payload's own counts -- not len(filtered.Snapshot.*),
 		// which only reflects what survived filtering. See ApplyInput's doc.
 		IncomingUsers:            len(snapshot.Users),
@@ -316,14 +397,25 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 		// the counts an admin reviews are the counts any override applies to.
 		var hold *orgprovider.MassDeletionHoldError
 		if errors.As(err, &hold) {
-			s.recordHold(maxDeletePercent, hold.Report)
+			if saveErr := s.recordHold(ctx, maxDeletePercent, hold.Report); saveErr != nil {
+				// Fail closed: surface the persistence failure instead of the
+				// hold, so the run is not reported as a cleanly held sync.
+				return nil, saveErr
+			}
 		}
 		return nil, err
 	}
 
 	// The attempt applied, so whatever hold preceded it is resolved and the
 	// threshold is editable again.
-	s.DismissHold()
+	//
+	// The apply has already committed, so a failure here cannot undo it and
+	// must not turn a committed sync into a reported failure. It is safe to
+	// continue: a hold that stays behind keeps the threshold frozen until it
+	// expires or an admin dismisses it, which errs toward the stricter guard.
+	if _, err := s.DismissHold(ctx); err != nil {
+		logger.Get().WithError(err).Error("sync applied but its earlier hold could not be cleared; threshold stays frozen until the hold expires or is dismissed")
+	}
 
 	// The supervisor chain is a denormalized cache derived from reports_to.
 	// Rebuilding it is best-effort and deliberately outside the transaction:
@@ -340,11 +432,17 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 		UsersSynced:          applied.UsersSynced,
 		MembershipsSynced:    applied.MembershipsSynced,
 		MembershipsRemoved:   applied.MembershipsRemoved,
+		MembershipChanges:    applied.MembershipsAdded + applied.MembershipsRemoved,
 		HealthChecksDisabled: applied.HealthChecksDisabled,
 		HealthChecksEnabled:  applied.HealthChecksEnabled,
-		UsersDeleted:         applied.UsersDeleted,
-		TeamsDeleted:         applied.TeamsDeleted,
-		ActionItemsDeleted:   applied.ActionItemsDeleted,
+		UsersDeactivated:     applied.UsersDeactivated,
+		TeamsDeactivated:     applied.TeamsDeactivated,
+		InsertedUsers:        applied.InsertedUsers,
+		UpdatedUsers:         applied.UpdatedUsers,
+		UnchangedUsers:       applied.UnchangedUsers,
+		InsertedTeams:        applied.InsertedTeams,
+		UpdatedTeams:         applied.UpdatedTeams,
+		UnchangedTeams:       applied.UnchangedTeams,
 		UsersSkipped:         len(filtered.SkippedUsers),
 		SkippedUsers:         filtered.SkippedUsers,
 		ManagerLinksCleared:  filtered.ClearedManagers,
@@ -384,8 +482,8 @@ func (s *OrganizationSyncService) SyncWithOptions(ctx context.Context, opts Sync
 		"usersSynced":       result.UsersSynced,
 		"teamsSynced":       result.TeamsSynced,
 		"membershipsSynced": result.MembershipsSynced,
-		"usersDeleted":      result.UsersDeleted,
-		"teamsDeleted":      result.TeamsDeleted,
+		"usersDeactivated":  result.UsersDeactivated,
+		"teamsDeactivated":  result.TeamsDeactivated,
 		"usersSkipped":      result.UsersSkipped,
 	}).Info("organization provider sync completed")
 
@@ -403,15 +501,98 @@ func formatCascade(m *orgprovider.DeletionMetric) string {
 // LockState reports whether the mass-deletion threshold is currently frozen,
 // and at what value. An expired hold is dropped here rather than lingering, so
 // callers never have to reason about staleness themselves.
-func (s *OrganizationSyncService) LockState() SyncLockState {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lockStateLocked()
+//
+// "Syncing" comes from the persisted run when a run store is configured: only a
+// run whose status is PENDING or RUNNING counts. That is authoritative across
+// replicas and flips the instant a run's SUCCESS commits, whereas the
+// in-process flag is cleared a moment later and could be read mid-teardown,
+// leaving the threshold looking locked after the sync had finished. Runs a
+// crashed worker abandoned are swept first so they cannot hold the lock either.
+// Without a run store (the synchronous path) the in-process flag is the only
+// signal there is.
+func (s *OrganizationSyncService) LockState(ctx context.Context) SyncLockState {
+	state, err := s.heldState(ctx)
+	if err != nil {
+		// Fail closed, like syncing: if the hold cannot be read, do not let the
+		// threshold change underneath a hold that may exist.
+		logger.Get().WithError(err).Warn("could not read the sync hold; treating the threshold as locked")
+		state = SyncLockState{Held: true}
+	}
+	state.Syncing = s.syncing(ctx)
+	return state
 }
 
 // lockStateLocked is LockState for a caller that already holds mu.
-func (s *OrganizationSyncService) lockStateLocked() SyncLockState {
-	state := SyncLockState{Syncing: s.running}
+func (s *OrganizationSyncService) lockStateLocked(ctx context.Context) SyncLockState {
+	state, err := s.heldStateLocked(ctx)
+	if err != nil {
+		logger.Get().WithError(err).Warn("could not read the sync hold; treating the threshold as locked")
+		state = SyncLockState{Held: true}
+	}
+	state.Syncing = s.syncingLocked(ctx)
+	return state
+}
+
+// syncing answers "is a sync in progress" as described on LockState.
+func (s *OrganizationSyncService) syncing(ctx context.Context) bool {
+	if s.runs == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
+	return s.syncingLocked(ctx)
+}
+
+// syncingLocked is syncing for a caller that already holds mu.
+func (s *OrganizationSyncService) syncingLocked(ctx context.Context) bool {
+	if s.runs == nil {
+		return s.running
+	}
+	s.recoverStaleRuns(ctx)
+	active, err := s.runs.Active(ctx)
+	if err != nil {
+		// Fail closed: if the answer cannot be read, do not let the threshold be
+		// changed underneath a sync that may be running.
+		logger.Get().WithError(err).Warn("could not read the active sync run; treating the threshold as locked")
+		return true
+	}
+	return active != nil
+}
+
+// heldState reports only the unresolved-hold part of the lock. It reads the
+// shared database when a HoldStore is wired, so every replica agrees; an
+// expired hold is cleared on read rather than lingering.
+func (s *OrganizationSyncService) heldState(ctx context.Context) (SyncLockState, error) {
+	if s.holds == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
+	return s.heldStateLocked(ctx)
+}
+
+// heldStateLocked is heldState for a caller that already holds mu.
+func (s *OrganizationSyncService) heldStateLocked(ctx context.Context) (SyncLockState, error) {
+	var state SyncLockState
+
+	if s.holds != nil {
+		h, err := s.holds.GetHold(ctx)
+		if err != nil {
+			return state, err
+		}
+		if h == nil {
+			return state, nil
+		}
+		if time.Since(h.HeldAt) > MassDeletionHoldTTL {
+			if _, err := s.holds.ClearHold(ctx); err != nil {
+				return state, err
+			}
+			return state, nil
+		}
+		state.Held = true
+		state.Threshold = h.Threshold
+		state.HeldAt = h.HeldAt
+		return state, nil
+	}
+
 	if s.held != nil {
 		if time.Since(s.held.heldAt) > MassDeletionHoldTTL {
 			s.held = nil
@@ -421,10 +602,11 @@ func (s *OrganizationSyncService) lockStateLocked() SyncLockState {
 			state.HeldAt = s.held.heldAt
 		}
 	}
-	return state
+	return state, nil
 }
 
-// admit claims the single sync slot, reporting false when one is running.
+// admit claims the single in-process sync slot, reporting false when one is
+// running.
 func (s *OrganizationSyncService) admit() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -454,14 +636,15 @@ func (e *ThresholdLockedError) Error() string {
 
 // UpdateMaxDeletePercent persists a new threshold via write, but only if no
 // sync is running or held, and does so while holding the same mutex sync
-// admission takes. A sync therefore cannot be admitted between the check and
-// the write, which a handler-level LockState() read followed by an unprotected
-// repository write could not guarantee. It returns *ThresholdLockedError when
-// refused. write must not call back into this service.
+// admission takes. A sync therefore cannot be admitted on this replica between
+// the check and the write, which a handler-level LockState() read followed by
+// an unprotected repository write could not guarantee. It returns
+// *ThresholdLockedError when refused. write must not call back into this
+// service.
 func (s *OrganizationSyncService) UpdateMaxDeletePercent(ctx context.Context, percent float64, write func(context.Context, float64) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if state := s.lockStateLocked(); state.Locked() {
+	if state := s.lockStateLocked(ctx); state.Locked() {
 		return &ThresholdLockedError{State: state}
 	}
 	return write(ctx, percent)
@@ -473,41 +656,75 @@ func (s *OrganizationSyncService) UpdateMaxDeletePercent(ctx context.Context, pe
 // admitted afterwards can create a fresh hold, but it can never have that
 // hold cleared by a dismissal that was decided before it started. It reports
 // whether there was a hold to clear.
-func (s *OrganizationSyncService) DismissHoldIfIdle() (bool, error) {
+func (s *OrganizationSyncService) DismissHoldIfIdle(ctx context.Context) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.running {
+	if s.syncingLocked(ctx) {
 		return false, ErrSyncInProgress
+	}
+	return s.clearHoldLocked(ctx)
+}
+
+// DismissHold clears an unresolved hold, which re-enables threshold editing.
+// It is what an administrator does after deciding to fix the provider data
+// instead of overriding, and what a completed sync does implicitly. It reports
+// whether there was anything to clear. A storage failure is returned, not
+// folded into "nothing to clear": the hold may still be active.
+func (s *OrganizationSyncService) DismissHold(ctx context.Context) (bool, error) {
+	if s.holds == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
+	return s.clearHoldLocked(ctx)
+}
+
+// clearHoldLocked clears the hold from the shared store, or from the
+// in-process record when none is wired. The caller holds mu.
+func (s *OrganizationSyncService) clearHoldLocked(ctx context.Context) (bool, error) {
+	if s.holds != nil {
+		existed, err := s.holds.ClearHold(ctx)
+		if err != nil {
+			logger.Get().WithError(err).Error("could not clear the sync hold")
+			return false, fmt.Errorf("could not clear the sync hold: %w", err)
+		}
+		return existed, nil
 	}
 	existed := s.held != nil
 	s.held = nil
 	return existed, nil
 }
 
-// DismissHold clears an unresolved hold, which re-enables threshold editing.
-// It is what an administrator does after deciding to fix the provider data
-// instead of overriding, and what a completed sync does implicitly. It reports
-// whether there was anything to clear.
-func (s *OrganizationSyncService) DismissHold() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	existed := s.held != nil
-	s.held = nil
-	return existed
-}
-
 // recordHold remembers a tripped guard, together with the threshold it was
 // judged against.
-func (s *OrganizationSyncService) recordHold(threshold float64, report orgprovider.MassDeletionReport) {
+//
+// It returns an error when the shared hold cannot be saved. The caller must
+// fail the run on that error rather than report a normal hold: an unsaved
+// hold leaves the threshold editable, so a retry could bypass the guard.
+func (s *OrganizationSyncService) recordHold(ctx context.Context, threshold float64, report orgprovider.MassDeletionReport) error {
+	heldAt := time.Now().UTC()
+	if s.holds != nil {
+		if err := s.holds.SaveHold(ctx, orgsyncrun.Hold{Threshold: threshold, Report: report, HeldAt: heldAt}); err != nil {
+			// Log the storage cause here; the returned error carries only the
+			// sentinel so raw store errors never reach API clients.
+			logger.Get().WithError(err).Error("could not persist the sync hold")
+			return ErrHoldPersistFailed
+		}
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.held = &heldSync{threshold: threshold, report: report, heldAt: time.Now().UTC()}
+	s.held = &heldSync{threshold: threshold, report: report, heldAt: heldAt}
+	return nil
 }
 
 // thresholdForRun returns the threshold this attempt is judged against: the
 // frozen value while a hold is unresolved, otherwise the configured one.
 func (s *OrganizationSyncService) thresholdForRun(ctx context.Context) (float64, error) {
-	if state := s.LockState(); state.Held {
+	state, err := s.heldState(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read sync hold: %w", err)
+	}
+	if state.Held {
 		return state.Threshold, nil
 	}
 	return s.maxDeletePercent(ctx)
@@ -651,4 +868,252 @@ func (s *OrganizationSyncService) rederiveSupervisorChains(ctx context.Context, 
 	}
 
 	return firstErr
+}
+
+// snapshotTypeOf decides whether absent records may be deactivated. A payload
+// only counts as COMPLETE when the contract says so: either snapshotType is
+// explicitly "COMPLETE", or it is omitted, which contract v1.0 defines as a
+// complete snapshot. Non-empty is never taken as evidence of completeness --
+// ValidationError has already rejected empty users/teams -- and PARTIAL (or any
+// value validation did not accept) keeps every missing record untouched.
+func snapshotTypeOf(snap *orgsnapshot.Snapshot) orgprovider.SnapshotType {
+	switch snap.SnapshotType {
+	case "", orgsnapshot.TypeComplete:
+		return orgprovider.SnapshotComplete
+	default:
+		return orgprovider.SnapshotPartial
+	}
+}
+
+// Timing for persisted runs. Variables, not constants, so tests can shrink them.
+var (
+	// LockWaitTimeout bounds how long a run stays PENDING waiting for the lock.
+	LockWaitTimeout = 2 * time.Minute
+	// LockRetryInterval is the pause between lock attempts.
+	LockRetryInterval = 2 * time.Second
+	// RunTimeout bounds one whole run's execution.
+	RunTimeout = 10 * time.Minute
+	// stageUpdateTimeout bounds one progress write.
+	stageUpdateTimeout = 5 * time.Second
+	// StaleRunTTL is how long a run may go without a heartbeat before the
+	// recovery sweep fails it. It must exceed the longest gap between stage
+	// updates; a healthy run heartbeats at every stage change.
+	StaleRunTTL = 15 * time.Minute
+)
+
+// RunsEnabled reports whether persisted asynchronous runs are available.
+func (s *OrganizationSyncService) RunsEnabled() bool { return s.runs != nil }
+
+// StartRun records a PENDING run and executes it in the background. It returns
+// as soon as the PENDING row is persisted, never after the sync itself. If a run
+// is already active it returns that run with ErrActiveRunExists instead of
+// starting a second one. A repeated idempotencyKey returns the original run.
+func (s *OrganizationSyncService) StartRun(ctx context.Context, opts SyncOptions, idempotencyKey string) (*orgsyncrun.Run, error) {
+	if s.runs == nil {
+		return nil, errors.New("persisted sync runs are not configured")
+	}
+	if s.fetcher == nil {
+		return nil, ErrProviderNotConfigured
+	}
+
+	s.recoverStaleRuns(ctx)
+
+	actor := opts.ActorUserID
+	if actor == "" {
+		actor = "scheduler"
+	}
+	id, err := newRunID()
+	if err != nil {
+		return nil, err
+	}
+	run, created, err := s.runs.CreatePending(ctx, orgsyncrun.NewParams{
+		ID: id, InitiatedBy: actor, IdempotencyKey: idempotencyKey, SnapshotType: orgprovider.SnapshotComplete,
+		Trigger: opts.Trigger,
+	})
+	if err != nil {
+		return run, err
+	}
+	if !created {
+		return run, nil // idempotent replay: already scheduled by the first request
+	}
+
+	// Detached from the request: the admin may close the tab, and the work must
+	// still finish or fail visibly.
+	go s.executeRun(context.WithoutCancel(ctx), run.ID, opts)
+	return run, nil
+}
+
+func newRunID() (string, error) {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate run id: %w", err)
+	}
+	return "sync_" + hex.EncodeToString(b), nil
+}
+
+// executeRun drives one run PENDING -> RUNNING -> SUCCESS|FAILED. SUCCESS is
+// written by ApplySnapshot inside the data transaction, so it can only exist
+// after a commit; this function only ever records FAILED.
+func (s *OrganizationSyncService) executeRun(ctx context.Context, runID string, opts SyncOptions) {
+	log := logger.Get().WithFields(map[string]interface{}{"runId": runID})
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, RunTimeout)
+	defer cancel()
+
+	currentStage := orgsyncrun.StageAcquiringLock
+	fail := func(stage orgsyncrun.Stage, code, message string, hold json.RawMessage) {
+		err := s.runs.Fail(context.WithoutCancel(ctx), runID, orgsyncrun.Failure{
+			Stage: stage, Code: code, Message: message, HoldReport: hold,
+		})
+		if errors.Is(err, orgsyncrun.ErrNotTransitionable) {
+			log.Warn("run already finished elsewhere; not overwriting its result")
+			return
+		}
+		if err != nil {
+			log.WithError(err).Error("failed to record sync run failure")
+		}
+		log.WithFields(map[string]interface{}{
+			"status": orgsyncrun.StatusFailed, "stage": stage, "code": code,
+			"durationMs": time.Since(started).Milliseconds(),
+		}).Warn("organization sync run failed")
+	}
+	setStage := func(st orgsyncrun.Stage) {
+		currentStage = st
+		// Progress is best-effort: a bounded wait means a blocked progress write
+		// can never hang the sync itself.
+		stageCtx, stageCancel := context.WithTimeout(ctx, stageUpdateTimeout)
+		defer stageCancel()
+		if err := s.runs.SetStage(stageCtx, runID, st); err != nil && !errors.Is(err, orgsyncrun.ErrNotTransitionable) {
+			log.WithError(err).Warn("failed to record sync stage")
+		}
+	}
+
+	// In-process admission still guards this replica's threshold-lock state.
+	if !s.admit() {
+		fail(orgsyncrun.StageAcquiringLock, orgsyncrun.CodeLockUnavailable, "Another synchronization is running on this server.", nil)
+		return
+	}
+	defer s.release()
+
+	// PENDING while waiting for the lock: a busy lock is retried, not failed.
+	release, err := s.acquireLock(ctx, setStage)
+	if err != nil {
+		fail(orgsyncrun.StageAcquiringLock, orgsyncrun.CodeLockUnavailable, err.Error(), nil)
+		return
+	}
+	defer release()
+
+	if err := s.runs.MarkRunning(ctx, runID, workerID()); err != nil {
+		if errors.Is(err, orgsyncrun.ErrNotTransitionable) {
+			// Someone (the recovery sweep) already failed this run: do not run it.
+			log.WithError(err).Warn("run could not be moved to RUNNING; abandoning")
+			return
+		}
+		// Any other error (a database problem, say) must not leave the run
+		// PENDING: that would block new runs and the threshold lock until the
+		// recovery sweep fails it 15 minutes later. Fail it now.
+		code, message, hold := classifyRunError(err)
+		fail(currentStage, code, message, hold)
+		return
+	}
+	log.Info("organization sync run started")
+
+	_, err = s.syncCore(ctx, opts, runID, func(st orgsyncrun.Stage) { setStage(st) })
+	if err == nil {
+		log.WithFields(map[string]interface{}{
+			"status": orgsyncrun.StatusSuccess, "durationMs": time.Since(started).Milliseconds(),
+		}).Info("organization sync run succeeded")
+		return
+	}
+	code, message, hold := classifyRunError(err)
+	fail(currentStage, code, message, hold)
+}
+
+// acquireLock retries the cross-instance lock until LockWaitTimeout.
+func (s *OrganizationSyncService) acquireLock(ctx context.Context, setStage func(orgsyncrun.Stage)) (func(), error) {
+	setStage(orgsyncrun.StageAcquiringLock)
+	deadline := time.Now().Add(LockWaitTimeout)
+	for {
+		release, ok, err := s.runs.TryLock(ctx)
+		if err != nil {
+			return nil, errors.New("could not reach the database to take the synchronization lock")
+		}
+		if ok {
+			return release, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, errors.New("another synchronization is holding the lock; try again shortly")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, errors.New("synchronization was cancelled while waiting for the lock")
+		case <-time.After(LockRetryInterval):
+		}
+	}
+}
+
+func workerID() string {
+	host, _ := os.Hostname()
+	return fmt.Sprintf("%s:%d", host, os.Getpid())
+}
+
+// classifyRunError maps an internal error onto a stable code and a message that
+// is safe to show an administrator. Raw database errors are replaced by a
+// generic sentence: they can carry identifiers and are logged, not stored.
+func classifyRunError(err error) (code, message string, hold json.RawMessage) {
+	var holdErr *orgprovider.MassDeletionHoldError
+	switch {
+	case errors.As(err, &holdErr):
+		report, _ := json.Marshal(holdErr.Report)
+		return orgsyncrun.CodeMassDeactivationHold,
+			"This sync would deactivate an unusually large share of users or teams. No changes were made. Review the counts, then fix the provider data or re-run with an explicit override.",
+			report
+	case errors.Is(err, ErrProviderNotConfigured):
+		return orgsyncrun.CodeProviderNotConfigured, "The organization provider is not configured.", nil
+	case errors.Is(err, ErrInvalidSnapshot):
+		// Validation messages name records, not credentials; they are the only
+		// way to diagnose a bad payload.
+		return orgsyncrun.CodeInvalidSnapshot, err.Error(), nil
+	case errors.Is(err, ErrProviderFetchFailed):
+		return orgsyncrun.CodeProviderFetchFailed, "The organization provider could not be reached or returned an unusable response.", nil
+	case errors.Is(err, orgprovider.ErrStaleSnapshot):
+		return orgsyncrun.CodeStaleSnapshot, "The provider snapshot is older than the one already applied, so it was not applied.", nil
+	case errors.Is(err, ErrMaxDeletePercentNotConfigured):
+		return orgsyncrun.CodeInternal, "The saved deactivation threshold is outside the allowed 1-100% range.", nil
+	default:
+		logger.Get().WithError(err).Error("organization sync run failed")
+		return orgsyncrun.CodeDatabase, "The synchronization failed while saving changes. Nothing was changed. Check the server logs and try again.", nil
+	}
+}
+
+// recoverStaleRuns fails runs a crashed worker left PENDING/RUNNING, so they
+// cannot block admission forever or be reported as in progress indefinitely.
+// Best-effort: a failed sweep must not block the request that triggered it.
+func (s *OrganizationSyncService) recoverStaleRuns(ctx context.Context) {
+	if n, err := s.runs.RecoverStale(ctx, StaleRunTTL); err != nil {
+		logger.Get().WithError(err).Warn("stale sync run recovery failed")
+	} else if n > 0 {
+		logger.Get().WithFields(map[string]interface{}{"recovered": n}).Warn("recovered stale sync runs")
+	}
+}
+
+// LatestRun returns the most recent run, after failing any that a crashed
+// worker abandoned, so the status the UI polls can always reach a final state.
+// It and GetRun back the status endpoints.
+func (s *OrganizationSyncService) LatestRun(ctx context.Context) (*orgsyncrun.Run, error) {
+	if s.runs == nil {
+		return nil, nil
+	}
+	s.recoverStaleRuns(ctx)
+	return s.runs.Latest(ctx)
+}
+
+// GetRun returns one run by id, after failing any that a crashed worker
+// abandoned (see LatestRun).
+func (s *OrganizationSyncService) GetRun(ctx context.Context, id string) (*orgsyncrun.Run, error) {
+	if s.runs == nil {
+		return nil, orgsyncrun.ErrNotFound
+	}
+	s.recoverStaleRuns(ctx)
+	return s.runs.Get(ctx, id)
 }

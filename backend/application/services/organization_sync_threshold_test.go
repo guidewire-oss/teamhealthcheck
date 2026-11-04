@@ -10,6 +10,7 @@ import (
 
 	"github.com/agopalakrishnan/teams360/backend/application/services"
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
+	"github.com/agopalakrishnan/teams360/backend/domain/orgsyncrun"
 	"github.com/agopalakrishnan/teams360/backend/pkg/orgsnapshot"
 )
 
@@ -253,7 +254,7 @@ func (r *holdingRepo) ApplySnapshot(_ context.Context, in orgprovider.ApplyInput
 		return &orgprovider.ApplyResult{UsersSynced: len(in.Snapshot.Users)}, nil
 	}
 	if in.OverrideMassDeletion && report.MatchesConfirmed(in.ConfirmedMassDeletion) {
-		return &orgprovider.ApplyResult{UsersDeleted: report.Users.Deleting, MassDeletionOverride: &report}, nil
+		return &orgprovider.ApplyResult{UsersDeactivated: report.Users.Deleting, MassDeletionOverride: &report}, nil
 	}
 	if report.Held() {
 		return nil, &orgprovider.MassDeletionHoldError{Report: report}
@@ -284,7 +285,7 @@ func TestHoldFreezesTheThresholdForLaterAttempts(t *testing.T) {
 		t.Fatalf("expected the first attempt to be held, got %v", err)
 	}
 
-	state := service.LockState()
+	state := service.LockState(context.Background())
 	if !state.Held || state.Threshold != 20 {
 		t.Fatalf("expected a hold frozen at 20%%, got %+v", state)
 	}
@@ -312,7 +313,7 @@ func TestOverrideResolvesTheHoldAndUnlocks(t *testing.T) {
 	if !errors.As(err, &hold) {
 		t.Fatalf("expected a hold, got %v", err)
 	}
-	if !service.LockState().Locked() {
+	if !service.LockState(context.Background()).Locked() {
 		t.Fatal("expected the threshold to be locked")
 	}
 
@@ -327,7 +328,7 @@ func TestOverrideResolvesTheHoldAndUnlocks(t *testing.T) {
 	if !result.MassDeletionOverridden {
 		t.Fatal("expected the result to record the override")
 	}
-	if service.LockState().Locked() {
+	if service.LockState(context.Background()).Locked() {
 		t.Fatal("a resolved hold must unlock the threshold")
 	}
 }
@@ -348,7 +349,7 @@ func TestCleanSyncResolvesAPriorHold(t *testing.T) {
 	if _, err := service.Sync(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if service.LockState().Locked() {
+	if service.LockState(context.Background()).Locked() {
 		t.Fatal("a completed sync must unlock the threshold")
 	}
 }
@@ -365,17 +366,17 @@ func TestDismissHoldUnlocksWithoutApplying(t *testing.T) {
 	}
 	callsWhenHeld := repo.calls
 
-	if !service.DismissHold() {
-		t.Fatal("expected a hold to dismiss")
+	if existed, err := service.DismissHold(context.Background()); err != nil || !existed {
+		t.Fatalf("expected a hold to dismiss, got existed=%v err=%v", existed, err)
 	}
-	if service.LockState().Locked() {
+	if service.LockState(context.Background()).Locked() {
 		t.Fatal("dismissing must unlock the threshold")
 	}
 	if repo.calls != callsWhenHeld {
 		t.Fatal("dismissing must not apply anything")
 	}
-	if service.DismissHold() {
-		t.Fatal("a second dismissal has nothing to clear")
+	if existed, err := service.DismissHold(context.Background()); err != nil || existed {
+		t.Fatalf("a second dismissal has nothing to clear, got existed=%v err=%v", existed, err)
 	}
 }
 
@@ -390,7 +391,7 @@ func TestThresholdIsResolvedFreshOnceNoHoldRemains(t *testing.T) {
 	if _, err := service.Sync(context.Background()); err == nil {
 		t.Fatal("expected the first attempt to be held")
 	}
-	service.DismissHold()
+	_, _ = service.DismissHold(context.Background())
 
 	repo.stopHolding = true
 	if _, err := service.Sync(context.Background()); err != nil {
@@ -416,4 +417,87 @@ func (s *shiftingStore) GetOrgSyncMaxDeletePercent(_ context.Context) (*float64,
 	s.reads++
 	value := s.values[index]
 	return &value, nil
+}
+
+// sharedHoldStore stands in for the database table every replica shares.
+type sharedHoldStore struct{ hold *orgsyncrun.Hold }
+
+func (s *sharedHoldStore) GetHold(context.Context) (*orgsyncrun.Hold, error) { return s.hold, nil }
+func (s *sharedHoldStore) SaveHold(_ context.Context, h orgsyncrun.Hold) error {
+	s.hold = &h
+	return nil
+}
+func (s *sharedHoldStore) ClearHold(context.Context) (bool, error) {
+	existed := s.hold != nil
+	s.hold = nil
+	return existed, nil
+}
+
+func TestHoldIsSharedAcrossReplicas(t *testing.T) {
+	t.Setenv(services.EnvMaxDeletePercent, "")
+
+	shared := &sharedHoldStore{}
+	repo := &holdingRepo{}
+	newReplica := func() *services.OrganizationSyncService {
+		return services.NewOrganizationSyncService(repo, thresholdFetcher{}, nil, nil,
+			services.WithDeleteThresholdStore(&thresholdStore{saved: floatPtr(20)}),
+			services.WithHoldStore(shared))
+	}
+	replicaA, replicaB := newReplica(), newReplica()
+
+	if _, err := replicaA.Sync(context.Background()); err == nil {
+		t.Fatal("expected replica A's attempt to be held")
+	}
+
+	state := replicaB.LockState(context.Background())
+	if !state.Held || state.Threshold != 20 {
+		t.Fatalf("replica B must see A's hold at the frozen threshold, got %+v", state)
+	}
+
+	if existed, err := replicaB.DismissHold(context.Background()); err != nil || !existed {
+		t.Fatalf("replica B should be able to dismiss the shared hold, got existed=%v err=%v", existed, err)
+	}
+	if replicaA.LockState(context.Background()).Locked() {
+		t.Fatal("dismissing on B must unlock A as well")
+	}
+}
+
+// failingHoldStore simulates the shared hold table being unwritable.
+type failingHoldStore struct{ sharedHoldStore }
+
+func (s *failingHoldStore) SaveHold(context.Context, orgsyncrun.Hold) error {
+	return errors.New("db down")
+}
+
+func TestHoldSaveFailureFailsClosed(t *testing.T) {
+	t.Setenv(services.EnvMaxDeletePercent, "")
+
+	svc := services.NewOrganizationSyncService(&holdingRepo{}, thresholdFetcher{}, nil, nil,
+		services.WithDeleteThresholdStore(&thresholdStore{saved: floatPtr(20)}),
+		services.WithHoldStore(&failingHoldStore{}))
+
+	_, err := svc.Sync(context.Background())
+	if err == nil {
+		t.Fatal("expected the sync to fail")
+	}
+	var hold *orgprovider.MassDeletionHoldError
+	if errors.As(err, &hold) {
+		t.Fatalf("an unsaved hold must not be reported as a normal hold: %v", err)
+	}
+}
+
+type clearFailingHoldStore struct{ sharedHoldStore }
+
+func (s *clearFailingHoldStore) ClearHold(context.Context) (bool, error) {
+	return false, errors.New("db down")
+}
+
+func TestDismissHoldReturnsStorageError(t *testing.T) {
+	svc := services.NewOrganizationSyncService(&holdingRepo{}, thresholdFetcher{}, nil, nil,
+		services.WithHoldStore(&clearFailingHoldStore{}))
+
+	existed, err := svc.DismissHold(context.Background())
+	if err == nil || existed {
+		t.Fatalf("a storage failure must be returned, got existed=%v err=%v", existed, err)
+	}
 }

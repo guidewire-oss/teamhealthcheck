@@ -23,7 +23,12 @@ func SetupOrganizationProviderRoutes(
 	syncService *services.OrganizationSyncService,
 	settingsRepo organization.Repository,
 	jwtService *services.JWTService,
+	opts ...OrganizationProviderRouteOption,
 ) {
+	var cfg organizationProviderRouteConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
 	handler := NewOrganizationProviderHandler(syncService, settingsRepo)
 
 	admin := router.Group("/api/v1/admin")
@@ -40,8 +45,27 @@ func SetupOrganizationProviderRoutes(
 		// Resolves a hold without applying it, which unfreezes the threshold.
 		admin.DELETE("/organization-provider/sync/hold", handler.DismissMassDeletionHold)
 
-		// Manual trigger. There is deliberately no scheduler: a sync can
-		// hard-delete org structure, so a human decides when it happens.
+		// Manual trigger. Automatic syncs are configured separately (auto-sync
+		// below) and run the same StartRun path with the same guards.
 		admin.POST("/organization-provider/sync", handler.Sync)
+		admin.GET("/organization-provider/sync/runs/:runId", handler.GetSyncRun)
+
+		if cfg.scheduler != nil {
+			sched := &OrganizationSyncScheduleHandler{scheduler: cfg.scheduler}
+			admin.GET("/organization-provider/auto-sync", sched.GetAutoSync)
+			admin.PUT("/organization-provider/auto-sync", sched.UpdateAutoSync)
+		}
 	}
+}
+
+type organizationProviderRouteConfig struct {
+	scheduler *services.OrganizationSyncScheduler
+}
+
+// OrganizationProviderRouteOption customises SetupOrganizationProviderRoutes.
+type OrganizationProviderRouteOption func(*organizationProviderRouteConfig)
+
+// WithAutoSyncScheduler mounts the admin-only auto-sync schedule endpoints.
+func WithAutoSyncScheduler(s *services.OrganizationSyncScheduler) OrganizationProviderRouteOption {
+	return func(c *organizationProviderRouteConfig) { c.scheduler = s }
 }

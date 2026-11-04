@@ -2,8 +2,21 @@ package team
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// Team status filters accepted by FindWithDetailsByStatus.
+const (
+	StatusAll      = ""
+	StatusActive   = "active"
+	StatusInactive = "inactive"
+)
+
+// ErrDuplicateTeam means a team with the same ID already exists. A
+// soft-deactivated team keeps its ID, so it counts: only a provider sync can
+// reactivate it.
+var ErrDuplicateTeam = errors.New("a team with this ID already exists")
 
 // Team represents a team in the organization
 // This is an aggregate root in DDD terms
@@ -26,6 +39,13 @@ type Team struct {
 	Tags               []string  `json:"tags,omitempty"`
 	CreatedAt          time.Time `json:"createdAt,omitempty"`
 	UpdatedAt          time.Time `json:"updatedAt,omitempty"`
+
+	// IsActive is false for a soft-deactivated team. A team is never deleted:
+	// its surveys, responses and action items keep pointing at it. It becomes
+	// inactive only when it is removed from a complete provider snapshot or an
+	// admin deactivates it -- never because its members or lead changed.
+	IsActive      bool       `json:"isActive"`
+	DeactivatedAt *time.Time `json:"deactivatedAt,omitempty"`
 }
 
 // TeamMember represents a member of a team
@@ -89,7 +109,10 @@ type Repository interface {
 	FindSupervisorChain(ctx context.Context, teamID string) ([]*SupervisorLink, error)
 	Save(ctx context.Context, team *Team) error
 	Update(ctx context.Context, team *Team) error
-	Delete(ctx context.Context, id string) error
+	// Deactivate soft-deactivates a team: it is marked inactive and its
+	// memberships end, but the team row and everything referencing it stay.
+	// Deactivating an already inactive team is a no-op.
+	Deactivate(ctx context.Context, id string) error
 	AddMember(ctx context.Context, teamID, userID string) error
 	RemoveMember(ctx context.Context, teamID, userID string) error
 	UpdateSupervisorChain(ctx context.Context, teamID string, chain []*SupervisorLink) error
@@ -97,6 +120,10 @@ type Repository interface {
 	FindTeamMembers(ctx context.Context, teamID string) ([]TeamMember, error)
 	CountTeamMembers(ctx context.Context, teamID string) (int, error)
 	FindAllWithDetails(ctx context.Context) ([]Team, error)
+	// FindWithDetailsByStatus is FindAllWithDetails limited in the query itself
+	// to active or inactive teams, so a filtered list never loads the rest.
+	// status is StatusActive, StatusInactive or StatusAll.
+	FindWithDetailsByStatus(ctx context.Context, status string) ([]Team, error)
 	// FindSurveyCompletionTeams returns the admin survey-completion projection
 	// for every team. Requires the health_check_enabled column on teams,
 	// added by migration 000021_add_health_check_enabled. Other team

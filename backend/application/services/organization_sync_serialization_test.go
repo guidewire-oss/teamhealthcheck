@@ -171,7 +171,7 @@ func TestUpdateMaxDeletePercent_WritesWhenIdleAndPropagatesWriteErrors(t *testin
 		t.Fatalf("want the write error back, got %v", err)
 	}
 	// A failed write must not leave the service locked.
-	if service.LockState().Locked() {
+	if service.LockState(context.Background()).Locked() {
 		t.Fatal("a failed write must not lock the service")
 	}
 }
@@ -190,7 +190,7 @@ func TestDismissHoldIfIdle_RefusedWhileSyncRunning_AndDoesNotClearTheNewHold(t *
 	}()
 	waitFor(t, repo.entered, "the sync to be running")
 
-	cleared, err := service.DismissHoldIfIdle()
+	cleared, err := service.DismissHoldIfIdle(context.Background())
 	if !errors.Is(err, services.ErrSyncInProgress) || cleared {
 		t.Fatalf("want ErrSyncInProgress and nothing cleared, got cleared=%v err=%v", cleared, err)
 	}
@@ -198,7 +198,7 @@ func TestDismissHoldIfIdle_RefusedWhileSyncRunning_AndDoesNotClearTheNewHold(t *
 	close(repo.release)
 	<-syncDone
 
-	if state := service.LockState(); !state.Held {
+	if state := service.LockState(context.Background()); !state.Held {
 		t.Fatalf("the hold the sync created must survive the refused dismissal, state=%+v", state)
 	}
 }
@@ -210,14 +210,14 @@ func TestDismissHoldIfIdle_ClearsAnExistingHoldAndReportsIt(t *testing.T) {
 		t.Fatal("expected the sync to be held")
 	}
 
-	cleared, err := service.DismissHoldIfIdle()
+	cleared, err := service.DismissHoldIfIdle(context.Background())
 	if err != nil || !cleared {
 		t.Fatalf("want cleared=true err=nil, got cleared=%v err=%v", cleared, err)
 	}
-	if service.LockState().Locked() {
+	if service.LockState(context.Background()).Locked() {
 		t.Fatal("dismissal must unlock")
 	}
-	if cleared, err = service.DismissHoldIfIdle(); err != nil || cleared {
+	if cleared, err = service.DismissHoldIfIdle(context.Background()); err != nil || cleared {
 		t.Fatalf("a second dismissal has nothing to clear, got cleared=%v err=%v", cleared, err)
 	}
 }
@@ -236,7 +236,11 @@ func TestSyncAdmissionAndAdminOperations_AreRaceFree(t *testing.T) {
 			defer wg.Done()
 			_ = service.UpdateMaxDeletePercent(context.Background(), 25, func(context.Context, float64) error { return nil })
 		}()
-		go func() { defer wg.Done(); _, _ = service.DismissHoldIfIdle(); _ = service.LockState() }()
+		go func() {
+			defer wg.Done()
+			_, _ = service.DismissHoldIfIdle(context.Background())
+			_ = service.LockState(context.Background())
+		}()
 	}
 	wg.Wait()
 }

@@ -47,7 +47,7 @@ func (f *fakeSyncRepository) ApplySnapshot(_ context.Context, in orgprovider.App
 		if !in.OverrideMassDeletion || !report.MatchesConfirmed(in.ConfirmedMassDeletion) {
 			return nil, &orgprovider.MassDeletionHoldError{Report: report}
 		}
-		return &orgprovider.ApplyResult{UsersDeleted: report.Users.Deleting, MassDeletionOverride: &report}, nil
+		return &orgprovider.ApplyResult{UsersDeactivated: report.Users.Deleting, MassDeletionOverride: &report}, nil
 	}
 	return &orgprovider.ApplyResult{UsersSynced: len(in.Snapshot.Users)}, nil
 }

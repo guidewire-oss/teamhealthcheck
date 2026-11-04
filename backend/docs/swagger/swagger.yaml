@@ -71,12 +71,17 @@ definitions:
             createdAt:
                 example: "2026-09-08T10:20:19.860027Z"
                 type: string
+            deactivatedAt:
+                type: string
             distributionListEmail:
                 example: phoenix-squad@teams360.demo
                 type: string
             id:
                 example: team-phoenix
                 type: string
+            isActive:
+                description: IsActive is false for a soft-deactivated team, which stays listed for history.
+                type: boolean
             memberCount:
                 example: 4
                 type: integer
@@ -101,6 +106,8 @@ definitions:
             createdAt:
                 example: "2026-09-08T10:20:19.860027Z"
                 type: string
+            deactivatedAt:
+                type: string
             email:
                 example: alice@teams360.demo
                 type: string
@@ -113,6 +120,9 @@ definitions:
             id:
                 example: alice
                 type: string
+            isActive:
+                description: IsActive is false for a soft-deactivated person, who stays listed for history.
+                type: boolean
             reportsTo:
                 example: teamlead1
                 type: string
@@ -1813,7 +1823,16 @@ paths:
                 - Admin Settings
     /admin/teams:
         get:
-            description: 'Returns every team in the organization with the full set of admin-facing details: ID, name, team lead ID and name, cadence, distribution list email, member count, and timestamps, along with the total team count. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.'
+            description: 'Returns every team in the organization -- active and inactive -- with the full set of admin-facing details: ID, name, active status, team lead ID and name, cadence, distribution list email, current (active) member count, and timestamps, along with the total team count. Inactive teams are soft-deactivated, never deleted, and stay listed for historical data; use the status filter to narrow the list. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.'
+            parameters:
+                - description: Limit to active or inactive teams; omit or use all for every team
+                  enum:
+                    - active
+                    - inactive
+                    - all
+                  in: query
+                  name: status
+                  type: string
             produces:
                 - application/json
             responses:
@@ -1821,6 +1840,10 @@ paths:
                     description: OK
                     schema:
                         $ref: '#/definitions/TeamsResponse'
+                "400":
+                    description: Invalid status filter
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
                 "500":
                     description: Failed to query teams
                     schema:
@@ -1852,6 +1875,10 @@ paths:
                     description: Invalid request body
                     schema:
                         $ref: '#/definitions/ErrorResponse'
+                "409":
+                    description: A team with this ID already exists, possibly an inactive one that only a provider sync can reactivate
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
                 "500":
                     description: Failed to create team
                     schema:
@@ -1863,7 +1890,7 @@ paths:
                 - Admin Teams
     /admin/teams/{id}:
         delete:
-            description: Permanently deletes the team identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            description: 'Soft-deactivates the team identified by the path ID. The team is never deleted: it stays listed and searchable as Inactive, its surveys, responses and action items are kept, and its memberships end. Repeating the call for an already inactive team changes nothing. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.'
             parameters:
                 - description: Team ID
                   in: path
@@ -1877,13 +1904,17 @@ paths:
                     description: OK
                     schema:
                         $ref: '#/definitions/MessageResponse'
+                "404":
+                    description: Team not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
                 "500":
-                    description: Failed to delete team
+                    description: Failed to deactivate team
                     schema:
                         $ref: '#/definitions/ErrorResponse'
             security:
                 - BearerAuth: []
-            summary: Delete a team
+            summary: Deactivate a team
             tags:
                 - Admin Teams
         put:
@@ -1984,6 +2015,10 @@ paths:
                         $ref: '#/definitions/ErrorResponse'
                 "404":
                     description: Team not found or user not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "409":
+                    description: Team is inactive
                     schema:
                         $ref: '#/definitions/ErrorResponse'
                 "500":
@@ -2121,6 +2156,14 @@ paths:
                   in: query
                   name: role
                   type: string
+                - description: Limit to active or inactive people; omit or use all for everyone
+                  enum:
+                    - active
+                    - inactive
+                    - all
+                  in: query
+                  name: status
+                  type: string
             produces:
                 - application/json
             responses:
@@ -2128,6 +2171,10 @@ paths:
                     description: OK
                     schema:
                         $ref: '#/definitions/UsersResponse'
+                "400":
+                    description: Invalid status filter
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
                 "500":
                     description: Failed to query users
                     schema:
@@ -2170,7 +2217,7 @@ paths:
                 - Admin Users
     /admin/users/{id}:
         delete:
-            description: Permanently deletes the user identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+            description: 'Soft-deactivates the user identified by the path ID. The person is never deleted: they stay listed and searchable as Inactive, their surveys, responses and action items are kept, and their team memberships end. Repeating the call for an already inactive user changes nothing. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.'
             parameters:
                 - description: User ID
                   in: path
@@ -2184,13 +2231,17 @@ paths:
                     description: OK
                     schema:
                         $ref: '#/definitions/MessageResponse'
+                "404":
+                    description: User not found
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
                 "500":
-                    description: Failed to delete user
+                    description: Failed to deactivate user
                     schema:
                         $ref: '#/definitions/ErrorResponse'
             security:
                 - BearerAuth: []
-            summary: Delete a user
+            summary: Deactivate a user
             tags:
                 - Admin Users
         put:

@@ -173,6 +173,7 @@ func FilterSnapshot(in *orgsnapshot.Snapshot, knownLevels map[string]bool) (Snap
 
 	result.Snapshot = &orgsnapshot.Snapshot{
 		ContractVersion: in.ContractVersion,
+		SnapshotType:    in.SnapshotType,
 		GeneratedAt:     in.GeneratedAt,
 		Teams:           teams,
 		Users:           users,

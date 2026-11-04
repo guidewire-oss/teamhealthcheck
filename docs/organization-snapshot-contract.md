@@ -62,6 +62,7 @@ open-ended adapter surface.
 - `hierarchyLevelId` must identify a hierarchy level configured in the target Team Health Check deployment. Existence is checked during synchronization because the snapshot does not contain hierarchy-level definitions.
 - `teamLeadId` is optional. When present, it must reference a user who is also a member of that team. When omitted or `null`, synchronization preserves the existing Team Health Check value; v1.0 does not define an explicit clear operation.
 - `healthCheckEnabled` is optional. Omission preserves the existing Team Health Check value; explicit `true` or `false` replaces it.
+- `snapshotType` is optional and is either `"COMPLETE"` or `"PARTIAL"`. Omission means `"COMPLETE"`. Any other value is rejected by validation. See [Partial Snapshots](#partial-snapshots).
 
 ## Complete Snapshot Semantics
 
@@ -79,6 +80,38 @@ Deletion is hard. The persistence writes (upserts, membership reconciliation, an
 - **Never deleted: users the sync could not validate.** A user skipped because their `hierarchyLevelId` is missing or unknown to this deployment is not evidence that the provider removed them, so they are neither deleted nor stripped of existing manager links in that sync, and their existing memberships are kept on teams that remain (a deleted team still takes its membership rows with it).
 - **Mass-deletion guard.** Before anything is written, a sync that would delete more than the configured share of existing, non-protected users or teams is held for administrator review and changes nothing until the administrator confirms the exact counts they reviewed.
 
+## Partial Snapshots
+
+A provider that can only send part of its organization sets `"snapshotType": "PARTIAL"`:
+
+```json
+{
+  "contractVersion": "1.0",
+  "generatedAt": "2026-08-29T12:00:00Z",
+  "snapshotType": "PARTIAL",
+  "users": [
+    {
+      "id": "user-1",
+      "username": "alice",
+      "displayName": "Alice",
+      "email": "alice@example.com",
+      "hierarchyLevelId": "level-3"
+    }
+  ],
+  "teams": [
+    { "id": "team-1", "name": "Platform", "teamLeadId": "user-1" }
+  ],
+  "memberships": [
+    { "userId": "user-1", "teamId": "team-1" }
+  ]
+}
+```
+
+- `"COMPLETE"`, or omitting `snapshotType`, states that the snapshot is complete for its provider. Synchronization may mark externally managed records that are absent from the payload as inactive.
+- `"PARTIAL"` states that the payload is only a subset. Synchronization adds and updates the records it contains, and never deactivates a record or ends a membership because it is absent. Memberships omitted from a partial snapshot are left unchanged.
+- Non-empty is never treated as evidence of completeness. Only an omitted or explicit `"COMPLETE"` value allows deactivation.
+- Empty `users` or `teams` are still rejected for a `PARTIAL` snapshot, as for any other snapshot.
+
 ## Validation and Synchronization Safety
 
 - `Validate` performs structural checks after decoding. JSON decoders should reject malformed payloads; unknown fields are ignored by Go's default `encoding/json` behavior.
@@ -89,3 +122,4 @@ Deletion is hard. The persistence writes (upserts, membership reconciliation, an
 
 - Incompatible changes require a new contract version. Consumers of v1.0 reject unsupported versions.
 - Additive optional fields may be introduced within v1.0 only when existing consumers can safely ignore them.
+- `snapshotType` is the one exception, and it is safe only because of how v1.0 is deployed: the sole consumer is the Team Health Check synchronization service, which is released together with this document. A provider must not send `"PARTIAL"` to a deployment that predates the field, because such a consumer would ignore it and treat the payload as complete.

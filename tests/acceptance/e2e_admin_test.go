@@ -527,8 +527,8 @@ var _ = Describe("E2E: Admin Dashboard Management", Label("e2e", "admin"), func(
 			})
 		})
 
-		Context("when admin deletes a team", func() {
-			It("should remove the team from database", func() {
+		Context("when admin deactivates a team", func() {
+			It("should keep the team, listed as Inactive, and never hard-delete it", func() {
 				// Create a deletable test team
 				testTeamID := fmt.Sprintf("delete-team-%d", time.Now().UnixNano())
 				testTeamName := "Team to Delete"
@@ -568,10 +568,10 @@ var _ = Describe("E2E: Admin Dashboard Management", Label("e2e", "admin"), func(
 					return visible
 				}, 10*time.Second, 500*time.Millisecond).Should(BeTrue())
 
-				By("Clicking delete button for test team")
+				By("Clicking deactivate button for test team")
 				// Find the row containing our test team, then find the delete button within it
 				testTeamRow := page.Locator("[data-testid='team-row']").Filter(playwright.LocatorFilterOptions{HasText: testTeamName})
-				deleteButton := testTeamRow.Locator("[data-testid='delete-team-btn']")
+				deleteButton := testTeamRow.Locator("[data-testid='deactivate-team-btn']")
 				Eventually(func() bool {
 					visible, _ := deleteButton.IsVisible()
 					return visible
@@ -586,21 +586,24 @@ var _ = Describe("E2E: Admin Dashboard Management", Label("e2e", "admin"), func(
 				err = deleteButton.Click()
 				Expect(err).NotTo(HaveOccurred())
 
-				// Wait for deletion to complete - item should disappear from list
-				By("Waiting for deletion to complete")
-				Eventually(func() bool {
-					visible, _ := testTeamText.IsVisible()
-					return !visible // Team should disappear from list
-				}, 10*time.Second, 500*time.Millisecond).Should(BeTrue())
+				// The team is not removed: the row stays and now reads Inactive.
+				By("Waiting for the team to show as Inactive")
+				statusBadge := testTeamRow.Locator("[data-testid='team-status-badge']")
+				Eventually(func() string {
+					text, _ := statusBadge.InnerText()
+					return text
+				}, 10*time.Second, 500*time.Millisecond).Should(Equal("Inactive"))
 
-				By("Verifying team deleted from database")
-				var exists bool
-				Eventually(func() bool {
-					err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM teams WHERE id = $1)", testTeamID).Scan(&exists)
-					return err == nil && !exists
-				}, 5*time.Second, 200*time.Millisecond).Should(BeTrue())
+				By("Verifying the team is soft-deactivated in the database, not deleted")
+				var isActive bool
+				var deactivatedAt sql.NullTime
+				Eventually(func() error {
+					return db.QueryRow("SELECT is_active, deactivated_at FROM teams WHERE id = $1", testTeamID).Scan(&isActive, &deactivatedAt)
+				}, 5*time.Second, 200*time.Millisecond).Should(Succeed(), "the teams row must still exist")
+				Expect(isActive).To(BeFalse())
+				Expect(deactivatedAt.Valid).To(BeTrue())
 
-				GinkgoWriter.Printf("✅ Admin deleted team: %s\n", testTeamID)
+				GinkgoWriter.Printf("✅ Admin deactivated team (kept as Inactive): %s\n", testTeamID)
 			})
 		})
 	})
@@ -837,8 +840,8 @@ var _ = Describe("E2E: Admin Dashboard Management", Label("e2e", "admin"), func(
 			})
 		})
 
-		Context("when admin deletes a user", func() {
-			It("should remove the user from database", func() {
+		Context("when admin deactivates a user", func() {
+			It("should keep the user, listed as Inactive, and never hard-delete them", func() {
 				// Create a deletable test user
 				testUserID := fmt.Sprintf("delete-user-%d", time.Now().UnixNano())
 				testUsername := fmt.Sprintf("deleteuser%d", time.Now().Unix())
@@ -888,10 +891,10 @@ var _ = Describe("E2E: Admin Dashboard Management", Label("e2e", "admin"), func(
 					return visible
 				}, 10*time.Second, 500*time.Millisecond).Should(BeTrue())
 
-				By("Clicking delete button for test user")
+				By("Clicking deactivate button for test user")
 				// Find the row containing our test user, then find the delete button within it
 				testUserRow := page.Locator("[data-testid='user-row']").Filter(playwright.LocatorFilterOptions{HasText: testFullName})
-				deleteButton := testUserRow.Locator("[data-testid='delete-user-btn']")
+				deleteButton := testUserRow.Locator("[data-testid='deactivate-user-btn']")
 				Eventually(func() bool {
 					visible, _ := deleteButton.IsVisible()
 					return visible
@@ -900,9 +903,9 @@ var _ = Describe("E2E: Admin Dashboard Management", Label("e2e", "admin"), func(
 				err = deleteButton.Click()
 				Expect(err).NotTo(HaveOccurred())
 
-				// Users have a confirmation dialog with "Delete User" button
-				By("Confirming deletion in modal")
-				confirmButton := page.Locator("[data-testid='confirm-delete']").Or(page.Locator("button:has-text('Delete User')"))
+				// Users have a confirmation dialog with a "Deactivate User" button
+				By("Confirming deactivation in modal")
+				confirmButton := page.Locator("[data-testid='confirm-deactivate']")
 				Eventually(func() bool {
 					visible, _ := confirmButton.IsVisible()
 					return visible
@@ -911,21 +914,24 @@ var _ = Describe("E2E: Admin Dashboard Management", Label("e2e", "admin"), func(
 				err = confirmButton.Click()
 				Expect(err).NotTo(HaveOccurred())
 
-				// Wait for deletion to complete - item should disappear from list
-				By("Waiting for deletion to complete")
-				Eventually(func() bool {
-					visible, _ := testUserText.IsVisible()
-					return !visible // User should disappear from list
-				}, 10*time.Second, 500*time.Millisecond).Should(BeTrue())
+				// The person is not removed: the row stays and now reads Inactive.
+				By("Waiting for the user to show as Inactive")
+				statusBadge := testUserRow.Locator("[data-testid='user-status-badge']")
+				Eventually(func() string {
+					text, _ := statusBadge.InnerText()
+					return text
+				}, 10*time.Second, 500*time.Millisecond).Should(Equal("Inactive"))
 
-				By("Verifying user deleted from database")
-				var exists bool
-				Eventually(func() bool {
-					err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", testUserID).Scan(&exists)
-					return err == nil && !exists
-				}, 5*time.Second, 200*time.Millisecond).Should(BeTrue())
+				By("Verifying the user is soft-deactivated in the database, not deleted")
+				var isActive bool
+				var deactivatedAt sql.NullTime
+				Eventually(func() error {
+					return db.QueryRow("SELECT is_active, deactivated_at FROM users WHERE id = $1", testUserID).Scan(&isActive, &deactivatedAt)
+				}, 5*time.Second, 200*time.Millisecond).Should(Succeed(), "the users row must still exist")
+				Expect(isActive).To(BeFalse())
+				Expect(deactivatedAt.Valid).To(BeTrue())
 
-				GinkgoWriter.Printf("✅ Admin deleted user: %s\n", testUserID)
+				GinkgoWriter.Printf("✅ Admin deactivated user (kept as Inactive): %s\n", testUserID)
 			})
 		})
 	})

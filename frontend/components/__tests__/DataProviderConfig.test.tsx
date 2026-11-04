@@ -1,36 +1,28 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { render, screen, act, fireEvent } from '@testing-library/react';
 
-// The component talks to the backend only through these functions, so mocking
-// the module keeps the test on the component's own behaviour.
+// The component talks to the backend only through these functions.
 const getSettings = vi.fn();
-const sync = vi.fn();
+const startSync = vi.fn();
+const getRun = vi.fn();
+const getLatest = vi.fn();
 const clearCache = vi.fn();
-// The threshold card nested in this component fetches on mount; stub it so
-// these specs stay about the sync flow and never hit the network.
-// The unlocked-default threshold response, shared by the threshold-read and
-// hold-dismiss stubs below so this suite's baseline lives in one place.
 const UNLOCKED_THRESHOLD = {
-  maxDeletePercent: 20,
-  source: 'default',
-  defaultPercent: 20,
-  minPercent: 1,
-  maxPercent: 100,
-  locked: false,
+  maxDeletePercent: 20, source: 'default', defaultPercent: 20, minPercent: 1, maxPercent: 100, locked: false,
 };
 const getThreshold = vi.fn().mockResolvedValue(UNLOCKED_THRESHOLD);
 const dismissHold = vi.fn().mockResolvedValue(UNLOCKED_THRESHOLD);
 
-// getMassDeletionHold is deliberately NOT mocked: the component's decision to
-// show the hold banner depends on how that helper reads a real error body, so
-// the spec exercises the real one.
+// getMassDeletionHold is deliberately NOT mocked: whether the hold banner shows
+// depends on how the real helper reads a run's errorCode.
 vi.mock('@/lib/api/admin', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api/admin')>();
   return {
     ...actual,
     getOrganizationProviderSettings: (...a: any[]) => getSettings(...a),
-    syncOrganizationProvider: (...a: any[]) => sync(...a),
+    syncOrganizationProvider: (...a: any[]) => startSync(...a),
+    getSyncRun: (...a: any[]) => getRun(...a),
+    getLatestSyncRun: (...a: any[]) => getLatest(...a),
     clearAdminCache: (...a: any[]) => clearCache(...a),
     getOrgSyncDeletionThreshold: (...a: any[]) => getThreshold(...a),
     dismissMassDeletionHold: (...a: any[]) => dismissHold(...a),
@@ -38,60 +30,18 @@ vi.mock('@/lib/api/admin', async (importOriginal) => {
 });
 
 import DataProviderConfig from '../DataProviderConfig';
-import {
-  readSyncState,
-  startSyncHeartbeat,
-  setActiveSyncPromise,
-  setActiveRequestId,
-  SYNC_STALE_TIMEOUT_MS,
-  SYNC_HEARTBEAT_MS,
-  SYNC_MAX_LEASE_MS,
-  acquireSyncLease,
-  isStale,
-} from '@/lib/admin-sync-state';
+import { SYNC_POLL_INTERVAL_MS } from '@/lib/useSyncRun';
 
-// Seeds the shared slot the way another tab (or a pre-reload page) would have
-// left it. updatedAt equals startedAt, i.e. no heartbeat has landed since.
-function seedSyncState(status: 'in_progress' | 'completed' | 'failed', startedAt: number = Date.now()): string {
-  const requestId = `seed-${Math.random().toString(36).slice(2)}`;
-  localStorage.setItem(
-    'adminSyncState',
-    JSON.stringify({ status, startedAt, updatedAt: startedAt, requestId })
-  );
-  return requestId;
-}
+const READY = { provider: 'data-provider', baseUrlConfigured: true, tokenConfigured: true, readyToSync: true };
 
-const READY = {
-  provider: 'data-provider',
-  baseUrlConfigured: true,
-  tokenConfigured: true,
-  readyToSync: true,
-};
+const makeRun = (over: Record<string, any> = {}) => ({
+  runId: 'sync_1', status: 'PENDING', stage: 'QUEUED', startedAt: null, completedAt: null,
+  createdAt: '2026-08-31T05:00:00Z', insertedUsers: 0, updatedUsers: 0, unchangedUsers: 0, insertedTeams: 0, updatedTeams: 0, unchangedTeams: 0,
+  membershipChanges: 0, deactivatedRecords: 0, healthChecksDisabled: 0, healthChecksEnabled: 0, massDeletionOverridden: false,
+  errorCode: null, errorMessage: null, failedStage: null,
+  ...over,
+});
 
-const SYNC_RESULT = {
-  status: 'completed',
-  teamsSynced: 24,
-  usersSynced: 312,
-  membershipsSynced: 407,
-  membershipsRemoved: 0,
-  healthChecksDisabled: 0,
-  healthChecksEnabled: 0,
-  usersDeleted: 0,
-  teamsDeleted: 0,
-  actionItemsDeleted: 0,
-  usersSkipped: 0,
-  skippedUsers: [],
-  managerLinksCleared: 0,
-  teamLeadsCleared: 0,
-  membershipsDiscarded: 0,
-  startedAt: '2026-08-31T05:00:00Z',
-  completedAt: '2026-08-31T05:00:04Z',
-};
-
-// The backend's held-sync body, shaped exactly as the API returns it: a
-// standard error envelope plus the aggregate counts. 6 of 20 users (30%) and
-// 3 of 10 teams (30%) over a 20% threshold, with an informational membership
-// cascade that is NOT a reason for the hold.
 const HOLD_REPORT = {
   threshold: 20,
   users: { kind: 'deleted', existing: 20, deleting: 6, percent: 30, threshold: 20, incoming: 14, exceedsThreshold: true, contributesToHold: true },
@@ -99,1043 +49,350 @@ const HOLD_REPORT = {
   memberships: { kind: 'cascaded', existing: 50, deleting: 8, percent: 16, threshold: 20, incoming: 42, exceedsThreshold: false, contributesToHold: false },
 };
 
-const holdError = (report: any = HOLD_REPORT) =>
-  Object.assign(new Error('Synchronization held for review'), {
-    name: 'APIRequestError',
-    statusCode: 409,
-    apiError: {
-      error: 'Synchronization held for review',
-      message: 'This sync would remove an unusually large share of users or teams.',
-      code: 'mass_deletion_hold',
-      applied: false,
-      massDeletion: report,
-    },
-  });
+const stepStates = () => [0, 1, 2, 3, 4, 5].map((i) => screen.getByTestId(`sync-step-${i}`).getAttribute('data-state'));
+const status = () => screen.getByTestId('sync-progress-status').textContent;
+const button = () => screen.getByTestId('sync-now-btn') as HTMLButtonElement;
 
-// renderReady mounts the component and waits for the initial settings load,
-// so specs start from a settled screen rather than the loading state.
-const renderReady = async (settings = READY) => {
+// Lets pending promises settle, then advances the poll timer.
+const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0); });
+const poll = () => act(async () => { await vi.advanceTimersByTimeAsync(SYNC_POLL_INTERVAL_MS + 10); });
+
+const renderReady = async (latest: any = null, settings = READY) => {
   getSettings.mockResolvedValue(settings);
+  getLatest.mockResolvedValue(latest);
   render(<DataProviderConfig />);
-  await screen.findByTestId('sync-now-btn');
+  await flush();
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  localStorage.clear();
-  // The active-sync handle is module-level (deliberately, so an SPA remount
-  // can reattach to the real in-flight request) -- reset it between tests so
-  // one spec's in-flight promise can't leak into the next.
-  setActiveSyncPromise(null);
-  setActiveRequestId(null);
+  vi.useFakeTimers();
+  getThreshold.mockResolvedValue(UNLOCKED_THRESHOLD);
+  dismissHold.mockResolvedValue(UNLOCKED_THRESHOLD);
 });
+afterEach(() => vi.useRealTimers());
 
-afterEach(() => {
-  vi.useRealTimers();
-  localStorage.clear();
-  setActiveSyncPromise(null);
-  setActiveRequestId(null);
-});
-
-describe('DataProviderConfig — Sync Now button', () => {
-  it('renders an enabled, accessible button once the provider is ready', async () => {
+describe('Sync Now: status and progress', () => {
+  it('renders an enabled, accessible button and an idle gray bar before any run', async () => {
     await renderReady();
-
-    const btn = screen.getByRole('button', { name: 'Sync organization data from provider' });
-    expect(btn).toBeEnabled();
-    expect(btn).toHaveTextContent('Sync Now');
-    expect(screen.queryByTestId('provider-not-configured')).not.toBeInTheDocument();
+    expect(button()).toBeEnabled();
+    expect(button()).toHaveAccessibleName('Sync organization data from provider');
+    expect(stepStates()).toEqual(Array(6).fill('pending'));
+    expect(screen.queryByLabelText(/token/i)).toBeNull();
   });
 
-  it('never renders a token entry field', async () => {
-    await renderReady();
-    expect(screen.queryByTestId('provider-token-input')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('save-provider-token-btn')).not.toBeInTheDocument();
+  it('keeps Sync Now disabled until the latest run has loaded, without showing Syncing', async () => {
+    let resolveLatest!: (v: any) => void;
+    getSettings.mockResolvedValue(READY);
+    getLatest.mockReturnValue(new Promise((res) => { resolveLatest = res; }));
+    render(<DataProviderConfig />);
+    await flush();
+
+    expect(button()).toBeDisabled();
+    expect(button()).toHaveTextContent('Sync Now');
+    fireEvent.click(button());
+    await flush();
+    expect(startSync).not.toHaveBeenCalled();
+
+    resolveLatest(null);
+    await flush();
+    expect(button()).toBeEnabled();
   });
 
-  it('calls the sync API exactly once when clicked', async () => {
-    const user = userEvent.setup();
-    sync.mockResolvedValue(SYNC_RESULT);
+  it('shows Pending immediately on click, using the returned run id, and disables the button', async () => {
+    startSync.mockResolvedValue(makeRun());
     await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-
-    await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
+    fireEvent.click(button());
+    await flush();
+    expect(startSync).toHaveBeenCalledTimes(1);
+    expect(status()).toMatch(/^Pending/);
+    expect(stepStates()[0]).toBe('active');
+    expect(button()).toBeDisabled();
   });
 
-  it('disables the button and shows a running label while the sync is in flight', async () => {
-    const user = userEvent.setup();
-    let release: (v: unknown) => void = () => {};
-    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+  it('follows PENDING -> RUNNING (with stage) -> SUCCESS and then stops polling', async () => {
+    startSync.mockResolvedValue(makeRun());
+    getRun
+      .mockResolvedValueOnce(makeRun({ status: 'RUNNING', stage: 'UPSERTING_USERS' }))
+      .mockResolvedValue(makeRun({
+        status: 'SUCCESS', stage: 'COMPLETED', completedAt: '2026-08-31T05:00:04Z',
+        insertedUsers: 3, updatedUsers: 9, unchangedUsers: 1180, insertedTeams: 1, updatedTeams: 2, unchangedTeams: 234, membershipChanges: 7,
+      }));
     await renderReady();
+    fireEvent.click(button());
+    await flush();
 
-    await user.click(screen.getByTestId('sync-now-btn'));
+    await poll();
+    expect(status()).toBe('Running: Running sync');
+    expect(stepStates()).toEqual(['complete', 'complete', 'active', 'pending', 'pending', 'pending']);
+    expect(button()).toBeDisabled();
 
-    const btn = screen.getByTestId('sync-now-btn');
-    await waitFor(() => expect(btn).toBeDisabled());
-    expect(btn).toHaveTextContent('Syncing...');
-    expect(btn).toHaveAttribute('aria-busy', 'true');
+    await poll();
+    expect(stepStates()).toEqual(Array(6).fill('complete'));
+    expect(screen.getByTestId('sync-counts')).toHaveTextContent('Users: 3 added, 9 updated, 1180 unchanged');
+    expect(screen.getByTestId('sync-counts')).toHaveTextContent('Teams: 1 added, 2 updated, 234 unchanged');
+    expect(screen.getByTestId('sync-counts')).toHaveTextContent('Membership changes: 7');
+    expect(button()).toBeEnabled();
+    expect(clearCache).toHaveBeenCalled();
 
-    release(SYNC_RESULT);
-    await waitFor(() => expect(btn).toHaveTextContent('Sync Now'));
+    const calls = getRun.mock.calls.length;
+    await poll();
+    await poll();
+    expect(getRun.mock.calls.length).toBe(calls); // terminal: polling stopped
+  });
+
+  it('shows an identical re-sync as 0 added, 0 updated, everything unchanged, 0 membership changes', async () => {
+    await renderReady(makeRun({
+      status: 'SUCCESS', stage: 'COMPLETED', unchangedUsers: 1192, unchangedTeams: 237,
+    }));
+    expect(screen.getByTestId('sync-counts').textContent).toBe(
+      'Users: 0 added, 0 updated, 1192 unchanged; Teams: 0 added, 0 updated, 237 unchanged; Membership changes: 0.'
+    );
+    expect(screen.queryByTestId('sync-deactivated')).toBeNull();
+  });
+
+  it('shows deactivations and that history is kept', async () => {
+    await renderReady(makeRun({ status: 'SUCCESS', stage: 'COMPLETED', deactivatedRecords: 4 }));
+    expect(screen.getByTestId('sync-deactivated')).toHaveTextContent('4 user(s) or team(s) marked inactive');
+    expect(screen.getByTestId('sync-deactivated')).toHaveTextContent('history is kept');
+  });
+
+  it('warns when the sync switched team health checks off or on', async () => {
+    await renderReady(makeRun({ status: 'SUCCESS', stage: 'COMPLETED', healthChecksDisabled: 3, healthChecksEnabled: 2 }));
+    expect(screen.getByTestId('sync-health-checks-disabled')).toHaveTextContent('switched off for 3 team(s)');
+    expect(screen.getByTestId('sync-health-checks-enabled')).toHaveTextContent('switched on for 2 team(s)');
+  });
+
+  it('reports that a mass-deletion override was applied', async () => {
+    await renderReady(makeRun({ status: 'SUCCESS', stage: 'COMPLETED', massDeletionOverridden: true }));
+    expect(screen.getByTestId('sync-override-applied')).toHaveTextContent('overridden');
+  });
+
+  it('shows no health-check or override notices for an ordinary sync', async () => {
+    await renderReady(makeRun({ status: 'SUCCESS', stage: 'COMPLETED' }));
+    expect(screen.queryByTestId('sync-health-checks-disabled')).toBeNull();
+    expect(screen.queryByTestId('sync-health-checks-enabled')).toBeNull();
+    expect(screen.queryByTestId('sync-override-applied')).toBeNull();
+  });
+
+  it('shows the failed step in red with the safe message and stage, leaving later steps incomplete', async () => {
+    startSync.mockResolvedValue(makeRun());
+    getRun.mockResolvedValue(makeRun({
+      status: 'FAILED', stage: 'FAILED', failedStage: 'SYNCING_MEMBERSHIPS', errorCode: 'DATABASE_ERROR',
+      errorMessage: 'The synchronization failed while saving changes. Nothing was changed.',
+    }));
+    await renderReady();
+    fireEvent.click(button());
+    await flush();
+    await poll();
+    expect(stepStates()).toEqual(['complete', 'complete', 'complete', 'failed', 'pending', 'pending']);
+    expect(screen.getByTestId('sync-progress-error')).toHaveTextContent('Nothing was changed');
+    expect(status()).toBe('Failed at step: Queries updated');
+    expect(screen.queryByTestId('sync-result')).toBeNull();
+    expect(button()).toBeEnabled();
   });
 
   it('does not fire a second request when clicked again mid-flight', async () => {
-    const user = userEvent.setup();
-    let release: (v: unknown) => void = () => {};
-    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    startSync.mockResolvedValue(makeRun());
     await renderReady();
-
-    const btn = screen.getByTestId('sync-now-btn');
-    await user.click(btn);
-    await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
-
-    // A disabled button swallows pointer events, so drive the handler directly
-    // to prove the component's own re-entry guard holds too.
-    btn.click();
-    await user.click(btn, { pointerEventsCheck: 0 });
-
-    expect(sync).toHaveBeenCalledTimes(1);
-
-    release(SYNC_RESULT);
-    await waitFor(() => expect(btn).toBeEnabled());
+    fireEvent.click(button());
+    fireEvent.click(button());
+    await flush();
+    expect(startSync).toHaveBeenCalledTimes(1);
   });
 
-  it('shows the synchronized counts on success and refreshes cached admin data', async () => {
-    const user = userEvent.setup();
-    sync.mockResolvedValue(SYNC_RESULT);
+  it('shows the failure and never success when starting the sync fails (network error)', async () => {
+    startSync.mockRejectedValue(new Error('Network down'));
     await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-
-    const result = await screen.findByTestId('sync-result');
-    expect(result).toHaveTextContent('312 users');
-    expect(result).toHaveTextContent('24 teams');
-    expect(result).toHaveTextContent('407 team memberships');
-    expect(clearCache).toHaveBeenCalledTimes(1);
+    fireEvent.click(button());
+    await flush();
+    expect(screen.getByTestId('provider-error')).toHaveTextContent('Network down');
+    expect(screen.queryByTestId('sync-result')).toBeNull();
+    expect(stepStates()).toEqual(Array(6).fill('pending'));
+    expect(button()).toBeEnabled();
   });
 
-  it('shows deletion counts when the provider no longer reports a user or team', async () => {
-    const user = userEvent.setup();
-    sync.mockResolvedValue({ ...SYNC_RESULT, usersDeleted: 3, teamsDeleted: 1 });
+  it('keeps polling through a network error without ever showing success', async () => {
+    startSync.mockResolvedValue(makeRun());
+    getRun
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue(makeRun({ status: 'SUCCESS', stage: 'COMPLETED' }));
     await renderReady();
+    fireEvent.click(button());
+    await flush();
 
-    await user.click(screen.getByTestId('sync-now-btn'));
+    await poll();
+    expect(screen.getByTestId('sync-poll-error')).toHaveTextContent('Retrying');
+    expect(screen.queryByTestId('sync-result')).toBeNull();
+    expect(status()).toMatch(/^Pending/);
 
-    expect(await screen.findByTestId('sync-deleted')).toHaveTextContent('3 user(s) and 1 team(s) removed');
+    await poll();
+    expect(screen.getByTestId('sync-result')).toBeInTheDocument();
+    expect(screen.queryByTestId('sync-poll-error')).toBeNull();
+  });
+});
+
+describe('Sync Now: restoring state after a refresh', () => {
+  it('restores a RUNNING run: button disabled, correct step, keeps polling to the end', async () => {
+    getRun.mockResolvedValue(makeRun({ status: 'SUCCESS', stage: 'COMPLETED' }));
+    await renderReady(makeRun({ status: 'RUNNING', stage: 'SYNCING_MEMBERSHIPS' }));
+    expect(button()).toBeDisabled();
+    expect(stepStates()).toEqual(['complete', 'complete', 'complete', 'active', 'pending', 'pending']);
+    expect(startSync).not.toHaveBeenCalled();
+    await poll();
+    expect(stepStates()).toEqual(Array(6).fill('complete'));
+    expect(button()).toBeEnabled();
   });
 
-  it('shows an action-items-deleted notice when a deletion cascades into action items', async () => {
-    const user = userEvent.setup();
-    sync.mockResolvedValue({ ...SYNC_RESULT, actionItemsDeleted: 3 });
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-
-    expect(await screen.findByTestId('sync-action-items-deleted')).toHaveTextContent(
-      '3 action item(s) removed'
-    );
+  it('restores the last SUCCESS as a fully green bar with an enabled button and no polling', async () => {
+    await renderReady(makeRun({ status: 'SUCCESS', stage: 'COMPLETED' }));
+    expect(stepStates()).toEqual(Array(6).fill('complete'));
+    expect(button()).toBeEnabled();
+    await poll();
+    expect(getRun).not.toHaveBeenCalled();
   });
 
-  it('reports teams whose health checks were switched off, without ever mentioning skipped users', async () => {
-    const user = userEvent.setup();
-    sync.mockResolvedValue({
-      ...SYNC_RESULT,
-      usersSkipped: 3,
-      skippedUsers: [{ userId: 'u1', username: 'exec', reason: 'unknown_hierarchy_level' }],
-      healthChecksDisabled: 24,
-    });
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-
-    expect(screen.getByTestId('sync-health-check-warning')).toHaveTextContent(
-      'Health checks switched off for 24 team(s)'
-    );
-    // Skipped-user counts (including anyone the provider excludes by hierarchy level)
-    // are intentionally never surfaced in this UI.
-    expect(screen.queryByTestId('sync-skipped')).not.toBeInTheDocument();
+  it('restores the last FAILED run with its failed step and message', async () => {
+    await renderReady(makeRun({
+      status: 'FAILED', stage: 'FAILED', failedStage: 'VALIDATING', errorCode: 'INVALID_SNAPSHOT', errorMessage: 'bad payload',
+    }));
+    expect(stepStates()).toEqual(['complete', 'failed', 'pending', 'pending', 'pending', 'pending']);
+    expect(screen.getByTestId('sync-progress-error')).toHaveTextContent('bad payload');
   });
 
-  it('shows a safe message on failure and leaves the button usable', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValue(new Error('a synchronization is already in progress'));
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-
-    const err = await screen.findByTestId('provider-error');
-    expect(err).toHaveTextContent('a synchronization is already in progress');
-    expect(screen.queryByTestId('sync-result')).not.toBeInTheDocument();
-    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
+  it('is idle and enabled when no sync has ever run', async () => {
+    await renderReady(null);
+    expect(button()).toBeEnabled();
+    expect(stepStates()).toEqual(Array(6).fill('pending'));
   });
+});
 
-  it('shows a distinct mass-deletion-hold message and leaves the button usable', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValue(holdError());
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-
-    const holdBanner = await screen.findByTestId('sync-mass-deletion-hold');
-    expect(holdBanner).toHaveTextContent('held for review');
-    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
-  });
-
+describe('Sync Now: provider readiness', () => {
   it('disables the button and explains why when the provider is not ready', async () => {
-    await renderReady({
-      ...READY,
-      baseUrlConfigured: false,
-      tokenConfigured: false,
-      readyToSync: false,
-    });
-
-    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
-    const banner = screen.getByTestId('provider-not-configured');
-    expect(banner).toHaveTextContent('DATA_PROVIDER_BASE_URL');
-    expect(banner).toHaveTextContent('DATA_PROVIDER_API_TOKEN');
+    await renderReady(null, { ...READY, tokenConfigured: false, readyToSync: false });
+    expect(button()).toBeDisabled();
+    expect(screen.getByTestId('provider-not-configured')).toHaveTextContent('DATA_PROVIDER_API_TOKEN');
   });
 });
 
-describe('DataProviderConfig — persisted sync state (reload, tab switch, navigation)', () => {
-  it('persists an in-progress record to localStorage before/at the same time the request starts', async () => {
-    const user = userEvent.setup();
-    let release: (v: unknown) => void = () => {};
-    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-
-    await waitFor(() => {
-      const state = readSyncState();
-      expect(state?.status).toBe('in_progress');
-    });
-
-    release(SYNC_RESULT);
-    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
+describe('mass-deactivation hold and Sync Anyway override', () => {
+  const heldRun = () => makeRun({
+    status: 'FAILED', stage: 'FAILED', failedStage: 'UPSERTING_USERS', errorCode: 'MASS_DEACTIVATION_HOLD',
+    errorMessage: 'This sync would deactivate an unusually large share.', massDeletion: HOLD_REPORT,
   });
 
-  it('clears the persisted state and re-enables the button on success', async () => {
-    const user = userEvent.setup();
-    sync.mockResolvedValue(SYNC_RESULT);
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-    await screen.findByTestId('sync-result');
-
-    expect(readSyncState()).toBeNull();
-    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
-  });
-
-  it('clears the persisted state and re-enables the button on failure', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValue(new Error('Synchronization failed'));
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-    await screen.findByTestId('provider-error');
-
-    expect(readSyncState()).toBeNull();
-    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
-  });
-
-  it('restores a disabled, syncing button on remount (refresh) when a fresh in-progress state is persisted', async () => {
-    seedSyncState('in_progress', Date.now());
-    // No live promise survives a real reload, and the sync API must not be
-    // called again just because a valid in-progress record exists.
-    getSettings.mockResolvedValue(READY);
-
-    render(<DataProviderConfig />);
-    await screen.findByTestId('sync-now-btn');
-
-    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
-    expect(screen.getByTestId('sync-now-btn')).toHaveTextContent('Syncing...');
-    expect(sync).not.toHaveBeenCalled();
-  });
-
-  it('discards a stale in-progress state on remount and re-enables the button without calling the API', async () => {
-    seedSyncState('in_progress', Date.now() - (SYNC_STALE_TIMEOUT_MS + 1000));
-    getSettings.mockResolvedValue(READY);
-
-    render(<DataProviderConfig />);
-    await screen.findByTestId('sync-now-btn');
-
-    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
-    expect(sync).not.toHaveBeenCalled();
-    expect(readSyncState()).toBeNull();
-  });
-
-  it('self-clears a valid-but-unresolved in-progress state once the stale timeout elapses', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    seedSyncState('in_progress', Date.now());
-    getSettings.mockResolvedValue(READY);
-
-    render(<DataProviderConfig />);
-    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(SYNC_STALE_TIMEOUT_MS + 100);
-    });
-
-    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
-    expect(readSyncState()).toBeNull();
-  });
-
-  it('reattaches to the real in-flight request on an SPA remount (tab switch/navigation) instead of starting a duplicate', async () => {
-    const user = userEvent.setup();
-    let release: (v: unknown) => void = () => {};
-    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
-
-    getSettings.mockResolvedValue(READY);
-    const { unmount } = render(<DataProviderConfig />);
-    await screen.findByTestId('sync-now-btn');
-    await user.click(screen.getByTestId('sync-now-btn'));
-    await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
-
-    // Simulate switching to the Hierarchy tab and back: the component
-    // unmounts while the request is still pending, then remounts.
-    unmount();
-    render(<DataProviderConfig />);
-    await screen.findByTestId('sync-now-btn');
-
-    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
-    expect(sync).toHaveBeenCalledTimes(1); // still just the one original call
-
-    release(SYNC_RESULT);
-    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
-    expect(await screen.findByTestId('sync-result')).toBeInTheDocument();
-    expect(readSyncState()).toBeNull();
-  });
-
-  it('does not treat an unmount/remount as a failure while the original request is still pending', async () => {
-    let release: (v: unknown) => void = () => {};
-    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
-    getSettings.mockResolvedValue(READY);
-
-    const { unmount } = render(<DataProviderConfig />);
-    await screen.findByTestId('sync-now-btn');
-    await userEvent.setup().click(screen.getByTestId('sync-now-btn'));
-    await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
-
-    unmount();
-    render(<DataProviderConfig />);
-    await screen.findByTestId('sync-now-btn');
-
-    expect(screen.queryByTestId('provider-error')).not.toBeInTheDocument();
-
-    release(SYNC_RESULT);
-    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
-  });
-
-  it('surfaces the completion banner on remount when the sync finished entirely while unmounted', async () => {
-    let release: (v: unknown) => void = () => {};
-    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
-    getSettings.mockResolvedValue(READY);
-
-    const { unmount } = render(<DataProviderConfig />);
-    await screen.findByTestId('sync-now-btn');
-    await userEvent.setup().click(screen.getByTestId('sync-now-btn'));
-    await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
-
-    unmount();
-
-    // The sync completes while nothing is mounted to observe it, then the
-    // admin returns to the tab afterward -- not while it is still pending.
-    await act(async () => {
-      release(SYNC_RESULT);
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    render(<DataProviderConfig />);
-    await screen.findByTestId('sync-now-btn');
-
-    expect(await screen.findByTestId('sync-result')).toBeInTheDocument();
-  });
-
-  it('leaves an idle, enabled button on mount when no sync is active (unchanged existing behavior)', async () => {
-    await renderReady();
-    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
-    expect(readSyncState()).toBeNull();
-  });
-
-  // The browser only fires `storage` in tabs OTHER than the one that made the
-  // change, so a manually dispatched StorageEvent here is exactly what a
-  // second tab -- mounted before this one started (or finished) a sync --
-  // would receive. Without reacting to it, that tab would keep showing an
-  // enabled button and could clobber this tab's in-progress record by
-  // clicking Sync Now itself.
-  it('disables the button in real time when another tab starts a sync, without a remount', async () => {
-    await renderReady();
-    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
-
-    const otherTabRequestId = seedSyncState('in_progress');
-    act(() => {
-      window.dispatchEvent(
-        new StorageEvent('storage', {
-          key: 'adminSyncState',
-          newValue: JSON.stringify(readSyncState()),
-        })
-      );
-    });
-
-    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
-    expect(sync).not.toHaveBeenCalled();
-
-    // The other tab finishes and clears its own record.
-    const { clearSyncState } = await import('@/lib/admin-sync-state');
-    await clearSyncState(otherTabRequestId);
-    act(() => {
-      window.dispatchEvent(new StorageEvent('storage', { key: 'adminSyncState', newValue: null }));
-    });
-
-    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
-  });
-
-  it("does not let this tab's stale-timeout clear erase a newer record another tab has since written", async () => {
-    // This tab discovers an in-progress record left over from a reload and
-    // starts timing it out.
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const staleOwnerRequestId = seedSyncState('in_progress', Date.now());
-    getSettings.mockResolvedValue(READY);
-
-    render(<DataProviderConfig />);
-    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
-
-    // Before the timeout fires, a different tab starts its own, genuinely
-    // fresh sync -- taking over the shared slot with a new requestId -- and,
-    // being alive, keeps heartbeating it.
-    const { clearSyncState } = await import('@/lib/admin-sync-state');
-    const freshRequestId = seedSyncState('in_progress', Date.now());
-    expect(freshRequestId).not.toBe(staleOwnerRequestId);
-    const stopOtherTabHeartbeat = startSyncHeartbeat(freshRequestId);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(SYNC_STALE_TIMEOUT_MS + 100);
-    });
-
-    // The old record's timeout fired, but it is scoped to the requestId it
-    // originally read, and the newer record has been kept alive, so it must
-    // not have been erased.
-    const state = readSyncState();
-    expect(state).not.toBeNull();
-    expect(state?.requestId).toBe(freshRequestId);
-    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
-    stopOtherTabHeartbeat();
-    await clearSyncState(freshRequestId);
-  });
-});
-
-describe('DataProviderConfig — mass-deletion hold and Sync Anyway override', () => {
-  it('shows the calculated users, teams, memberships and threshold in a red warning', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValue(holdError());
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-
-    const banner = await screen.findByTestId('sync-mass-deletion-hold');
-    expect(banner).toHaveAttribute('role', 'alert');
-    expect(banner.className).toMatch(/border-red/);
-
-    expect(screen.getByTestId('sync-hold-users')).toHaveTextContent('6 deleted / 20 existing = 30.0%');
-    expect(screen.getByTestId('sync-hold-teams')).toHaveTextContent('3 deleted / 10 existing = 30.0%');
-    // Labelled by what the backend says it is: a cascade, not a deletion.
-    expect(screen.getByTestId('sync-hold-memberships')).toHaveTextContent('8 cascaded / 50 existing = 16.0%');
-    expect(screen.getByTestId('sync-hold-threshold')).toHaveTextContent('20.0%');
-    // The diagnostic that explains a surprising count: what the provider sent.
-    expect(screen.getByTestId('sync-hold-users')).toHaveTextContent('provider sent 14');
-    expect(screen.getByTestId('sync-hold-teams')).toHaveTextContent('provider sent 7');
-    expect(screen.getByTestId('sync-hold-incoming-hint')).toHaveTextContent("provider's snapshot is missing those records");
-    expect(screen.getByTestId('sync-hold-not-applied')).toHaveTextContent('has not been applied');
-    expect(screen.queryByTestId('sync-result')).not.toBeInTheDocument();
-  });
-
-  it('omits the membership line when the backend did not measure one', async () => {
-    const user = userEvent.setup();
-    const { memberships, ...withoutMemberships } = HOLD_REPORT;
-    sync.mockRejectedValue(holdError(withoutMemberships));
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-
-    await screen.findByTestId('sync-hold-users');
-    expect(screen.queryByTestId('sync-hold-memberships')).not.toBeInTheDocument();
-  });
-
-  it('never sends an override on its own', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValue(holdError());
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-    await screen.findByTestId('sync-mass-deletion-hold');
-
-    expect(sync).toHaveBeenCalledTimes(1);
-    expect(sync).toHaveBeenCalledWith({ overrideMassDeletion: false });
-    // Sync Anyway is offered, but nothing is retried until it is used.
-    expect(screen.getByTestId('sync-anyway-btn')).toBeInTheDocument();
-    expect(screen.queryByTestId('sync-anyway-confirm-btn')).not.toBeInTheDocument();
-  });
-
-  it('asks for confirmation before sending the override', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValue(holdError());
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-    await user.click(await screen.findByTestId('sync-anyway-btn'));
-
-    const confirm = screen.getByTestId('sync-anyway-confirm');
-    expect(confirm).toHaveTextContent('6 user(s)');
-    expect(confirm).toHaveTextContent('3 team(s)');
-    // Still only the original request: revealing the confirmation sends nothing.
-    expect(sync).toHaveBeenCalledTimes(1);
-  });
-
-  it('abandons the override when the admin cancels', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValue(holdError());
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-    await user.click(await screen.findByTestId('sync-anyway-btn'));
-    await user.click(screen.getByTestId('sync-anyway-cancel-btn'));
-
-    expect(screen.queryByTestId('sync-anyway-confirm')).not.toBeInTheDocument();
+  it('shows the calculated counts and threshold, using "deactivated" wording', async () => {
+    await renderReady(heldRun());
     expect(screen.getByTestId('sync-mass-deletion-hold')).toBeInTheDocument();
-    expect(sync).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('sync-hold-users')).toHaveTextContent('6 deactivated / 20 existing = 30.0%');
+    expect(screen.getByTestId('sync-hold-teams')).toHaveTextContent('3 deactivated / 10 existing = 30.0%');
+    expect(screen.getByTestId('sync-hold-threshold')).toHaveTextContent('20.0%');
+    expect(screen.getByTestId('sync-hold-not-applied')).toBeInTheDocument();
   });
 
-  it('sends the one-time override and shows the result once confirmed', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValueOnce(holdError());
-    sync.mockResolvedValueOnce({
-      ...SYNC_RESULT,
-      usersDeleted: 6,
-      teamsDeleted: 3,
-      massDeletionOverridden: true,
-      massDeletion: HOLD_REPORT,
-    });
-    await renderReady();
+  it('never sends an override on its own and asks for confirmation first', async () => {
+    await renderReady(heldRun());
+    fireEvent.click(screen.getByTestId('sync-anyway-btn'));
+    expect(screen.getByTestId('sync-anyway-confirm')).toHaveTextContent('mark 6 user(s) and 3 team(s) inactive');
+    expect(startSync).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('sync-anyway-cancel-btn'));
+    expect(screen.queryByTestId('sync-anyway-confirm')).toBeNull();
+    expect(startSync).not.toHaveBeenCalled();
+  });
 
-    await user.click(screen.getByTestId('sync-now-btn'));
-    await user.click(await screen.findByTestId('sync-anyway-btn'));
-    await user.click(screen.getByTestId('sync-anyway-confirm-btn'));
-
-    const result = await screen.findByTestId('sync-result');
-    expect(result).toHaveTextContent('Sync complete');
-    expect(screen.getByTestId('sync-override-applied')).toBeInTheDocument();
-    expect(screen.getByTestId('sync-deleted')).toHaveTextContent('6 user(s) and 3 team(s) removed');
-
-    expect(sync).toHaveBeenNthCalledWith(2, {
+  it('sends the override with the exact reviewed counts once confirmed', async () => {
+    startSync.mockResolvedValue(makeRun({ runId: 'sync_2' }));
+    await renderReady(heldRun());
+    fireEvent.click(screen.getByTestId('sync-anyway-btn'));
+    fireEvent.click(screen.getByTestId('sync-anyway-confirm-btn'));
+    await flush();
+    expect(startSync).toHaveBeenCalledWith({
       overrideMassDeletion: true,
       confirmedMassDeletion: { usersExisting: 20, usersDeleting: 6, teamsExisting: 10, teamsDeleting: 3 },
     });
-    // The hold is resolved, so the warning and its buttons are gone.
-    expect(screen.queryByTestId('sync-mass-deletion-hold')).not.toBeInTheDocument();
-    expect(clearCache).toHaveBeenCalled();
+    expect(screen.queryByTestId('sync-mass-deletion-hold')).toBeNull(); // the new run replaced the held one
   });
 
-  it('shows the error when the overridden sync itself fails validation', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValueOnce(holdError());
-    sync.mockRejectedValueOnce(new Error('Provider returned data that failed contract validation'));
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-    await user.click(await screen.findByTestId('sync-anyway-btn'));
-    await user.click(screen.getByTestId('sync-anyway-confirm-btn'));
-
-    const err = await screen.findByTestId('provider-error');
-    expect(err).toHaveTextContent('failed contract validation');
-    expect(screen.queryByTestId('sync-mass-deletion-hold')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('sync-result')).not.toBeInTheDocument();
+  it('sends a plain sync (no override) from the Sync Now button', async () => {
+    startSync.mockResolvedValue(makeRun());
+    await renderReady(heldRun());
+    fireEvent.click(button());
+    await flush();
+    expect(startSync).toHaveBeenCalledWith({ overrideMassDeletion: false, confirmedMassDeletion: undefined });
   });
 
-  it('leaves a safe sync completely unchanged', async () => {
-    const user = userEvent.setup();
-    sync.mockResolvedValue(SYNC_RESULT);
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-
-    await screen.findByTestId('sync-result');
-    expect(sync).toHaveBeenCalledWith({ overrideMassDeletion: false });
-    expect(screen.queryByTestId('sync-mass-deletion-hold')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('sync-override-applied')).not.toBeInTheDocument();
-  });
-
-
-  it('makes an under-reported provider payload visible as the cause of the hold', async () => {
-    const user = userEvent.setup();
-    // The real-world shape: every user came back, almost no teams did. Users
-    // read as healthy while teams look catastrophic -- which is a payload
-    // problem, not a mass departure, and the banner has to say so.
-    sync.mockRejectedValue(
-      holdError({
-        threshold: 20,
-        users: { kind: 'deleted', existing: 240, deleting: 0, percent: 0, threshold: 20, incoming: 240, exceedsThreshold: false, contributesToHold: true },
-        teams: { kind: 'deleted', existing: 243, deleting: 237, percent: 97.5, threshold: 20, incoming: 6, exceedsThreshold: true, contributesToHold: true },
-      })
-    );
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-
-    await screen.findByTestId('sync-mass-deletion-hold');
-    expect(screen.getByTestId('sync-hold-users')).toHaveTextContent('0 deleted / 240 existing = 0.0%');
-    expect(screen.getByTestId('sync-hold-users')).toHaveTextContent('provider sent 240');
-    expect(screen.getByTestId('sync-hold-teams')).toHaveTextContent('237 deleted / 243 existing = 97.5%');
-    expect(screen.getByTestId('sync-hold-teams')).toHaveTextContent('provider sent 6');
-  });
-
-  it('locks the deletion threshold while a hold is unresolved', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValue(holdError());
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-    await screen.findByTestId('sync-mass-deletion-hold');
-
-    // The hold banner says so, and the threshold card's controls are disabled.
-    expect(screen.getByTestId('sync-hold-threshold-locked')).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByTestId('threshold-input')).toBeDisabled()
-    );
-    expect(screen.getByTestId('threshold-save-btn')).toBeDisabled();
-  });
-
-  it('dismisses a hold without applying it, which unlocks the threshold', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValue(holdError());
-    await renderReady();
-
-    await user.click(screen.getByTestId('sync-now-btn'));
-    await screen.findByTestId('sync-mass-deletion-hold');
-
-    const syncCallsBefore = sync.mock.calls.length;
-    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
-
-    await waitFor(() =>
-      expect(screen.queryByTestId('sync-mass-deletion-hold')).not.toBeInTheDocument()
-    );
+  it('dismisses a hold without applying anything, and keeps it dismissed across polls', async () => {
+    await renderReady(heldRun());
+    fireEvent.click(screen.getByTestId('sync-hold-dismiss-btn'));
+    await flush();
     expect(dismissHold).toHaveBeenCalledTimes(1);
-    // Dismissing resolves the review; it never applies the sync.
-    expect(sync).toHaveBeenCalledTimes(syncCallsBefore);
-    await waitFor(() => expect(screen.getByTestId('threshold-input')).not.toBeDisabled());
+    expect(screen.queryByTestId('sync-mass-deletion-hold')).toBeNull();
+    expect(startSync).not.toHaveBeenCalled();
+  });
+
+  it('shows an ordinary failure (not the hold banner) for other errors', async () => {
+    await renderReady(makeRun({ status: 'FAILED', stage: 'FAILED', failedStage: 'FETCHING', errorCode: 'PROVIDER_FETCH_FAILED', errorMessage: 'Provider unreachable' }));
+    expect(screen.queryByTestId('sync-mass-deletion-hold')).toBeNull();
+    expect(screen.getByTestId('sync-progress-error')).toHaveTextContent('Provider unreachable');
   });
 });
 
-describe('DataProviderConfig — hold dismissal feedback', () => {
-  it('shows a dismissal failure in the hold panel and keeps the hold visible', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValue(holdError());
-    dismissHold.mockRejectedValueOnce(new Error('A sync is running'));
-    await renderReady();
-    await user.click(screen.getByTestId('sync-now-btn'));
-    await screen.findByTestId('sync-mass-deletion-hold');
+describe('sync-running warning and threshold lock follow the persisted run', () => {
+  const LOCKED = { ...UNLOCKED_THRESHOLD, locked: true, lockReason: 'syncing', activeSyncThreshold: 20 };
+  const notice = () => screen.queryByTestId('threshold-locked-notice');
+  const input = () => screen.getByTestId('threshold-input') as HTMLInputElement;
 
-    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
+  // The server's own answer follows the run: locked while a run is active.
+  const serverLockFollows = (state: { active: boolean }) =>
+    getThreshold.mockImplementation(async () => (state.active ? LOCKED : UNLOCKED_THRESHOLD));
 
-    const failure = await screen.findByTestId('sync-hold-dismiss-error');
-    expect(failure).toHaveTextContent('A sync is running');
-    expect(failure).toHaveTextContent('still in place');
-    expect(screen.getByTestId('sync-mass-deletion-hold')).toBeInTheDocument();
-    // Dismissal feedback is its own message, not the sync's generic error box.
-    expect(screen.queryByTestId('provider-error')).not.toBeInTheDocument();
-    // And the admin can try again.
-    expect(screen.getByTestId('sync-hold-dismiss-btn')).toBeEnabled();
+  it('shows the warning and disables the threshold while a run is active', async () => {
+    serverLockFollows({ active: true });
+    await renderReady(makeRun({ status: 'RUNNING', stage: 'FETCHING' }));
+    await flush();
+    expect(notice()).not.toBeNull();
+    expect(input()).toBeDisabled();
   });
 
-  it('clears the old hold error after a successful dismissal instead of resurfacing it as a generic failure', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValue(holdError());
-    await renderReady();
-    await user.click(screen.getByTestId('sync-now-btn'));
-    await screen.findByTestId('sync-mass-deletion-hold');
+  it('removes the warning and re-enables the threshold as soon as the run succeeds', async () => {
+    const state = { active: true };
+    serverLockFollows(state);
+    getRun.mockImplementation(async () => { state.active = false; return makeRun({ status: 'SUCCESS', stage: 'COMPLETED' }); });
+    await renderReady(makeRun({ status: 'RUNNING', stage: 'COMMITTING' }));
+    await flush();
+    expect(notice()).not.toBeNull();
 
-    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
-
-    await waitFor(() => expect(screen.queryByTestId('sync-mass-deletion-hold')).not.toBeInTheDocument());
-    expect(screen.queryByTestId('provider-error')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('sync-hold-dismiss-error')).not.toBeInTheDocument();
+    await poll();
+    await flush();
+    expect(stepStates()).toEqual(Array(6).fill('complete'));
+    expect(notice()).toBeNull();
+    expect(input()).toBeEnabled();
+    expect(button()).toBeEnabled();
   });
 
-  it('retries after a failed dismissal and then clears both the failure and the hold', async () => {
-    const user = userEvent.setup();
-    sync.mockRejectedValue(holdError());
-    dismissHold.mockRejectedValueOnce(new Error('temporary failure'));
-    await renderReady();
-    await user.click(screen.getByTestId('sync-now-btn'));
-    await screen.findByTestId('sync-mass-deletion-hold');
-    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
-    await screen.findByTestId('sync-hold-dismiss-error');
-
-    await user.click(screen.getByTestId('sync-hold-dismiss-btn'));
-
-    await waitFor(() => expect(screen.queryByTestId('sync-mass-deletion-hold')).not.toBeInTheDocument());
-    expect(screen.queryByTestId('sync-hold-dismiss-error')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('provider-error')).not.toBeInTheDocument();
-  });
-});
-
-describe('DataProviderConfig — sync lease (long-running sync, heartbeat, cross-tab)', () => {
-  const click = async () => {
-    await act(async () => {
-      screen.getByTestId('sync-now-btn').click();
+  it('removes the warning and re-enables the threshold as soon as the run fails', async () => {
+    const state = { active: true };
+    serverLockFollows(state);
+    getRun.mockImplementation(async () => {
+      state.active = false;
+      return makeRun({ status: 'FAILED', stage: 'FAILED', failedStage: 'UPSERTING_TEAMS', errorCode: 'DATABASE_ERROR', errorMessage: 'failed' });
     });
-  };
+    await renderReady(makeRun({ status: 'RUNNING', stage: 'UPSERTING_TEAMS' }));
+    await flush();
+    expect(notice()).not.toBeNull();
 
-  it('keeps the lease alive for a sync that outlasts SYNC_STALE_TIMEOUT_MS, then releases it on completion', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    let release: (v: unknown) => void = () => {};
-    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
-    await renderReady();
-    await click();
-    await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3 * SYNC_STALE_TIMEOUT_MS);
-    });
-
-    const state = readSyncState()!;
-    expect(state).not.toBeNull();
-    expect(isStale(state)).toBe(false); // heartbeat kept advancing updatedAt
-    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
-
-    await act(async () => {
-      release(SYNC_RESULT);
-    });
-    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
-    expect(readSyncState()).toBeNull();
-
-    // No heartbeat left behind to recreate the record.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS * 3);
-    });
-    expect(readSyncState()).toBeNull();
+    await poll();
+    await flush();
+    expect(notice()).toBeNull();
+    expect(input()).toBeEnabled();
+    expect(button()).toBeEnabled();
   });
 
-  it('stops heartbeating and clears the lease when the sync fails', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    let fail: (e: unknown) => void = () => {};
-    sync.mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
-    await renderReady();
-    await click();
-    await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
-
-    await act(async () => {
-      fail(new Error('boom'));
-    });
-    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
-    expect(readSyncState()).toBeNull();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS * 3);
-    });
-    expect(readSyncState()).toBeNull();
-  });
-
-  it('keeps heartbeating across an unmount/remount while the request is still running', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    let release: (v: unknown) => void = () => {};
-    sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
-    getSettings.mockResolvedValue(READY);
-    const { unmount } = render(<DataProviderConfig />);
-    await screen.findByTestId('sync-now-btn');
-    await click();
-    await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
-
-    unmount();
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2 * SYNC_STALE_TIMEOUT_MS);
-    });
-    expect(isStale(readSyncState()!)).toBe(false);
-
-    render(<DataProviderConfig />);
-    await screen.findByTestId('sync-now-btn');
-    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
-
-    await act(async () => {
-      release(SYNC_RESULT);
-    });
-    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
-    expect(readSyncState()).toBeNull();
-  });
-
-  // The race: settle drops the in-memory handle on the request, but the lock
-  // serialized clear of the persisted lease finishes later. A remount in that
-  // gap must not be left parked on a lease that is about to disappear.
-  describe('SPA remount while the lease release is still in flight', () => {
-    let gated = false;
-    let pending: Array<() => void> = [];
-    const releaseGate = async () => {
-      gated = false;
-      await act(async () => {
-        pending.splice(0).forEach((run) => run());
-      });
-    };
-
-    beforeEach(() => {
-      gated = false;
-      pending = [];
-      // A Web Locks stand-in whose critical sections can be held back, to make
-      // the clear take as long as it likes.
-      Object.defineProperty(navigator, 'locks', {
-        configurable: true,
-        value: {
-          request: (_name: string, cb: () => unknown) =>
-            gated
-              ? new Promise((resolve) => pending.push(() => resolve(cb())))
-              : Promise.resolve().then(cb),
-        },
-      });
-    });
-    afterEach(() => {
-      delete (navigator as unknown as { locks?: unknown }).locks;
-    });
-
-    it('reattaches instead of parking on the old lease, then becomes idle once the release lands', async () => {
-      let release: (v: unknown) => void = () => {};
-      sync.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
-      getSettings.mockResolvedValue(READY);
-      const first = render(<DataProviderConfig />);
-      await screen.findByTestId('sync-now-btn');
-      await click();
-      await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
-
-      // The request settles, but the lease release is held back.
-      gated = true;
-      await act(async () => {
-        release(SYNC_RESULT);
-      });
-      first.unmount();
-
-      render(<DataProviderConfig />);
-      await screen.findByTestId('sync-now-btn');
-      // The old lease is still on disk; the remount must treat the request as
-      // still settling, not as a foreign sync it has to time out.
-      expect(readSyncState()).not.toBeNull();
-      expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
-
-      await releaseGate();
-
-      await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
-      expect(readSyncState()).toBeNull();
-      expect(await screen.findByTestId('sync-result')).toBeInTheDocument();
-    });
-
-    it('does not stay syncing for a full stale timeout when a lease is released behind its back', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      seedSyncState('in_progress', Date.now());
-      getSettings.mockResolvedValue(READY);
-      render(<DataProviderConfig />);
-      await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
-
-      // Released by something in this same tab: no `storage` event is fired.
-      localStorage.removeItem('adminSyncState');
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(SYNC_HEARTBEAT_MS + 100);
-      });
-
-      expect(screen.getByTestId('sync-now-btn')).toBeEnabled(); // well inside SYNC_STALE_TIMEOUT_MS
-    });
-  });
-
-  describe('a request that hangs past the maximum lease duration', () => {
-    const MESSAGE = /stopped responding/i;
-    const hang = () => {
-      let settle: (v: unknown) => void = () => {};
-      let fail: (e: unknown) => void = () => {};
-      sync.mockImplementationOnce(
-        () => new Promise((resolve, reject) => { settle = resolve; fail = reject; })
-      );
-      return { settle: (v: unknown) => settle(v), fail: (e: unknown) => fail(e) };
-    };
-    const pastTheBound = async () => {
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(SYNC_MAX_LEASE_MS + SYNC_HEARTBEAT_MS);
-      });
-    };
-
-    it('keeps the lease inside the bound, then releases it so another tab can start a sync', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      hang();
-      await renderReady();
-      await click();
-      await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
-      const hungId = readSyncState()!.requestId;
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(SYNC_MAX_LEASE_MS - SYNC_HEARTBEAT_MS * 2);
-      });
-      expect(await acquireSyncLease()).toBeNull();
-
-      await pastTheBound();
-      expect(readSyncState()).toBeNull(); // released at the bound
-      const reclaimed = await acquireSyncLease();
-      expect(reclaimed).not.toBeNull();
-      expect(reclaimed).not.toBe(hungId);
-    });
-
-    it('stops presenting the request as running in the tab that started it', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      hang();
-      await renderReady();
-      await click();
-      await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
-
-      await pastTheBound();
-
-      expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
-      expect(screen.getByTestId('provider-error')).toHaveTextContent(MESSAGE);
-    });
-
-    it('stops presenting it as running in a remounted instance that reattached to it', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      hang();
-      getSettings.mockResolvedValue(READY);
-      const first = render(<DataProviderConfig />);
-      await screen.findByTestId('sync-now-btn');
-      await click();
-      await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
-      first.unmount();
-
-      render(<DataProviderConfig />);
-      await screen.findByTestId('sync-now-btn');
-      expect(screen.getByTestId('sync-now-btn')).toBeDisabled(); // reattached to the live request
-
-      await pastTheBound();
-
-      expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
-      expect(screen.getByTestId('provider-error')).toHaveTextContent(MESSAGE);
-    });
-
-    it('a remount after the bound does not reattach to the abandoned request', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      hang();
-      getSettings.mockResolvedValue(READY);
-      const first = render(<DataProviderConfig />);
-      await screen.findByTestId('sync-now-btn');
-      await click();
-      await waitFor(() => expect(readSyncState()?.status).toBe('in_progress'));
-      first.unmount();
-      await pastTheBound();
-
-      render(<DataProviderConfig />);
-      await screen.findByTestId('sync-now-btn');
-
-      expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
-      expect(sync).toHaveBeenCalledTimes(1);
-    });
-
-    it('a late settlement does not clear or reset a newer request that has since started', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      const first = hang();
-      const second = hang();
-      await renderReady();
-      await click();
-      await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
-
-      await pastTheBound(); // first request abandoned, tab idle again
-      await click(); // a newer request starts and takes the lease
-      await waitFor(() => expect(sync).toHaveBeenCalledTimes(2));
-      const newerId = readSyncState()!.requestId;
-      expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
-
-      // The old request finally comes back (with a result, then it could fail too).
-      await act(async () => {
-        first.settle(SYNC_RESULT);
-      });
-
-      expect(readSyncState()?.requestId).toBe(newerId); // lease untouched
-      expect(screen.getByTestId('sync-now-btn')).toBeDisabled(); // still syncing the newer one
-      expect(screen.queryByTestId('sync-result')).not.toBeInTheDocument(); // old outcome not shown over it
-
-      // The newer request still settles normally.
-      await act(async () => {
-        second.settle(SYNC_RESULT);
-      });
-      await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeEnabled());
-      expect(readSyncState()).toBeNull();
-    });
-
-    it('shows a late result when nothing newer is running, without touching any lease', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      const first = hang();
-      await renderReady();
-      await click();
-      await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
-      await pastTheBound();
-      const other = await acquireSyncLease(); // another tab holds the slot now
-
-      await act(async () => {
-        first.settle(SYNC_RESULT);
-      });
-
-      expect(await screen.findByTestId('sync-result')).toBeInTheDocument();
-      expect(readSyncState()?.requestId).toBe(other); // that tab's lease was not cleared
-    });
-
-    it('a late failure from the abandoned request does not disturb a newer one either', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      const first = hang();
-      hang();
-      await renderReady();
-      await click();
-      await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
-      await pastTheBound();
-      await click();
-      await waitFor(() => expect(sync).toHaveBeenCalledTimes(2));
-      const newerId = readSyncState()!.requestId;
-
-      await act(async () => {
-        first.fail(new Error('connection reset'));
-      });
-
-      expect(readSyncState()?.requestId).toBe(newerId);
-      expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
-      expect(screen.queryByText(/connection reset/)).not.toBeInTheDocument();
-    });
-  });
-
-  it('recovers from a genuinely abandoned sync: no heartbeat, so the record is cleared after the timeout', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    seedSyncState('in_progress', Date.now());
-    getSettings.mockResolvedValue(READY);
-    render(<DataProviderConfig />);
-    await waitFor(() => expect(screen.getByTestId('sync-now-btn')).toBeDisabled());
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(SYNC_STALE_TIMEOUT_MS + 1_000);
-    });
-
-    expect(screen.getByTestId('sync-now-btn')).toBeEnabled();
-    expect(readSyncState()).toBeNull();
-  });
-
-  it("does not start a duplicate sync when another tab already holds a live lease this tab hasn't heard about", async () => {
-    await renderReady(); // idle: no record, no storage event yet
-    const otherTab = seedSyncState('in_progress', Date.now());
-
-    await click();
-
-    expect(sync).not.toHaveBeenCalled();
-    expect(screen.getByTestId('sync-now-btn')).toBeDisabled();
-    expect(readSyncState()?.requestId).toBe(otherTab);
-  });
-
-  it('ignores a rapid second click while the first is still acquiring its lease', async () => {
-    sync.mockImplementation(() => new Promise(() => {}));
-    await renderReady();
-
-    await act(async () => {
-      screen.getByTestId('sync-now-btn').click();
-      screen.getByTestId('sync-now-btn').click();
-    });
-
-    await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
+  it('a completed run restored after refresh never shows the running warning', async () => {
+    serverLockFollows({ active: false });
+    await renderReady(makeRun({ status: 'SUCCESS', stage: 'COMPLETED' }));
+    await flush();
+    expect(notice()).toBeNull();
+    expect(input()).toBeEnabled();
   });
 });
