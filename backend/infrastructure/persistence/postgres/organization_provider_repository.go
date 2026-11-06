@@ -251,6 +251,11 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 	if err := reconcileActiveStates(ctx, tx, in, currentProtectedUserIDSet, track, result); err != nil {
 		return nil, err
 	}
+	// Last write: the THC-only pod-lead mapping reads the teams as they are now
+	// that everything else is in place. See applyPodLeadLevels.
+	if err := applyPodLeadLevels(ctx, tx, in, currentProtectedUserIDSet, track, result); err != nil {
+		return nil, err
+	}
 	track.finish(result)
 	if err := recordAppliedSnapshot(ctx, tx, in.Snapshot.GeneratedAt); err != nil {
 		return nil, err
@@ -627,7 +632,20 @@ func (t *changeTracker) finish(r *orgprovider.ApplyResult) {
 // currentProtectedUserIDs additionally skips any user this deployment's own
 // database already recognizes as protected, regardless of what the snapshot
 // claims their hierarchy level is now.
+//
+// While the THC-only pod-lead mapping is on (in.MapPodLeads), a stored
+// PodLeadLevelID against a provider PodLeadSourceLevelID is not treated as a
+// provider change: applyPodLeadLevels decides that pair at the end of the run,
+// when the final leads are known. Without this, every stable pod lead would be
+// written to level-5 here and back to level-4 there, and show up as an updated
+// user on every sync. With the mapping off both ids are empty strings, which
+// match no real level, so the statement behaves exactly as before.
 func upsertSnapshotUsers(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker) error {
+	sourceLevel, leadLevel := "", ""
+	if in.MapPodLeads {
+		sourceLevel, leadLevel = orgprovider.PodLeadSourceLevelID, orgprovider.PodLeadLevelID
+	}
+
 	for _, u := range in.Snapshot.Users {
 		if orgprovider.IsProtectedUser(u.ID, u.HierarchyLevelID) || currentProtectedUserIDs[u.ID] {
 			continue
@@ -642,14 +660,18 @@ func upsertSnapshotUsers(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyIn
 				username = EXCLUDED.username,
 				email = EXCLUDED.email,
 				full_name = EXCLUDED.full_name,
-				hierarchy_level_id = EXCLUDED.hierarchy_level_id,
+				hierarchy_level_id = CASE
+					WHEN users.hierarchy_level_id = $7 AND EXCLUDED.hierarchy_level_id = $6 THEN users.hierarchy_level_id
+					ELSE EXCLUDED.hierarchy_level_id
+				END,
 				updated_at = CURRENT_TIMESTAMP
 			WHERE btrim(users.username) IS DISTINCT FROM EXCLUDED.username
 			   OR lower(btrim(users.email)) IS DISTINCT FROM lower(EXCLUDED.email)
 			   OR btrim(users.full_name) IS DISTINCT FROM EXCLUDED.full_name
-			   OR users.hierarchy_level_id IS DISTINCT FROM EXCLUDED.hierarchy_level_id
+			   OR (users.hierarchy_level_id IS DISTINCT FROM EXCLUDED.hierarchy_level_id
+			       AND NOT (users.hierarchy_level_id = $7 AND EXCLUDED.hierarchy_level_id = $6))
 			RETURNING (xmax = 0)
-		`, u.ID, u.Username, u.Email, u.DisplayName, u.HierarchyLevelID).Scan(&inserted)
+		`, u.ID, u.Username, u.Email, u.DisplayName, u.HierarchyLevelID, sourceLevel, leadLevel).Scan(&inserted)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue // existing row, identical business fields: unchanged
 		}
@@ -666,6 +688,102 @@ func upsertSnapshotUsers(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyIn
 		}
 	}
 	return nil
+}
+
+// activePodLeadsSubquery selects the users who lead an active team and are
+// active members of it, read from the teams exactly as this transaction has left
+// them. An inactive membership row is history (a person who moved on keeps one),
+// so it does not make someone a lead.
+const activePodLeadsSubquery = `
+	SELECT t.team_lead_id
+	FROM teams t
+	JOIN team_members tm ON tm.team_id = t.id AND tm.user_id = t.team_lead_id AND tm.is_active
+	WHERE t.is_active AND t.team_lead_id IS NOT NULL`
+
+// applyPodLeadLevels is the THC-only pod-lead mapping (orgprovider.PodLeadLevelID),
+// the last write of the apply. Among the snapshot users the provider sent as
+// PodLeadSourceLevelID it
+//
+//   - promotes every user who leads an active team they belong to, and
+//   - returns a stored PodLeadLevelID to the provider's level for every user who
+//     no longer does.
+//
+// It runs after users, teams, memberships and reactivation are all written, so
+// it reads the final teams and leads straight from the database. That is why it
+// needs no copy of the rules that decide who ends up leading what: a lead kept
+// because the snapshot omitted teamLeadId, a team reactivated by this snapshot,
+// a user re-keyed to a new provider id, a protected team, a partial snapshot and
+// a lead replaced in this run are all just rows by now.
+//
+// Users are matched by the provider's id, which rekeyUsersToProviderIDs has
+// already made the stored id. Protected users are never touched. Only rows that
+// actually change are written, and each is recorded as updated, so a sync with
+// nothing to change still reports nothing changed.
+func applyPodLeadLevels(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker, result *orgprovider.ApplyResult) error {
+	if !in.MapPodLeads {
+		return nil
+	}
+
+	var sourceIDs []string
+	for _, u := range in.Snapshot.Users {
+		if u.HierarchyLevelID != orgprovider.PodLeadSourceLevelID {
+			continue
+		}
+		if orgprovider.IsProtectedUser(u.ID, u.HierarchyLevelID) || currentProtectedUserIDs[u.ID] {
+			continue
+		}
+		sourceIDs = append(sourceIDs, u.ID)
+	}
+	if len(sourceIDs) == 0 {
+		return nil
+	}
+
+	promoted, err := setUserLevels(ctx, tx, track, `
+		UPDATE users SET hierarchy_level_id = $2, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ANY($1) AND hierarchy_level_id = $3
+		  AND id IN (`+activePodLeadsSubquery+`)
+		RETURNING id
+	`, pq.Array(sourceIDs), orgprovider.PodLeadLevelID, orgprovider.PodLeadSourceLevelID)
+	if err != nil {
+		return fmt.Errorf("failed to promote pod leads: %w", err)
+	}
+
+	returned, err := setUserLevels(ctx, tx, track, `
+		UPDATE users SET hierarchy_level_id = $3, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ANY($1) AND hierarchy_level_id = $2
+		  AND id NOT IN (`+activePodLeadsSubquery+`)
+		RETURNING id
+	`, pq.Array(sourceIDs), orgprovider.PodLeadLevelID, orgprovider.PodLeadSourceLevelID)
+	if err != nil {
+		return fmt.Errorf("failed to return former pod leads to their provider level: %w", err)
+	}
+
+	result.PodLeadsPromoted = promoted
+	result.PodLeadsReturned = returned
+	return nil
+}
+
+// setUserLevels runs one level UPDATE ... RETURNING id, records every returned
+// user as changed, and returns how many there were. The rows are drained and
+// closed before it returns, so the transaction's connection is free for the
+// next statement.
+func setUserLevels(ctx context.Context, tx *sql.Tx, track *changeTracker, query string, args ...interface{}) (int, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	n := 0
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		markChanged(track.changedUsers, track.insertedUsers, id)
+		n++
+	}
+	return n, rows.Err()
 }
 
 // applySnapshotReportsTo writes manager links now that every snapshot user exists.
