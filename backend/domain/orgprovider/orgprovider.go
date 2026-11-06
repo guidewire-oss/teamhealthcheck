@@ -88,6 +88,33 @@ func ProtectedTeamIDs() []string {
 	return ids
 }
 
+// How a person's level reaches THC takes two mappings, applied in this order.
+//
+// Mapping 1 (provider, not in this repo): the provider derives hierarchyLevelId
+// from the seniority grade (Okta managementLevel) as level-(grade - 3). Grades
+// 1-3 are never sent. THC receives only the finished level.
+//
+// Mapping 2 (THC only): a user who leads an active team and whom the provider
+// sent as PodLeadSourceLevelID ("Team Member") is stored as PodLeadLevelID
+// ("Team Lead"). THC grants the Dashboard and Export on level-4, and a senior
+// engineer who leads a pod would otherwise never get it. It runs inside the
+// apply transaction, once every other write is done, so it sees the teams and
+// leads exactly as they will be committed.
+//
+//	grade   provider level   pod lead stored as   non-lead stored as
+//	  4     level-1          level-1              level-1
+//	  5     level-2          level-2              level-2
+//	  6     level-3          level-3              level-3
+//	  7     level-4          level-4              level-4
+//	  8     level-5          level-4  (promoted)  level-5
+//	  9+    level-6 and up   skipped: THC has no such level (see FilterSnapshot)
+//
+// Both ids live here so mapping 2 is defined in exactly one place.
+const (
+	PodLeadSourceLevelID = "level-5"
+	PodLeadLevelID       = "level-4"
+)
+
 // SkipReasons reported when a snapshot record cannot be imported for this sync.
 const (
 	SkipReasonMissingLevel = "missing_hierarchy_level"
@@ -170,6 +197,13 @@ type ApplyInput struct {
 	// report) is treated exactly like no override at all -- the sync is held
 	// again, with the current counts, for a fresh confirmation.
 	ConfirmedMassDeletion *ConfirmedMassDeletion
+
+	// MapPodLeads turns on the THC-only pod-lead mapping (see PodLeadLevelID).
+	// The caller sets it only when this deployment has both levels configured,
+	// because storing a level that does not exist would violate the foreign key
+	// on users.hierarchy_level_id. The zero value leaves every level exactly as
+	// the provider sent it.
+	MapPodLeads bool
 }
 
 // ConfirmedMassDeletion is the counts an administrator actually reviewed

@@ -374,19 +374,6 @@ func (s *OrganizationSyncService) syncCore(ctx context.Context, opts SyncOptions
 		return nil, errors.Join(ErrInvalidSnapshot, err)
 	}
 
-	// THC-only role mapping: a valid pod lead the provider sent as level-5 is
-	// stored as level-4. It runs on the filtered copy, after the filter has
-	// discarded invalid lead links, and immediately before persistence. Leads
-	// THC will keep because the snapshot omits teamLeadId are read first, so
-	// this sync does not write their level-5 back over their level-4.
-	preservedLeads, err := s.preservedLeadIDs(ctx, filtered.Snapshot, snapshotTypeOf(snapshot) == orgprovider.SnapshotPartial)
-	if err != nil {
-		return nil, err
-	}
-	if n := PromotePodLeads(filtered.Snapshot, knownLevels, preservedLeads); n > 0 {
-		log.WithField("promoted_pod_leads", n).Info("org sync computed pod lead promotions for this snapshot")
-	}
-
 	applied, err := s.repo.ApplySnapshot(ctx, orgprovider.ApplyInput{
 		Snapshot:     filtered.Snapshot,
 		SnapshotType: snapshotTypeOf(snapshot),
@@ -404,6 +391,9 @@ func (s *OrganizationSyncService) syncCore(ctx context.Context, opts SyncOptions
 		MaxDeletePercent:         maxDeletePercent,
 		OverrideMassDeletion:     opts.OverrideMassDeletion,
 		ConfirmedMassDeletion:    opts.ConfirmedMassDeletion,
+		// THC-only pod-lead mapping (see orgprovider.PodLeadLevelID). It needs
+		// both levels to exist, or storing level-4 would break the foreign key.
+		MapPodLeads: knownLevels[orgprovider.PodLeadLevelID] && knownLevels[orgprovider.PodLeadSourceLevelID],
 	})
 	if err != nil {
 		// A tripped guard freezes the threshold until the hold is resolved, so
@@ -889,22 +879,6 @@ func (s *OrganizationSyncService) rederiveSupervisorChains(ctx context.Context, 
 // complete snapshot. Non-empty is never taken as evidence of completeness --
 // ValidationError has already rejected empty users/teams -- and PARTIAL (or any
 // value validation did not accept) keeps every missing record untouched.
-// preservedLeadIDs reads THC's stored teams and returns the leads this sync will
-// keep without the snapshot naming them. See PreservedLeadIDs. A deployment with
-// no team repository wired (tests, synchronous-only setups) has nothing stored
-// to preserve. A read failure aborts the sync before anything is written, so a
-// failed lookup can never demote stored leads.
-func (s *OrganizationSyncService) preservedLeadIDs(ctx context.Context, snap *orgsnapshot.Snapshot, partial bool) (map[string]bool, error) {
-	if s.teamRepo == nil {
-		return nil, nil
-	}
-	stored, err := s.teamRepo.FindAll(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read stored team leads: %w", err)
-	}
-	return PreservedLeadIDs(stored, snap, partial), nil
-}
-
 func snapshotTypeOf(snap *orgsnapshot.Snapshot) orgprovider.SnapshotType {
 	switch snap.SnapshotType {
 	case "", orgsnapshot.TypeComplete:

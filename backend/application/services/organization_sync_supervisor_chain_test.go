@@ -25,16 +25,6 @@ func (r *fakeTeamRepo) FindByID(_ context.Context, id string) (*team.Team, error
 	return r.stored[id], nil
 }
 
-// FindAll serves the stored teams to the pod-lead step that runs before the
-// snapshot is applied.
-func (r *fakeTeamRepo) FindAll(context.Context) ([]*team.Team, error) {
-	teams := make([]*team.Team, 0, len(r.stored))
-	for _, t := range r.stored {
-		teams = append(teams, t)
-	}
-	return teams, nil
-}
-
 func (r *fakeTeamRepo) UpdateSupervisorChain(_ context.Context, teamID string, chain []*team.SupervisorLink) error {
 	if r.updatedChains == nil {
 		r.updatedChains = map[string][]*team.SupervisorLink{}
