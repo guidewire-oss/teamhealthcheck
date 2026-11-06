@@ -374,6 +374,13 @@ func (s *OrganizationSyncService) syncCore(ctx context.Context, opts SyncOptions
 		return nil, errors.Join(ErrInvalidSnapshot, err)
 	}
 
+	// THC-only role mapping: a valid pod lead the provider sent as level-5 is
+	// stored as level-4. It runs on the filtered copy, after the filter has
+	// discarded invalid lead links, and immediately before persistence.
+	if n := PromotePodLeads(filtered.Snapshot, knownLevels); n > 0 {
+		logger.Get().WithField("promoted_pod_leads", n).Info("org sync stored pod leads at the team lead level")
+	}
+
 	applied, err := s.repo.ApplySnapshot(ctx, orgprovider.ApplyInput{
 		Snapshot:     filtered.Snapshot,
 		SnapshotType: snapshotTypeOf(snapshot),
