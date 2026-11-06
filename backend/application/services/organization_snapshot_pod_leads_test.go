@@ -2,11 +2,13 @@ package services_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/agopalakrishnan/teams360/backend/application/services"
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
+	"github.com/agopalakrishnan/teams360/backend/domain/team"
 	"github.com/agopalakrishnan/teams360/backend/pkg/orgsnapshot"
 )
 
@@ -31,7 +33,7 @@ func TestPromotePodLeadsRaisesALevel5LeadToLevel4(t *testing.T) {
 		[]orgsnapshot.Membership{{UserID: "lead", TeamID: "t1"}, {UserID: "dev", TeamID: "t1"}},
 	)
 
-	promoted := services.PromotePodLeads(s, knownLevels())
+	promoted := services.PromotePodLeads(s, knownLevels(), nil)
 
 	if promoted != 1 {
 		t.Fatalf("promoted = %d, want 1", promoted)
@@ -61,7 +63,7 @@ func TestPromotePodLeadsLeavesLeadsAboveLevel5Alone(t *testing.T) {
 		nil,
 	)
 
-	promoted := services.PromotePodLeads(s, knownLevels())
+	promoted := services.PromotePodLeads(s, knownLevels(), nil)
 
 	if promoted != 0 {
 		t.Fatalf("promoted = %d, want 0", promoted)
@@ -83,7 +85,7 @@ func TestPromotePodLeadsCountsALeadOfSeveralTeamsOnce(t *testing.T) {
 		nil,
 	)
 
-	if promoted := services.PromotePodLeads(s, knownLevels()); promoted != 1 {
+	if promoted := services.PromotePodLeads(s, knownLevels(), nil); promoted != 1 {
 		t.Fatalf("promoted = %d, want 1", promoted)
 	}
 	if got := levelOf(t, s, "lead"); got != "level-4" {
@@ -98,7 +100,7 @@ func TestPromotePodLeadsIgnoresTeamsWithoutALead(t *testing.T) {
 		[]orgsnapshot.Membership{{UserID: "dev", TeamID: "t1"}},
 	)
 
-	if promoted := services.PromotePodLeads(s, knownLevels()); promoted != 0 {
+	if promoted := services.PromotePodLeads(s, knownLevels(), nil); promoted != 0 {
 		t.Fatalf("promoted = %d, want 0", promoted)
 	}
 	if got := levelOf(t, s, "dev"); got != "level-5" {
@@ -115,7 +117,7 @@ func TestPromotePodLeadsDoesNothingWhenThisDeploymentHasNoLevel4(t *testing.T) {
 		nil,
 	)
 
-	if promoted := services.PromotePodLeads(s, levels); promoted != 0 {
+	if promoted := services.PromotePodLeads(s, levels, nil); promoted != 0 {
 		t.Fatalf("promoted = %d, want 0", promoted)
 	}
 	if got := levelOf(t, s, "lead"); got != "level-5" {
@@ -124,7 +126,7 @@ func TestPromotePodLeadsDoesNothingWhenThisDeploymentHasNoLevel4(t *testing.T) {
 }
 
 func TestPromotePodLeadsToleratesANilSnapshot(t *testing.T) {
-	if promoted := services.PromotePodLeads(nil, knownLevels()); promoted != 0 {
+	if promoted := services.PromotePodLeads(nil, knownLevels(), nil); promoted != 0 {
 		t.Fatalf("promoted = %d, want 0", promoted)
 	}
 }
@@ -229,10 +231,10 @@ func TestPromotePodLeadsIsIdempotent(t *testing.T) {
 		nil,
 	)
 
-	if first := services.PromotePodLeads(s, knownLevels()); first != 1 {
+	if first := services.PromotePodLeads(s, knownLevels(), nil); first != 1 {
 		t.Fatalf("first run promoted %d, want 1", first)
 	}
-	if second := services.PromotePodLeads(s, knownLevels()); second != 0 {
+	if second := services.PromotePodLeads(s, knownLevels(), nil); second != 0 {
 		t.Errorf("second run promoted %d, want 0 (already level-4)", second)
 	}
 	if got := levelOf(t, s, "lead"); got != "level-4" {
@@ -414,5 +416,170 @@ func TestLevelsTHCDoesNotHaveAreSkippedAndNeverPromoted(t *testing.T) {
 	}
 	if got := levelOf(t, applied, "grade8"); got != "level-4" {
 		t.Errorf("grade-8 lead stored as %q, want level-4", got)
+	}
+}
+
+// storedLeadsRepo serves the teams THC already has, as the sync reads them
+// before it writes anything. Only FindAll is implemented; the embedded nil
+// interface would panic if the sync called anything else.
+type storedLeadsRepo struct {
+	team.Repository
+	teams []*team.Team
+	err   error
+}
+
+func (r *storedLeadsRepo) FindAll(context.Context) ([]*team.Team, error) {
+	return r.teams, r.err
+}
+
+func storedTeam(id, leadID string, active bool) *team.Team {
+	return &team.Team{ID: id, Name: id, TeamLeadID: strPtr(leadID), IsActive: active}
+}
+
+// syncWithStoredTeams runs a sync whose database already holds the given teams.
+// The user repository is left nil so the post-commit supervisor-chain step,
+// which is not under test here, is skipped.
+func syncWithStoredTeams(t *testing.T, snap *orgsnapshot.Snapshot, stored []*team.Team) *orgsnapshot.Snapshot {
+	t.Helper()
+	repo := &capturingRepo{}
+	service := services.NewOrganizationSyncService(repo, fixedFetcher{snapshot: snap}, nil, &storedLeadsRepo{teams: stored})
+	if _, err := service.Sync(context.Background()); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if repo.applied == nil {
+		t.Fatal("reconciliation never ran")
+	}
+	return repo.applied
+}
+
+// A snapshot that omits teamLeadId tells THC to keep the lead it already has.
+// That stored lead is still the team's lead after the sync, so the sync must not
+// write their level-5 back over the level-4 they were given.
+func TestSyncKeepsAStoredLeadAtLevel4WhenTheSnapshotOmitsTheTeamLead(t *testing.T) {
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("lead", "lead", "level-5", nil)},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Goa"}}, // teamLeadId omitted
+		[]orgsnapshot.Membership{{UserID: "lead", TeamID: "t1"}},
+	)
+
+	applied := syncWithStoredTeams(t, snap, []*team.Team{storedTeam("t1", "lead", true)})
+
+	if got := levelOf(t, applied, "lead"); got != "level-4" {
+		t.Errorf("stored lead level = %q, want level-4", got)
+	}
+}
+
+func TestSyncKeepsTheStoredLeadWhenFilteringDiscardsTheSnapshotsLeadLink(t *testing.T) {
+	// The snapshot names "lead", but they are not a member of the team, so the
+	// filter clears the link and THC keeps its stored lead -- here, the same
+	// person, who must therefore stay level-4.
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("lead", "lead", "level-5", nil), user("dev", "dev", "level-5", nil)},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Goa", TeamLeadID: strPtr("lead")}},
+		[]orgsnapshot.Membership{{UserID: "dev", TeamID: "t1"}},
+	)
+
+	applied := syncWithStoredTeams(t, snap, []*team.Team{storedTeam("t1", "lead", true)})
+
+	if got := levelOf(t, applied, "lead"); got != "level-4" {
+		t.Errorf("stored lead level = %q, want level-4", got)
+	}
+	if got := levelOf(t, applied, "dev"); got != "level-5" {
+		t.Errorf("non-lead level = %q, want level-5", got)
+	}
+}
+
+func TestSyncDoesNotKeepAStoredLeadWhoseTeamNowNamesSomeoneElse(t *testing.T) {
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("old", "old", "level-5", nil), user("new", "new", "level-5", nil)},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Goa", TeamLeadID: strPtr("new")}},
+		[]orgsnapshot.Membership{{UserID: "old", TeamID: "t1"}, {UserID: "new", TeamID: "t1"}},
+	)
+
+	applied := syncWithStoredTeams(t, snap, []*team.Team{storedTeam("t1", "old", true)})
+
+	if got := levelOf(t, applied, "old"); got != "level-5" {
+		t.Errorf("former lead level = %q, want level-5", got)
+	}
+	if got := levelOf(t, applied, "new"); got != "level-4" {
+		t.Errorf("new lead level = %q, want level-4", got)
+	}
+}
+
+func TestSyncDoesNotKeepTheStoredLeadOfAnInactiveTeam(t *testing.T) {
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("lead", "lead", "level-5", nil)},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Goa"}},
+		[]orgsnapshot.Membership{{UserID: "lead", TeamID: "t1"}},
+	)
+
+	applied := syncWithStoredTeams(t, snap, []*team.Team{storedTeam("t1", "lead", false)})
+
+	if got := levelOf(t, applied, "lead"); got != "level-5" {
+		t.Errorf("lead of an inactive team level = %q, want level-5", got)
+	}
+}
+
+func TestACompleteSnapshotDoesNotKeepTheLeadOfATeamItRemoves(t *testing.T) {
+	// A complete snapshot deactivates teams it does not mention, so their lead
+	// no longer leads an active team.
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("lead", "lead", "level-5", nil), user("dev", "dev", "level-5", nil)},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Goa"}},
+		[]orgsnapshot.Membership{{UserID: "dev", TeamID: "t1"}},
+	)
+
+	applied := syncWithStoredTeams(t, snap, []*team.Team{storedTeam("gone", "lead", true)})
+
+	if got := levelOf(t, applied, "lead"); got != "level-5" {
+		t.Errorf("lead of a removed team level = %q, want level-5", got)
+	}
+}
+
+func TestAPartialSnapshotKeepsTheLeadOfATeamItDoesNotMention(t *testing.T) {
+	// A partial snapshot leaves unmentioned teams alone, so their lead is still
+	// a lead after the sync even though this snapshot never names the team.
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("lead", "lead", "level-5", nil), user("dev", "dev", "level-5", nil)},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Goa"}},
+		[]orgsnapshot.Membership{{UserID: "dev", TeamID: "t1"}},
+	)
+	snap.SnapshotType = orgsnapshot.TypePartial
+
+	applied := syncWithStoredTeams(t, snap, []*team.Team{storedTeam("other", "lead", true)})
+
+	if got := levelOf(t, applied, "lead"); got != "level-4" {
+		t.Errorf("lead of an untouched team level = %q, want level-4", got)
+	}
+}
+
+func TestSyncFailsBeforeWritingWhenStoredLeadsCannotBeRead(t *testing.T) {
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("lead", "lead", "level-5", nil)},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Goa"}},
+		[]orgsnapshot.Membership{{UserID: "lead", TeamID: "t1"}},
+	)
+	repo := &capturingRepo{}
+	teams := &storedLeadsRepo{err: errors.New("database unavailable")}
+	service := services.NewOrganizationSyncService(repo, fixedFetcher{snapshot: snap}, nil, teams)
+
+	if _, err := service.Sync(context.Background()); err == nil {
+		t.Fatal("expected the sync to fail when stored leads cannot be read")
+	}
+	if repo.applied != nil {
+		t.Error("nothing may be written when the stored leads could not be read")
+	}
+}
+
+func TestPreservedLeadIDsIgnoresNilAndLeadlessTeams(t *testing.T) {
+	snap := baseSnapshot(nil, []orgsnapshot.Team{{ID: "t1", Name: "Goa"}}, nil)
+	stored := []*team.Team{
+		nil,
+		{ID: "t1", IsActive: true}, // active but no lead
+		{ID: "t1", IsActive: true, TeamLeadID: strPtr("")}, // blank lead
+	}
+
+	if got := services.PreservedLeadIDs(stored, snap, false); len(got) != 0 {
+		t.Errorf("preserved = %v, want none", got)
 	}
 }
