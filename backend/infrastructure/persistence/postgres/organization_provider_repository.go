@@ -253,7 +253,7 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 	}
 	// Last write: the THC-only pod-lead mapping reads the teams as they are now
 	// that everything else is in place. See applyPodLeadLevels.
-	if err := applyPodLeadLevels(ctx, tx, in, currentProtectedUserIDSet, track); err != nil {
+	if err := applyPodLeadLevels(ctx, tx, in, currentProtectedUserIDSet, track, result); err != nil {
 		return nil, err
 	}
 	track.finish(result)
@@ -719,7 +719,7 @@ const activePodLeadsSubquery = `
 // already made the stored id. Protected users are never touched. Only rows that
 // actually change are written, and each is recorded as updated, so a sync with
 // nothing to change still reports nothing changed.
-func applyPodLeadLevels(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker) error {
+func applyPodLeadLevels(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker, result *orgprovider.ApplyResult) error {
 	if !in.MapPodLeads {
 		return nil
 	}
@@ -738,45 +738,52 @@ func applyPodLeadLevels(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInp
 		return nil
 	}
 
-	if err := setUserLevels(ctx, tx, track, `
+	promoted, err := setUserLevels(ctx, tx, track, `
 		UPDATE users SET hierarchy_level_id = $2, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ANY($1) AND hierarchy_level_id = $3
 		  AND id IN (`+activePodLeadsSubquery+`)
 		RETURNING id
-	`, pq.Array(sourceIDs), orgprovider.PodLeadLevelID, orgprovider.PodLeadSourceLevelID); err != nil {
+	`, pq.Array(sourceIDs), orgprovider.PodLeadLevelID, orgprovider.PodLeadSourceLevelID)
+	if err != nil {
 		return fmt.Errorf("failed to promote pod leads: %w", err)
 	}
 
-	if err := setUserLevels(ctx, tx, track, `
+	returned, err := setUserLevels(ctx, tx, track, `
 		UPDATE users SET hierarchy_level_id = $3, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ANY($1) AND hierarchy_level_id = $2
 		  AND id NOT IN (`+activePodLeadsSubquery+`)
 		RETURNING id
-	`, pq.Array(sourceIDs), orgprovider.PodLeadLevelID, orgprovider.PodLeadSourceLevelID); err != nil {
+	`, pq.Array(sourceIDs), orgprovider.PodLeadLevelID, orgprovider.PodLeadSourceLevelID)
+	if err != nil {
 		return fmt.Errorf("failed to return former pod leads to their provider level: %w", err)
 	}
 
+	result.PodLeadsPromoted = promoted
+	result.PodLeadsReturned = returned
 	return nil
 }
 
-// setUserLevels runs one level UPDATE ... RETURNING id and records every
-// returned user as changed. The rows are drained and closed before it returns,
-// so the transaction's connection is free for the next statement.
-func setUserLevels(ctx context.Context, tx *sql.Tx, track *changeTracker, query string, args ...interface{}) error {
+// setUserLevels runs one level UPDATE ... RETURNING id, records every returned
+// user as changed, and returns how many there were. The rows are drained and
+// closed before it returns, so the transaction's connection is free for the
+// next statement.
+func setUserLevels(ctx context.Context, tx *sql.Tx, track *changeTracker, query string, args ...interface{}) (int, error) {
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer rows.Close()
 
+	n := 0
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return err
+			return 0, err
 		}
 		markChanged(track.changedUsers, track.insertedUsers, id)
+		n++
 	}
-	return rows.Err()
+	return n, rows.Err()
 }
 
 // applySnapshotReportsTo writes manager links now that every snapshot user exists.

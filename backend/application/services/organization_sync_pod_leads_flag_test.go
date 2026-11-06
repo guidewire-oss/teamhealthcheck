@@ -14,6 +14,7 @@ import (
 type inputCapturingRepo struct {
 	levels  map[string]bool // nil means the default configured levels
 	applied *orgprovider.ApplyInput
+	result  orgprovider.ApplyResult // what ApplySnapshot reports back
 }
 
 func (r *inputCapturingRepo) KnownHierarchyLevelIDs(context.Context) (map[string]bool, error) {
@@ -25,7 +26,9 @@ func (r *inputCapturingRepo) KnownHierarchyLevelIDs(context.Context) (map[string
 
 func (r *inputCapturingRepo) ApplySnapshot(_ context.Context, in orgprovider.ApplyInput) (*orgprovider.ApplyResult, error) {
 	r.applied = &in
-	return &orgprovider.ApplyResult{UsersSynced: len(in.Snapshot.Users)}, nil
+	reported := r.result
+	reported.UsersSynced = len(in.Snapshot.Users)
+	return &reported, nil
 }
 
 func podLeadFlagSnapshot() *orgsnapshot.Snapshot {
@@ -79,9 +82,30 @@ func TestSyncDoesNotEditTheLevelsItHandsToPersistence(t *testing.T) {
 	// service passes on must carry the provider's levels untouched.
 	in := syncAndCaptureInput(t, nil)
 
-	for _, u := range in.Snapshot.Users {
-		if u.ID == "lead" && u.HierarchyLevelID != "level-5" {
-			t.Errorf("lead level handed to persistence = %q, want the provider's level-5", u.HierarchyLevelID)
+	var lead *orgsnapshot.User
+	for i := range in.Snapshot.Users {
+		if in.Snapshot.Users[i].ID == "lead" {
+			lead = &in.Snapshot.Users[i]
 		}
+	}
+	if lead == nil {
+		t.Fatal("the lead is missing from the snapshot handed to persistence, so its level cannot be checked")
+	}
+	if lead.HierarchyLevelID != "level-5" {
+		t.Errorf("lead level handed to persistence = %q, want the provider's level-5", lead.HierarchyLevelID)
+	}
+}
+
+func TestSyncReportsThePodLeadCountsPersistenceReturned(t *testing.T) {
+	repo := &inputCapturingRepo{result: orgprovider.ApplyResult{PodLeadsPromoted: 3, PodLeadsReturned: 2}}
+	service := services.NewOrganizationSyncService(repo, fixedFetcher{snapshot: podLeadFlagSnapshot()}, nil, nil)
+
+	result, err := service.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	if result.PodLeadsPromoted != 3 || result.PodLeadsReturned != 2 {
+		t.Errorf("pod lead counts = %d promoted, %d returned; want 3 and 2", result.PodLeadsPromoted, result.PodLeadsReturned)
 	}
 }

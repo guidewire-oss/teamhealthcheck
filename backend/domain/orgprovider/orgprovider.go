@@ -94,9 +94,9 @@ func ProtectedTeamIDs() []string {
 // from the seniority grade (Okta managementLevel) as level-(grade - 3). Grades
 // 1-3 are never sent. THC receives only the finished level.
 //
-// Mapping 2 (THC only): a user who leads an active team and whom the provider
-// sent as PodLeadSourceLevelID ("Team Member") is stored as PodLeadLevelID
-// ("Team Lead"). THC grants the Dashboard and Export on level-4, and a senior
+// Mapping 2 (THC only): a user who leads an active team and is an active member
+// of it, and whom the provider sent as PodLeadSourceLevelID ("Team Member"), is
+// stored as PodLeadLevelID ("Team Lead"). THC grants the Dashboard and Export on level-4, and a senior
 // engineer who leads a pod would otherwise never get it. It runs inside the
 // apply transaction, once every other write is done, so it sees the teams and
 // leads exactly as they will be committed.
@@ -247,6 +247,14 @@ type ApplyResult struct {
 	// history is lost.
 	UsersDeactivated int `json:"usersDeactivated"`
 	TeamsDeactivated int `json:"teamsDeactivated"`
+
+	// PodLeadsPromoted counts users whose level this sync changed to
+	// PodLeadLevelID because they lead an active team, and PodLeadsReturned
+	// counts users it returned to the provider's level because they no longer do.
+	// Both are also part of Updated, but are reported separately so the effect
+	// of the pod-lead mapping on a sync can be checked.
+	PodLeadsPromoted int `json:"podLeadsPromoted"`
+	PodLeadsReturned int `json:"podLeadsReturned"`
 
 	// Added/updated/unchanged are committed changes, not records merely read.
 	// Added = newly inserted. Updated = an existing record whose normalized

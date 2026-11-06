@@ -135,6 +135,12 @@ type SyncResult struct {
 	UsersDeactivated int `json:"usersDeactivated"`
 	TeamsDeactivated int `json:"teamsDeactivated"`
 
+	// PodLeadsPromoted/PodLeadsReturned report the THC-only pod-lead mapping:
+	// users stored at the team lead level this run, and users returned to the
+	// provider's level because they no longer lead an active team.
+	PodLeadsPromoted int `json:"podLeadsPromoted"`
+	PodLeadsReturned int `json:"podLeadsReturned"`
+
 	InsertedUsers  int `json:"insertedUsers"`
 	UpdatedUsers   int `json:"updatedUsers"`
 	UnchangedUsers int `json:"unchangedUsers"`
@@ -440,6 +446,8 @@ func (s *OrganizationSyncService) syncCore(ctx context.Context, opts SyncOptions
 		HealthChecksEnabled:  applied.HealthChecksEnabled,
 		UsersDeactivated:     applied.UsersDeactivated,
 		TeamsDeactivated:     applied.TeamsDeactivated,
+		PodLeadsPromoted:     applied.PodLeadsPromoted,
+		PodLeadsReturned:     applied.PodLeadsReturned,
 		InsertedUsers:        applied.InsertedUsers,
 		UpdatedUsers:         applied.UpdatedUsers,
 		UnchangedUsers:       applied.UnchangedUsers,
@@ -488,6 +496,8 @@ func (s *OrganizationSyncService) syncCore(ctx context.Context, opts SyncOptions
 		"usersDeactivated":  result.UsersDeactivated,
 		"teamsDeactivated":  result.TeamsDeactivated,
 		"usersSkipped":      result.UsersSkipped,
+		"podLeadsPromoted":  result.PodLeadsPromoted,
+		"podLeadsReturned":  result.PodLeadsReturned,
 	}).Info("organization provider sync completed")
 
 	return result, nil

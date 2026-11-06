@@ -121,10 +121,12 @@ var _ = Describe("Integration: Pod lead level mapping", func() {
 	It("stores a pod lead sent as level-5 at level-4 and leaves a non-lead alone", func() {
 		users, teams, memberships := goaSnapshot("level-5")
 
-		runSync(orgsnapshot.TypePartial, users, teams, memberships)
+		result := runSync(orgsnapshot.TypePartial, users, teams, memberships)
 
 		Expect(levelOf("pl-lead")).To(Equal("level-4"))
 		Expect(levelOf("pl-dev")).To(Equal("level-5"))
+		Expect(result.PodLeadsPromoted).To(Equal(1))
+		Expect(result.PodLeadsReturned).To(Equal(0))
 	})
 
 	DescribeTable("stores every grade at the documented level",
@@ -162,6 +164,8 @@ var _ = Describe("Integration: Pod lead level mapping", func() {
 		Expect(levelOf("pl-lead")).To(Equal("level-4"))
 		Expect(second.InsertedUsers).To(Equal(0))
 		Expect(second.UpdatedUsers).To(Equal(0), "a stable pod lead must not show up as updated on every sync")
+		Expect(second.PodLeadsPromoted).To(Equal(0))
+		Expect(second.PodLeadsReturned).To(Equal(0))
 	})
 
 	Describe("a lead THC already has", func() {
@@ -272,13 +276,15 @@ var _ = Describe("Integration: Pod lead level mapping", func() {
 		addMember("pl-t1", "pl-old")
 		addMember("pl-t1", "pl-new")
 
-		runSync(orgsnapshot.TypePartial,
+		result := runSync(orgsnapshot.TypePartial,
 			[]orgsnapshot.User{snapUser("pl-old", "plold", "level-5"), snapUser("pl-new", "plnew", "level-5")},
 			[]orgsnapshot.Team{{ID: "pl-t1", Name: "Goa", TeamLeadID: ptr("pl-new")}},
 			[]orgsnapshot.Membership{{UserID: "pl-old", TeamID: "pl-t1"}, {UserID: "pl-new", TeamID: "pl-t1"}})
 
 		Expect(levelOf("pl-old")).To(Equal("level-5"), "the former lead returns to the provider's level")
 		Expect(levelOf("pl-new")).To(Equal("level-4"), "the new lead is promoted")
+		Expect(result.PodLeadsPromoted).To(Equal(1))
+		Expect(result.PodLeadsReturned).To(Equal(1))
 	})
 
 	It("promotes the lead a protected team already has, not the one the snapshot names", func() {
