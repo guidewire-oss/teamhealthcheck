@@ -380,6 +380,12 @@ func (s *OrganizationSyncService) syncCore(ctx context.Context, opts SyncOptions
 		return nil, errors.Join(ErrInvalidSnapshot, err)
 	}
 
+	// A podiqRole stores a level THC must already have; writing a missing one
+	// would break the users.hierarchy_level_id foreign key mid-transaction.
+	if err := requirePodIQRoleLevels(filtered.Snapshot, knownLevels); err != nil {
+		return nil, errors.Join(ErrInvalidSnapshot, err)
+	}
+
 	applied, err := s.repo.ApplySnapshot(ctx, orgprovider.ApplyInput{
 		Snapshot:     filtered.Snapshot,
 		SnapshotType: snapshotTypeOf(snapshot),
@@ -1129,4 +1135,19 @@ func (s *OrganizationSyncService) GetRun(ctx context.Context, id string) (*orgsy
 	}
 	s.recoverStaleRuns(ctx)
 	return s.runs.Get(ctx, id)
+}
+
+// requirePodIQRoleLevels fails when a user carries a podiqRole whose mapped
+// level is not configured in this deployment. Snapshots without roles pass.
+func requirePodIQRoleLevels(snap *orgsnapshot.Snapshot, knownLevels map[string]bool) error {
+	for _, u := range snap.Users {
+		if u.PodIQRole == nil {
+			continue
+		}
+		level, ok := orgprovider.PodIQRoleLevelID(*u.PodIQRole)
+		if ok && !knownLevels[level] {
+			return fmt.Errorf("user %q: podiqRole %q maps to level %q, which this deployment does not have", u.ID, *u.PodIQRole, level)
+		}
+	}
+	return nil
 }

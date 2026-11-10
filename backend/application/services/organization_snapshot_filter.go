@@ -30,6 +30,15 @@ type SnapshotFilterResult struct {
 	ClearedTeamLeads     int
 }
 
+// hasPodIQRole reports whether the user carries a podiqRole at all. Such a user
+// is never skipped for an unknown provider level (say, level-6 from grade 9): a
+// valid role stores them at the level it names, and an invalid one must reach
+// orgsnapshot.Validate so the snapshot is rejected rather than the user being
+// dropped silently.
+func hasPodIQRole(u orgsnapshot.User) bool {
+	return u.PodIQRole != nil
+}
+
 // FilterSnapshot removes records this deployment cannot import and repairs the
 // references that removal leaves dangling.
 //
@@ -87,7 +96,7 @@ func FilterSnapshot(in *orgsnapshot.Snapshot, knownLevels map[string]bool) (Snap
 				Reason:   orgprovider.SkipReasonMissingLevel,
 			})
 			result.PreservedMemberUserIDs = append(result.PreservedMemberUserIDs, u.ID)
-		case !knownLevels[u.HierarchyLevelID]:
+		case !knownLevels[u.HierarchyLevelID] && !hasPodIQRole(u):
 			result.SkippedUsers = append(result.SkippedUsers, orgprovider.SkippedUser{
 				UserID:           u.ID,
 				Username:         u.Username,

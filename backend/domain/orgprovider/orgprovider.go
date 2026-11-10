@@ -115,6 +115,28 @@ const (
 	PodLeadLevelID       = "level-4"
 )
 
+// PodIQRoleLevelID is the level a contract v1.1 podiqRole is stored at:
+// L2 -> level-3, L1 -> level-4, Developer -> level-5. It is the final level
+// decision for a role-mapped user and overrides the provider's hierarchyLevelId
+// and the pod-lead mapping above. The second result is false for a value that
+// is not a valid podiqRole.
+func PodIQRoleLevelID(role string) (string, bool) {
+	switch role {
+	case orgsnapshot.PodIQRoleL2:
+		return "level-3", true
+	case orgsnapshot.PodIQRoleL1:
+		return "level-4", true
+	case orgsnapshot.PodIQRoleDeveloper:
+		return "level-5", true
+	}
+	return "", false
+}
+
+// PodIQRoleLevelIDs lists every level PodIQRoleLevelID can return. A deployment
+// missing any of them cannot store a role-mapped user (foreign key on
+// users.hierarchy_level_id).
+func PodIQRoleLevelIDs() []string { return []string{"level-3", "level-4", "level-5"} }
+
 // SkipReasons reported when a snapshot record cannot be imported for this sync.
 const (
 	SkipReasonMissingLevel = "missing_hierarchy_level"

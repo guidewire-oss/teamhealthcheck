@@ -591,3 +591,62 @@ func TestValidate_TooLongIDIsIdentifiedByPositionNotEchoedInFull(t *testing.T) {
 	}
 	t.Fatal("expected an id length error")
 }
+
+func TestValidate_ContractVersions(t *testing.T) {
+	for _, version := range []string{orgsnapshot.ContractVersion, orgsnapshot.ContractVersionV11} {
+		snap := validSnapshot()
+		snap.ContractVersion = version
+		if errs := snap.Validate(); len(errs) != 0 {
+			t.Errorf("version %q: expected no validation errors, got %+v", version, errs)
+		}
+	}
+	snap := validSnapshot()
+	snap.ContractVersion = "1.2"
+	if errs := snap.Validate(); len(errs) != 1 || errs[0].Field != "contractVersion" {
+		t.Fatalf("expected one contractVersion error for 1.2, got %+v", errs)
+	}
+}
+
+func TestValidate_PodIQRole(t *testing.T) {
+	withRole := func(version string, role *string) orgsnapshot.Snapshot {
+		snap := validSnapshot()
+		snap.ContractVersion = version
+		snap.Users[0].PodIQRole = role
+		return snap
+	}
+
+	for _, role := range []string{"L2", "L1", "Developer"} {
+		if errs := withRole(orgsnapshot.ContractVersionV11, stringPtr(role)).Validate(); len(errs) != 0 {
+			t.Errorf("role %q on v1.1: expected no errors, got %+v", role, errs)
+		}
+	}
+	if errs := withRole(orgsnapshot.ContractVersionV11, nil).Validate(); len(errs) != 0 {
+		t.Errorf("v1.1 without podiqRole: expected no errors, got %+v", errs)
+	}
+
+	for _, role := range []string{"", "l2", "L3", "developer", "Manager", " L1"} {
+		errs := withRole(orgsnapshot.ContractVersionV11, stringPtr(role)).Validate()
+		if len(errs) != 1 || errs[0].Field != "podiqRole" || errs[0].Entity != orgsnapshot.EntityUser {
+			t.Errorf("role %q on v1.1: expected one user podiqRole error, got %+v", role, errs)
+		}
+	}
+
+	errs := withRole(orgsnapshot.ContractVersion, stringPtr("L2")).Validate()
+	if len(errs) != 1 || errs[0].Field != "podiqRole" {
+		t.Errorf("podiqRole on v1.0: expected one podiqRole error, got %+v", errs)
+	}
+}
+
+func TestSnapshotJSON_PodIQRole(t *testing.T) {
+	var snap orgsnapshot.Snapshot
+	payload := `{"users":[{"id":"a","podiqRole":"L1"},{"id":"b"},{"id":"c","podiqRole":null}]}`
+	if err := json.Unmarshal([]byte(payload), &snap); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if snap.Users[0].PodIQRole == nil || *snap.Users[0].PodIQRole != "L1" {
+		t.Errorf("expected L1, got %v", snap.Users[0].PodIQRole)
+	}
+	if snap.Users[1].PodIQRole != nil || snap.Users[2].PodIQRole != nil {
+		t.Errorf("absent and null podiqRole must be nil")
+	}
+}
