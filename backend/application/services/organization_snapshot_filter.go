@@ -39,6 +39,14 @@ func hasPodIQRole(u orgsnapshot.User) bool {
 	return u.PodIQRole != nil
 }
 
+// hasInvalidPodIQRole reports whether the user carries a podiqRole that
+// orgsnapshot.Validate will reject: an unknown value, or any value in a
+// snapshot that is not contract v1.1.
+func hasInvalidPodIQRole(u orgsnapshot.User, contractVersion string) bool {
+	return u.PodIQRole != nil &&
+		(contractVersion != orgsnapshot.ContractVersionV11 || !orgsnapshot.ValidPodIQRole(*u.PodIQRole))
+}
+
 // FilterSnapshot removes records this deployment cannot import and repairs the
 // references that removal leaves dangling.
 //
@@ -88,6 +96,12 @@ func FilterSnapshot(in *orgsnapshot.Snapshot, knownLevels map[string]bool) (Snap
 			// hide the breach whenever another user survives, so it is kept as
 			// is and orgsnapshot.Validate rejects the whole snapshot with a
 			// field-specific error.
+			users = append(users, u)
+		case u.HierarchyLevelID == "" && hasInvalidPodIQRole(u, in.ContractVersion):
+			// A user with no level is normally skipped, but a bad podiqRole is a
+			// contract breach, not an unimportable person. Skipping the user here
+			// would hide it, so the record is kept and orgsnapshot.Validate
+			// rejects the whole snapshot with a field-specific error.
 			users = append(users, u)
 		case u.HierarchyLevelID == "":
 			result.SkippedUsers = append(result.SkippedUsers, orgprovider.SkippedUser{

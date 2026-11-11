@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/agopalakrishnan/teams360/backend/pkg/orgsnapshot"
 )
@@ -121,21 +122,33 @@ const (
 // and the pod-lead mapping above. The second result is false for a value that
 // is not a valid podiqRole.
 func PodIQRoleLevelID(role string) (string, bool) {
-	switch role {
-	case orgsnapshot.PodIQRoleL2:
-		return "level-3", true
-	case orgsnapshot.PodIQRoleL1:
-		return "level-4", true
-	case orgsnapshot.PodIQRoleDeveloper:
-		return "level-5", true
-	}
-	return "", false
+	level, ok := podIQRoleLevels[role]
+	return level, ok
 }
 
-// PodIQRoleLevelIDs lists every level PodIQRoleLevelID can return. A deployment
-// missing any of them cannot store a role-mapped user (foreign key on
-// users.hierarchy_level_id).
-func PodIQRoleLevelIDs() []string { return []string{"level-3", "level-4", "level-5"} }
+// podIQRoleLevels is the single source of the role -> level mapping. Both
+// PodIQRoleLevelID and PodIQRoleLevelIDs read it, so they cannot drift apart.
+var podIQRoleLevels = map[string]string{
+	orgsnapshot.PodIQRoleL2:        "level-3",
+	orgsnapshot.PodIQRoleL1:        "level-4",
+	orgsnapshot.PodIQRoleDeveloper: "level-5",
+}
+
+// PodIQRoleLevelIDs lists every level PodIQRoleLevelID can return, each once and
+// in sorted order. A deployment missing any of them cannot store a role-mapped
+// user (foreign key on users.hierarchy_level_id).
+func PodIQRoleLevelIDs() []string {
+	seen := make(map[string]bool, len(podIQRoleLevels))
+	ids := make([]string, 0, len(podIQRoleLevels))
+	for _, level := range podIQRoleLevels {
+		if !seen[level] {
+			seen[level] = true
+			ids = append(ids, level)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
 
 // SkipReasons reported when a snapshot record cannot be imported for this sync.
 const (

@@ -498,3 +498,42 @@ func TestFilterSnapshotKeepsRoleMappedUserWithUnknownProviderLevel(t *testing.T)
 		t.Fatalf("expected one podiqRole error for u3, got %+v", errs)
 	}
 }
+
+func TestFilterSnapshotKeepsBlankLevelUserWithInvalidRoleForValidation(t *testing.T) {
+	cases := []struct {
+		name        string
+		version     string
+		role        string
+		wantInvalid bool
+	}{
+		{"unknown role in v1.1", orgsnapshot.ContractVersionV11, "Manager", true},
+		{"valid role in v1.0", orgsnapshot.ContractVersion, "L1", true},
+		{"valid role in v1.1 is still skipped", orgsnapshot.ContractVersionV11, "L1", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blank := user("u2", "bob", "", nil)
+			blank.PodIQRole = strPtr(tc.role)
+			in := baseSnapshot([]orgsnapshot.User{user("u1", "alice", "level-5", nil), blank}, nil, nil)
+			in.ContractVersion = tc.version
+
+			got, err := services.FilterSnapshot(in, knownLevels())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantInvalid {
+				if len(got.Snapshot.Users) != 2 || len(got.SkippedUsers) != 0 {
+					t.Fatalf("users=%d skipped=%d, want the blank-level user kept for validation", len(got.Snapshot.Users), len(got.SkippedUsers))
+				}
+				if got.Snapshot.ValidationError() == nil {
+					t.Fatal("snapshot with an invalid podiqRole must fail validation")
+				}
+				return
+			}
+			if len(got.Snapshot.Users) != 1 || len(got.SkippedUsers) != 1 ||
+				got.SkippedUsers[0].Reason != orgprovider.SkipReasonMissingLevel {
+				t.Fatalf("users=%d skipped=%+v, want the blank-level user skipped as missing level", len(got.Snapshot.Users), got.SkippedUsers)
+			}
+		})
+	}
+}
