@@ -562,7 +562,7 @@ func canQueryEligibilityScope(c *gin.Context, surveyType, teamID, userID string)
 // GetAssessmentPeriods handles GET /api/v1/assessment-periods
 //
 // @Summary List distinct assessment periods
-// @Description Returns the supported half-year periods (\"YYYY H1\"/\"YYYY H2\") that appear on at least one completed health check session, for populating period-selector dropdowns. Sessions stored under any other period value are not offered.
+// @Description Returns the half-year periods (YYYY H1, YYYY H2, or the older YYYY - 1st Half / 2nd Half label) that appear on at least one completed health check session, for populating period-selector dropdowns. Sessions stored under any other period value are not offered.
 // @Tags Health Checks
 // @Produce json
 // @Success 200 {object} map[string][]string "periods"

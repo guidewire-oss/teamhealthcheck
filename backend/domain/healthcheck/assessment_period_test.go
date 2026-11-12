@@ -168,7 +168,7 @@ func TestAssessmentPeriodSortKey_RejectsMalformedValues(t *testing.T) {
 	}
 }
 
-// Only canonical half-years are selectable; every legacy or off-cadence value
+// Only half-years are selectable; every quarterly, monthly or yearly value
 // seen in the DEV data (2026 Q1, 2026 Q3, 2026 Mar) must be rejected.
 func TestIsSelectableAssessmentPeriod(t *testing.T) {
 	cases := []struct {
@@ -182,7 +182,9 @@ func TestIsSelectableAssessmentPeriod(t *testing.T) {
 		{"2026 Q3", false},
 		{"2026 Mar", false},
 		{"2026", false},
-		{"2024 - 1st Half", false},
+		{"2024 - 1st Half", true}, // older half-year label, still a real half-year
+		{"2023 - 2nd Half", true},
+		{"2024 - 3rd Half", false},
 		{"2026 H3", false},
 		{"2026 h1", false},
 		{" 2026 H1", false},

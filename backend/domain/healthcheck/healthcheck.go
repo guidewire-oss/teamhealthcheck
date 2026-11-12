@@ -162,7 +162,7 @@ type Repository interface {
 	// Team submission status for post-workshop survey
 	GetTeamSubmissionStatus(ctx context.Context, teamID string, assessmentPeriod string) (*TeamSubmissionStatus, error)
 
-	// FindDistinctAssessmentPeriods returns the unique selectable (canonical half-year) assessment periods from submitted sessions
+	// FindDistinctAssessmentPeriods returns the unique selectable (half-year) assessment periods from submitted sessions
 	FindDistinctAssessmentPeriods(ctx context.Context) ([]string, error)
 
 	// FindSubmittedPeriods returns the assessment-period labels of every completed submission

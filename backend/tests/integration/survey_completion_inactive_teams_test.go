@@ -85,7 +85,7 @@ var _ = Describe("Integration: Survey Completion excludes inactive teams", func(
 		for _, id := range []string{"ia_lead", "ii_lead", "ad_lead"} {
 			_, err = db.Exec(`
 				INSERT INTO users (id, username, email, full_name, hierarchy_level_id, password_hash)
-				VALUES ($1, $1, $1 || '@test.com', $1, 'level-4', 'unused')`, id)
+				VALUES ($1, $1, $2, $1, 'level-4', 'unused')`, id, id+"@test.com")
 			Expect(err).NotTo(HaveOccurred())
 		}
 		// active + enabled, inactive + enabled, active + disabled.
