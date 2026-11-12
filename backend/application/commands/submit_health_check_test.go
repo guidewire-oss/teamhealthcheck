@@ -579,3 +579,56 @@ func TestSubmitHealthCheck_SupportsMonthlyAndYearlyCadences(t *testing.T) {
 		}
 	})
 }
+
+// New submissions never persist an unsupported period string: valid half-years
+// are accepted, a legacy quarter label is stored in its canonical half-year
+// form, and anything unrecognized is rejected before it reaches the repository.
+func TestSubmitHealthCheck_AssessmentPeriodInput(t *testing.T) {
+	// Submitted in November 2026 so both "2026 H1" (catch-up) and "2026 H2" are open.
+	at := func(period, user string) SubmitHealthCheckCommand {
+		return baseCommand(func(c *SubmitHealthCheckCommand) {
+			c.Date = "2026-11-15T10:00:00Z"
+			c.AssessmentPeriod = period
+			c.UserID = user
+		})
+	}
+
+	t.Run("accepts 2026 H1 and 2026 H2", func(t *testing.T) {
+		repo := &fakeHealthCheckRepository{}
+		handler, clock := newTestHandler(repo)
+		for i, period := range []string{"2026 H1", "2026 H2"} {
+			session, err := submit(handler, clock, at(period, "user-"+string(rune('a'+i))))
+			if err != nil {
+				t.Fatalf("%s should be accepted, got: %v", period, err)
+			}
+			if session.AssessmentPeriod != period {
+				t.Errorf("stored %q, want %q", session.AssessmentPeriod, period)
+			}
+		}
+	})
+
+	t.Run("stores a quarter label as its canonical half-year", func(t *testing.T) {
+		repo := &fakeHealthCheckRepository{}
+		handler, clock := newTestHandler(repo)
+		session, err := submit(handler, clock, at("2026 Q3", "user-q"))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if session.AssessmentPeriod != "2026 H2" {
+			t.Errorf("stored %q, want \"2026 H2\" -- a Q3 string must never be persisted", session.AssessmentPeriod)
+		}
+	})
+
+	t.Run("rejects unsupported values and persists nothing", func(t *testing.T) {
+		for _, period := range []string{"", "2026 Q5", "2026 H3", "2026 Mrch", "H1 2026", "free text", "2026 H1; DROP TABLE"} {
+			repo := &fakeHealthCheckRepository{}
+			handler, clock := newTestHandler(repo)
+			if _, err := submit(handler, clock, at(period, "user-x")); err == nil {
+				t.Errorf("period %q should be rejected", period)
+			}
+			if len(repo.sessions) != 0 {
+				t.Errorf("period %q: %d sessions persisted, want 0", period, len(repo.sessions))
+			}
+		}
+	})
+}
