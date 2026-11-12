@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/agopalakrishnan/teams360/backend/pkg/orgsnapshot"
 )
@@ -114,6 +115,40 @@ const (
 	PodLeadSourceLevelID = "level-5"
 	PodLeadLevelID       = "level-4"
 )
+
+// PodIQRoleLevelID is the level a contract v1.1 podiqRole is stored at:
+// L2 -> level-3, L1 -> level-4, Developer -> level-5. It is the final level
+// decision for a role-mapped user and overrides the provider's hierarchyLevelId
+// and the pod-lead mapping above. The second result is false for a value that
+// is not a valid podiqRole.
+func PodIQRoleLevelID(role string) (string, bool) {
+	level, ok := podIQRoleLevels[role]
+	return level, ok
+}
+
+// podIQRoleLevels is the single source of the role -> level mapping. Both
+// PodIQRoleLevelID and PodIQRoleLevelIDs read it, so they cannot drift apart.
+var podIQRoleLevels = map[string]string{
+	orgsnapshot.PodIQRoleL2:        "level-3",
+	orgsnapshot.PodIQRoleL1:        "level-4",
+	orgsnapshot.PodIQRoleDeveloper: "level-5",
+}
+
+// PodIQRoleLevelIDs lists every level PodIQRoleLevelID can return, each once and
+// in sorted order. A deployment missing any of them cannot store a role-mapped
+// user (foreign key on users.hierarchy_level_id).
+func PodIQRoleLevelIDs() []string {
+	seen := make(map[string]bool, len(podIQRoleLevels))
+	ids := make([]string, 0, len(podIQRoleLevels))
+	for _, level := range podIQRoleLevels {
+		if !seen[level] {
+			seen[level] = true
+			ids = append(ids, level)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
 
 // SkipReasons reported when a snapshot record cannot be imported for this sync.
 const (

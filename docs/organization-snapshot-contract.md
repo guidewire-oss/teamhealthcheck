@@ -1,4 +1,4 @@
-# Organization Snapshot Contract v1.0
+# Organization Snapshot Contract v1.0 and v1.1
 
 The organization snapshot is a complete, provider-neutral representation of externally managed users, teams, memberships, and reporting relationships.
 
@@ -29,6 +29,8 @@ The organization snapshot is a complete, provider-neutral representation of exte
   ]
 }
 ```
+
+Version 1.1 adds one optional user field, `podiqRole`. See [PodIQ Role (v1.1)](#podiq-role-v11). Every other rule in this document applies to both versions.
 
 ## Transport
 
@@ -64,6 +66,21 @@ open-ended adapter surface.
 - `healthCheckEnabled` is optional. Omission preserves the existing Team Health Check value; explicit `true` or `false` replaces it.
 - `snapshotType` is optional and is either `"COMPLETE"` or `"PARTIAL"`. Omission means `"COMPLETE"`. Any other value is rejected by validation. See [Partial Snapshots](#partial-snapshots).
 
+## PodIQ Role (v1.1)
+
+A v1.1 snapshot may include an optional `podiqRole` on each user:
+
+```json
+{ "id": "user-1", "username": "alice", "displayName": "Alice", "email": "alice@example.com", "hierarchyLevelId": "level-5", "podiqRole": "L1" }
+```
+
+- **Versions.** `contractVersion` is `"1.0"` or `"1.1"`; both are accepted. `podiqRole` is only valid when `contractVersion` is `"1.1"`.
+- **Valid values.** Exactly `"L2"`, `"L1"` and `"Developer"` (case-sensitive). The provider has already resolved multi-role precedence; Team Health Check maps the value it receives and never calculates a role.
+- **Mapping.** The role is the final level decision of the sync transaction, applied after users, teams, memberships and active state are processed: `L2` is stored as `level-3`, `L1` as `level-4`, `Developer` as `level-5`. It overrides the user's `hierarchyLevelId`, any grade-derived level, `teamLeadId`, and the pod-lead promotion. A role-mapped user whose `hierarchyLevelId` is unknown to the deployment is still imported, at the role's level. Protected users (see below) are never changed. A second identical sync writes no level update.
+- **Missing role (v1.0 fallback).** A user without `podiqRole`, whether the snapshot is v1.0 or v1.1, keeps the legacy behavior: the provider's `hierarchyLevelId` is stored, with the existing pod-lead promotion of `level-5` team leads to `level-4`.
+- **Invalid role.** Any other value, including `""`, a different case, or an unknown role, fails validation. So does `podiqRole` in a v1.0 snapshot. The whole snapshot is rejected and nothing is written; no level is assigned. A user that has a `podiqRole` but a missing `hierarchyLevelId` also rejects the whole snapshot, because `hierarchyLevelId` is required and the user is not skipped. A JSON `null` is treated as absent.
+- **Missing level.** If a role maps to a level this deployment does not have, the sync is rejected before anything is written.
+
 ## Complete Snapshot Semantics
 
 - `users`, `teams`, and `memberships` should be JSON arrays rather than `null`. `users` and `teams` must each contain at least one record; `memberships` may be empty.
@@ -77,7 +94,7 @@ Deletion is hard. The persistence writes (upserts, membership reconciliation, an
 
 - **Cascades.** Deleting a team also removes its supervisor-chain rows, its team memberships, and its action items. Deleting a user also removes their team memberships, password-reset tokens, and the action items they created, and clears (sets to empty) any `reportsToId` or team lead that pointed at them. Health-check sessions and responses have no foreign key to users or teams and are not removed, so sessions can end up referencing a user who no longer exists.
 - **Never deleted: protected records.** The permanent admin, any user at the admin hierarchy level, the fixed demo, test, and E2E fixture users and teams, and any user named in a protected team's supervisor chain. Their team memberships are preserved on teams that remain; a team that is deleted takes all of its membership rows with it.
-- **Never deleted: users the sync could not validate.** A user skipped because their `hierarchyLevelId` is missing or unknown to this deployment is not evidence that the provider removed them, so they are neither deleted nor stripped of existing manager links in that sync, and their existing memberships are kept on teams that remain (a deleted team still takes its membership rows with it).
+- **Never deleted: users the sync could not validate.** A user skipped because their `hierarchyLevelId` is missing, or unknown to this deployment, and who carries no `podiqRole`, is not evidence that the provider removed them, so they are neither deleted nor stripped of existing manager links in that sync, and their existing memberships are kept on teams that remain (a deleted team still takes its membership rows with it).
 - **Mass-deletion guard.** Before anything is written, a sync that would delete more than the configured share of existing, non-protected users or teams is held for administrator review and changes nothing until the administrator confirms the exact counts they reviewed.
 
 ## Partial Snapshots
@@ -120,6 +137,6 @@ A provider that can only send part of its organization sets `"snapshotType": "PA
 
 ## Versioning
 
-- Incompatible changes require a new contract version. Consumers of v1.0 reject unsupported versions.
-- Additive optional fields may be introduced within v1.0 only when existing consumers can safely ignore them.
+- Incompatible changes require a new contract version. Consumers reject unsupported versions; Team Health Check accepts `"1.0"` and `"1.1"`.
+- Additive optional fields may be introduced within v1.0 only when existing consumers can safely ignore them. `podiqRole` is not one of those: it is v1.1-only and rejected in v1.0 payloads.
 - `snapshotType` is the one exception, and it is safe only because of how v1.0 is deployed: the sole consumer is the Team Health Check synchronization service, which is released together with this document. A provider must not send `"PARTIAL"` to a deployment that predates the field, because such a consumer would ignore it and treat the payload as complete.
