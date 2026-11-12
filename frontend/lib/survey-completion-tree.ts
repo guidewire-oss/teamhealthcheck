@@ -341,6 +341,11 @@ export type VisibleGroup =
       remindCount: number;
       visibleDirectTeams: SurveyCompletionTeam[];
       visibleChildren: VisibleGroup[];
+      // True only on a leader listed under the Fully Completed filter just for
+      // their own fully completed pods, while their whole subtree is NOT
+      // complete (an owner with other incomplete pods). Such a row must not
+      // show a "Completed" badge for the leader.
+      subtreeIncomplete?: boolean;
     }
   | {
       type: 'other';
@@ -619,7 +624,10 @@ function collectFullyCompletedGroups(
   // that is in progress, not started or opted out.
   const completePods = (group.directTeams ?? []).filter(
     (t) =>
-      isPodFullyCompleted(t) &&
+      // The backend's own "complete" status -- exactly what the Fully complete
+      // card counts -- not the rounded-percent display rule, so a 199/200 pod
+      // that is still in progress is never listed here.
+      t.status === 'complete' &&
       (!query || group.person.name.toLowerCase().includes(query) || t.teamName.toLowerCase().includes(query)),
   );
   if (completePods.length > 0) {
@@ -632,10 +640,11 @@ function collectFullyCompletedGroups(
       level: group.person.level,
       totalTeams: stats.total,
       optedInTeams: stats.optedIn,
-      completionPercent: 100,
+      completionPercent: group.completionPercent,
       remindCount: stats.remind,
       visibleDirectTeams: completePods,
       visibleChildren: [],
+      subtreeIncomplete: true,
     });
   }
   for (const child of group.children ?? []) {

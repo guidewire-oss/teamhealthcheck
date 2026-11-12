@@ -567,7 +567,9 @@ function PersonGroupRows({
         onRemind={() => onRemindLeader(group.id)}
         indentClass={indentClassFor(HEADER_INDENT_CLASSES, depth)}
         showFullyCompletedBadge={showFullyCompletedBadge}
-        hideStatusColumn={hideStatusColumn}
+        // A leader listed only for their own complete pods (subtreeIncomplete)
+        // is not itself complete, so its Status cell stays empty.
+        hideStatusColumn={hideStatusColumn || group.subtreeIncomplete}
         hierarchyAggregate={hierarchyAggregate}
       />
       {expanded &&

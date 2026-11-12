@@ -771,6 +771,10 @@ describe('buildFullyCompletedGroups — complete pod under an owner with incompl
     directTeams: [done, ...others],
     children: [],
   });
+  const collectPods = (g: SurveyCompletionGroup): SurveyCompletionTeam[] =>
+    g.type === 'person'
+      ? [...(g.directTeams ?? []), ...(g.children ?? []).flatMap(collectPods)]
+      : (g.teams ?? []);
   const shown = (g: SurveyCompletionPersonGroup, query = '') => {
     const v = buildFullyCompletedGroups([g], query);
     return v.flatMap((x) => (x.type === 'person' ? x.visibleDirectTeams.map((t) => t.teamId) : []));
@@ -831,8 +835,37 @@ describe('buildFullyCompletedGroups — complete pod under an owner with incompl
         ],
       },
     ];
-    const cardCount = ['done', 'other-done'].length; // pods with status 'complete' in the fixture
+    // The card counts every pod whose backend status is 'complete'; derive that
+    // from the fixture itself rather than hardcoding it.
+    const allPods = groups.flatMap((g) => collectPods(g));
+    const cardCount = allPods.filter((t) => t.status === 'complete').length;
+    expect(cardCount).toBe(2);
     expect(countVisibleTeams(buildFullyCompletedGroups(groups, ''))).toBe(cardCount);
+  });
+
+  it('does not list an in-progress pod that merely rounds to 100% (199/200 with post-workshop done)', () => {
+    const rounded = team({
+      teamId: 'rounded', completed: 199, total: 200, status: 'in_progress', postWorkshopCompleted: true,
+    });
+    const notStarted = team({ teamId: 'ns', completed: 0, total: 6, status: 'not_started', postWorkshopCompleted: false });
+    // The owner has a genuinely incomplete pod, so only backend-complete pods are listed.
+    expect(shown(ownerWith(rounded, notStarted))).toEqual(['done']);
+  });
+
+  it('marks a leader listed only for their own complete pods as subtreeIncomplete, so no Completed badge is implied', () => {
+    const other = team({ teamId: 'o', completed: 0, total: 6, status: 'not_started', postWorkshopCompleted: false });
+    const v = buildFullyCompletedGroups([ownerWith(other)], '');
+    expect(v).toHaveLength(1);
+    if (v[0].type !== 'person') throw new Error('expected person');
+    expect(v[0].subtreeIncomplete).toBe(true);
+    expect(v[0].completionPercent).toBe(50); // the owner's real figure, not a forced 100
+  });
+
+  it('does not mark a leader whose whole subtree is complete', () => {
+    const v = buildFullyCompletedGroups([ownerWith()], '');
+    expect(v).toHaveLength(1);
+    if (v[0].type !== 'person') throw new Error('expected person');
+    expect(v[0].subtreeIncomplete).toBeUndefined();
   });
 });
 
@@ -966,6 +999,7 @@ describe('buildVisibleGroups — Not Started and Opted Out filters', () => {
     expect(root.name).toBe('Root Leader');
     expect(root.visibleDirectTeams.map((t) => t.teamId)).toEqual(['pod-complete']);
     expect(root.visibleChildren).toEqual([]);
+    expect(root.subtreeIncomplete).toBe(true);
   });
 });
 

@@ -145,6 +145,15 @@ func SortAssessmentPeriodsDescending(periods []string) {
 // they are simply never offered as a filter choice, so no period-filtered view
 // can match them (the filter compares the stored string exactly). Nothing is
 // converted: a legacy label is offered, and filtered on, as the string stored.
+//
+// KNOWN, ACCEPTED SPLIT: a legacy label names the same half-year as its
+// canonical form ("2025 - 1st Half" is "2025 H2") but is a different stored
+// string, and new submissions store only the canonical form. If both exist the
+// selector lists that half twice, and each option filters only the sessions
+// stored under its own string. The frontend labels such twins apart
+// (describePeriodOptions). Merging them would mean changing every period
+// query and rewriting or aliasing stored values, which is deliberately out of
+// scope until the historical mapping is confirmed.
 func IsSelectableAssessmentPeriod(period string) bool {
 	return halfYearlyPeriodPattern.MatchString(period) || legacyPeriodPattern.MatchString(period)
 }
