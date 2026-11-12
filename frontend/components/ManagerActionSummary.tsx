@@ -19,7 +19,7 @@ const HEAD = 'px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tr
 export default function ManagerActionSummary({ summary, loading, error, onSelectTeam }: ManagerActionSummaryProps) {
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-12">
+      <div className="flex items-center justify-center py-12" role="status" aria-label="Loading action items" data-testid="manager-actions-loading">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
       </div>
     );

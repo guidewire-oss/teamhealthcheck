@@ -48,6 +48,8 @@ describe('ManagerActionSummary', () => {
 
   it('shows a spinner and no table while loading', () => {
     renderIt({ loading: true });
+    expect(screen.getByTestId('manager-actions-loading')).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: /loading action items/i })).toBeInTheDocument();
     expect(screen.queryByTestId('manager-action-row')).not.toBeInTheDocument();
     expect(screen.queryByTestId('manager-actions-error')).not.toBeInTheDocument();
   });

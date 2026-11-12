@@ -13,7 +13,8 @@ import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, LineChar
 import OnboardingModal from '@/components/OnboardingModal';
 import BrandMark from '@/components/BrandMark';
 import ManagerActionSummary from '@/components/ManagerActionSummary';
-import { listManagerTeamsActionSummary, listPodActionItems, TeamActionSummary, ActionItem } from '@/lib/api/action-items';
+import { listPodActionItems, ActionItem } from '@/lib/api/action-items';
+import { useManagerActionSummary } from '@/lib/useManagerActionSummary';
 import PodActionBoard from '@/components/PodActionBoard';
 import * as XLSX from 'xlsx';
 import DocsLink from '@/components/DocsLink';
@@ -174,9 +175,11 @@ export default function ManagerPage() {
   const [trendsView, setTrendsView] = useState<'overview' | 'dimensions'>('dimensions');
   const [selectedTrendTeam, setSelectedTrendTeam] = useState<string>(''); // '' = all teams averaged
   const [showOnboarding, setShowOnboarding] = useState(false);
-  const [actionSummary, setActionSummary] = useState<TeamActionSummary[]>([]);
-  const [actionSummaryLoading, setActionSummaryLoading] = useState(false);
-  const [actionSummaryError, setActionSummaryError] = useState(false);
+  const {
+    summary: actionSummary,
+    loading: actionSummaryLoading,
+    error: actionSummaryError,
+  } = useManagerActionSummary(user?.id, activeTab === 'actions');
   const [selectedPodTeam, setSelectedPodTeam] = useState<{ id: string; name: string } | null>(null);
   const [podItems, setPodItems] = useState<ActionItem[]>([]);
   const [podLoading, setPodLoading] = useState(false);
@@ -346,16 +349,6 @@ export default function ManagerPage() {
       fetchRadarData(user.id, selectedPeriod);
     } else if (user && activeTab === 'trends') {
       fetchTrendsData(user.id, selectedTrendTeam || undefined);
-    } else if (user && activeTab === 'actions') {
-      setActionSummaryLoading(true);
-      setActionSummaryError(false);
-      listManagerTeamsActionSummary(user.id)
-        .then(setActionSummary)
-        .catch(() => {
-          setActionSummary([]);
-          setActionSummaryError(true);
-        })
-        .finally(() => setActionSummaryLoading(false));
     }
   }, [user, activeTab, selectedPeriod, selectedTrendTeam]);
 

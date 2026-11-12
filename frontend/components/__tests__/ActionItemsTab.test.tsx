@@ -159,14 +159,28 @@ describe('ActionItemsTab', () => {
     renderTab();
     await user.click(await screen.findByTestId('advance-action-item-1'));
     expect(await screen.findByText('Failed to update action item status')).toBeInTheDocument();
-    expect(screen.getByTestId('advance-action-item-1')).toBeInTheDocument(); // still Open, still "Start"
+    // Still Open: offers Start, not Mark Done.
+    expect(screen.getByText('Start')).toBeInTheDocument();
+    expect(screen.queryByText('Mark Done')).not.toBeInTheDocument();
   });
 
-  it('does not show the empty state when loading the board failed', async () => {
+  it('shows only an error with Retry, not an empty board, when loading fails', async () => {
     listActionItems.mockRejectedValueOnce(new Error('boom'));
     renderTab();
     expect(await screen.findByText('Failed to load action items')).toBeInTheDocument();
     expect(screen.queryByTestId('action-items-empty')).not.toBeInTheDocument();
+    expect(screen.queryByText('No items')).not.toBeInTheDocument();
+    expect(screen.queryByText('In Progress')).not.toBeInTheDocument();
+  });
+
+  it('reloads the board when Retry is clicked after a failed load', async () => {
+    listActionItems.mockRejectedValueOnce(new Error('boom'));
+    listActionItems.mockResolvedValueOnce([{ ...baseItem, status: 'open' }]);
+    const user = userEvent.setup();
+    renderTab();
+    await user.click(await screen.findByTestId('action-items-retry'));
+    expect(await screen.findByText('Improve standups')).toBeInTheDocument();
+    expect(screen.queryByTestId('action-items-load-error')).not.toBeInTheDocument();
   });
 
   it('moves an In Progress card to Done when Mark Done is clicked', async () => {

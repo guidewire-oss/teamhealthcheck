@@ -41,6 +41,9 @@ export default function ActionItemsTab({
   const [items, setItems] = useState<ActionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Set when the board itself could not be loaded; distinct from `error`, which
+  // reports a failed action (status change, delete) on a board that did load.
+  const [loadError, setLoadError] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [editingItem, setEditingItem] = useState<ActionItem | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
@@ -50,10 +53,12 @@ export default function ActionItemsTab({
     try {
       setLoading(true);
       setError(null);
+      setLoadError(false);
       const data = await listActionItems(teamId);
       setItems(data);
     } catch {
-      setError('Failed to load action items');
+      setItems([]);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -141,7 +146,24 @@ export default function ActionItemsTab({
         </div>
       )}
 
-      {items.length === 0 && !error && (
+      {loadError && (
+        <div
+          className="flex items-center gap-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-3"
+          role="alert"
+          data-testid="action-items-load-error"
+        >
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          <span>Failed to load action items</span>
+          <button
+            onClick={loadItems}
+            className="ml-auto font-medium text-indigo-600 hover:text-indigo-800"
+            data-testid="action-items-retry"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {!loadError && items.length === 0 && (
         <div className="text-center py-4 text-gray-400" data-testid="action-items-empty">
           <p className="font-medium text-gray-500">No action items yet</p>
           {canEdit && (
@@ -158,6 +180,7 @@ export default function ActionItemsTab({
           )}
         </div>
       )}
+      {!loadError && (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {ACTION_ITEM_COLUMNS.map(({ status, label, icon, bg, border }) => {
             const colItems = items.filter((i) => i.status === status);
@@ -290,6 +313,7 @@ export default function ActionItemsTab({
             );
           })}
       </div>
+      )}
 
       {/* Create modal */}
       {showModal && (
