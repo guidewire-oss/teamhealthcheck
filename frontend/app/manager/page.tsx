@@ -12,6 +12,7 @@ import { LogOut, Users, ChevronDown, AlertCircle, Activity, LineChart as LineCha
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import OnboardingModal from '@/components/OnboardingModal';
 import BrandMark from '@/components/BrandMark';
+import ManagerActionSummary from '@/components/ManagerActionSummary';
 import { listManagerTeamsActionSummary, listPodActionItems, TeamActionSummary, ActionItem } from '@/lib/api/action-items';
 import PodActionBoard from '@/components/PodActionBoard';
 import * as XLSX from 'xlsx';
@@ -50,22 +51,6 @@ interface TrendData {
   /** User-facing H1/H2 label for `period`; never a quarter label. */
   label: string;
   [key: string]: string | number;
-}
-
-interface ActionStatusCounts {
-  open: number;
-  onHold: number;
-  inProgress: number;
-  completed: number;
-}
-
-function tallyActionStatusCounts(items: ActionItem[]): ActionStatusCounts {
-  return {
-    open: items.filter((i) => i.status === 'open').length,
-    onHold: items.filter((i) => i.status === 'on_hold').length,
-    inProgress: items.filter((i) => i.status === 'in_progress').length,
-    completed: items.filter((i) => i.status === 'done').length,
-  };
 }
 
 interface Subordinate {
@@ -191,7 +176,7 @@ export default function ManagerPage() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [actionSummary, setActionSummary] = useState<TeamActionSummary[]>([]);
   const [actionSummaryLoading, setActionSummaryLoading] = useState(false);
-  const [actionStatusCounts, setActionStatusCounts] = useState<Record<string, ActionStatusCounts>>({});
+  const [actionSummaryError, setActionSummaryError] = useState(false);
   const [selectedPodTeam, setSelectedPodTeam] = useState<{ id: string; name: string } | null>(null);
   const [podItems, setPodItems] = useState<ActionItem[]>([]);
   const [podLoading, setPodLoading] = useState(false);
@@ -363,29 +348,12 @@ export default function ManagerPage() {
       fetchTrendsData(user.id, selectedTrendTeam || undefined);
     } else if (user && activeTab === 'actions') {
       setActionSummaryLoading(true);
+      setActionSummaryError(false);
       listManagerTeamsActionSummary(user.id)
-        .then(async (summary) => {
-          setActionSummary(summary);
-          // Reuse the existing, already hierarchy-scoped pod drill-down
-          // endpoint per team to derive per-status counts, rather than
-          // introducing a new API shape.
-          const entries = await Promise.all(
-            summary.map(async (row) => {
-              try {
-                const items = await listPodActionItems(user.id, row.teamId);
-                return [row.teamId, tallyActionStatusCounts(items)] as const;
-              } catch {
-                return [row.teamId, null] as const;
-              }
-            })
-          );
-          setActionStatusCounts(
-            Object.fromEntries(entries.filter((e): e is [string, ActionStatusCounts] => e[1] !== null))
-          );
-        })
+        .then(setActionSummary)
         .catch(() => {
           setActionSummary([]);
-          setActionStatusCounts({});
+          setActionSummaryError(true);
         })
         .finally(() => setActionSummaryLoading(false));
     }
@@ -1359,50 +1327,12 @@ export default function ManagerPage() {
           <div className="bg-white rounded-xl shadow-sm border p-6" data-testid="manager-actions-panel">
             <h3 className="text-xl font-semibold text-gray-900 mb-1">Action Items Across Teams</h3>
             <p className="text-sm text-gray-500 mb-6">View open, on-hold, in-progress, and completed action items for teams you supervise. Select a team to open its full action board.</p>
-            {actionSummaryLoading ? (
-              <div className="flex items-center justify-center py-12">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
-              </div>
-            ) : actionSummary.length === 0 ? (
-              <div className="text-center py-12 text-gray-400">
-                <ListTodo className="w-10 h-10 mx-auto mb-3 text-gray-200" />
-                <p className="font-medium text-gray-500">No action items found</p>
-                <p className="text-sm mt-1">Team Leads create action items on their team dashboards.</p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Team</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Open</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">On Hold</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">In Progress</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Completed</th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {actionSummary.map((row) => {
-                      const counts = actionStatusCounts[row.teamId];
-                      return (
-                        <tr
-                          key={row.teamId}
-                          data-testid="manager-action-row"
-                          onClick={() => openPod(row.teamId, row.teamName)}
-                          className="cursor-pointer hover:bg-gray-50"
-                        >
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-indigo-600 hover:underline">{row.teamName}</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{counts?.open ?? 0}</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{counts?.onHold ?? 0}</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{counts?.inProgress ?? 0}</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{counts?.completed ?? 0}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            <ManagerActionSummary
+              summary={actionSummary}
+              loading={actionSummaryLoading}
+              error={actionSummaryError}
+              onSelectTeam={openPod}
+            />
           </div>
         )}
       </div>

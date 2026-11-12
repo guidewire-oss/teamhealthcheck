@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Loader2, AlertCircle, CheckCircle, Clock, ArrowRight, ArrowLeft, Trash2, PauseCircle, Pencil } from 'lucide-react';
+import { Plus, Loader2, AlertCircle, ArrowRight, ArrowLeft, Trash2, Pencil } from 'lucide-react';
 import {
   ActionItem,
   ActionItemStatus,
@@ -14,6 +14,7 @@ import {
 import ActionItemModal from './ActionItemModal';
 import ActionItemDescription from './ActionItemDescription';
 import ActionItemDueDate from './ActionItemDueDate';
+import { ACTION_ITEM_COLUMNS } from './actionItemColumns';
 
 interface TeamMember {
   id: string;
@@ -28,37 +29,6 @@ interface ActionItemsTabProps {
   canEdit: boolean; // Team Lead and above
   currentUserId?: string; // used to gate the creator-only edit icon
 }
-
-const COLUMNS: { status: ActionItemStatus; label: string; icon: React.ReactNode; bg: string; border: string }[] = [
-  {
-    status: 'open',
-    label: 'Open',
-    icon: <Clock className="w-4 h-4 text-gray-500" />,
-    bg: 'bg-gray-50',
-    border: 'border-gray-200',
-  },
-  {
-    status: 'on_hold',
-    label: 'On Hold',
-    icon: <PauseCircle className="w-4 h-4 text-rose-400" />,
-    bg: 'bg-rose-50',
-    border: 'border-rose-200',
-  },
-  {
-    status: 'in_progress',
-    label: 'In Progress',
-    icon: <ArrowRight className="w-4 h-4 text-blue-500" />,
-    bg: 'bg-blue-50',
-    border: 'border-blue-200',
-  },
-  {
-    status: 'done',
-    label: 'Done',
-    icon: <CheckCircle className="w-4 h-4 text-green-500" />,
-    bg: 'bg-green-50',
-    border: 'border-green-200',
-  },
-];
 
 export default function ActionItemsTab({
   teamId,
@@ -100,11 +70,13 @@ export default function ActionItemsTab({
 
   const transition = async (item: ActionItem, next: ActionItemStatus) => {
     setUpdatingId(item.id);
+    setError(null);
     try {
       await updateActionItem(teamId, item.id, { status: next });
       setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: next } : i)));
     } catch {
-      // silently show old state; user can retry
+      // The card keeps its old status; tell the user the move did not happen.
+      setError('Failed to update action item status');
     } finally {
       setUpdatingId(null);
     }
@@ -132,8 +104,11 @@ export default function ActionItemsTab({
     );
   }
 
-  const openCount = items.filter((i) => i.status === 'open').length;
-  const inProgressCount = items.filter((i) => i.status === 'in_progress').length;
+  // "Active" means every item that is not Done, On Hold included, matching the
+  // backend's openCount. On hold is shown as a sub-count so nothing is counted twice.
+  const doneCount = items.filter((i) => i.status === 'done').length;
+  const onHoldCount = items.filter((i) => i.status === 'on_hold').length;
+  const activeCount = items.length - doneCount;
 
   return (
     <div data-testid="action-items-tab">
@@ -143,7 +118,7 @@ export default function ActionItemsTab({
           <h2 className="text-xl font-semibold text-gray-900">Action Items</h2>
           {items.length > 0 && (
             <p className="text-xs text-gray-400 mt-0.5">
-              {openCount + inProgressCount} active · {items.filter((i) => i.status === 'on_hold').length} on hold · {items.filter((i) => i.status === 'done').length} done
+              {activeCount} active{onHoldCount > 0 && ` (${onHoldCount} on hold)`} · {doneCount} done
             </p>
           )}
         </div>
@@ -166,7 +141,7 @@ export default function ActionItemsTab({
         </div>
       )}
 
-      {items.length === 0 && (
+      {items.length === 0 && !error && (
         <div className="text-center py-4 text-gray-400" data-testid="action-items-empty">
           <p className="font-medium text-gray-500">No action items yet</p>
           {canEdit && (
@@ -184,7 +159,7 @@ export default function ActionItemsTab({
         </div>
       )}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {COLUMNS.map(({ status, label, icon, bg, border }) => {
+        {ACTION_ITEM_COLUMNS.map(({ status, label, icon, bg, border }) => {
             const colItems = items.filter((i) => i.status === status);
             return (
               <div key={status} className={`rounded-xl border ${border} ${bg} flex flex-col`}>

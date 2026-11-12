@@ -69,7 +69,17 @@
   "TeamActionSummaryResponse": {
     "teamId": "team-phoenix",
     "teamName": "Phoenix Squad",
-    "openCount": "1"
+    "openCount": "4"
+  },
+  "ActionStatusCountsResponse": {
+    "open": "2",
+    "onHold": "1",
+    "inProgress": "1",
+    "completed": "3"
+  },
+  "DirectManagerResponse": {
+    "id": "manager1",
+    "name": "Morgan Manager"
   },
   "HierarchyLevelDTO": {
     "id": "level-3",

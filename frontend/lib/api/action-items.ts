@@ -34,9 +34,11 @@ export interface UpdateActionItemPayload {
   status?: ActionItemStatus;
   title?: string;
   description?: string;
-  dimensionId?: string;
-  assignedTo?: string;
-  dueDate?: string;
+  // For these three fields, `null` clears the stored value and an omitted key
+  // leaves it unchanged (undefined is dropped by JSON.stringify).
+  dimensionId?: string | null;
+  assignedTo?: string | null;
+  dueDate?: string | null;
   assessmentPeriod?: string;
 }
 
@@ -79,10 +81,18 @@ export async function deleteActionItem(teamId: string, id: string): Promise<void
   if (!res.ok) throw new Error('Failed to delete action item');
 }
 
+export interface ActionStatusCounts {
+  open: number;
+  onHold: number;
+  inProgress: number;
+  completed: number;
+}
+
 export interface TeamActionSummary {
   teamId: string;
   teamName: string;
   openCount: number;
+  statusCounts: ActionStatusCounts;
 }
 
 export async function listManagerTeamsActionSummary(managerId: string): Promise<TeamActionSummary[]> {

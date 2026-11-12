@@ -15,6 +15,7 @@ import (
 
 	"github.com/agopalakrishnan/teams360/backend/application/services"
 	"github.com/agopalakrishnan/teams360/backend/interfaces/api/v1"
+	"github.com/agopalakrishnan/teams360/backend/interfaces/dto"
 	"github.com/agopalakrishnan/teams360/backend/tests/testhelpers"
 )
 
@@ -247,6 +248,96 @@ var _ = Describe("Integration: Action Items API", func() {
 			router.ServeHTTP(editW, editReq)
 
 			Expect(editW.Code).To(Equal(http.StatusForbidden))
+		})
+	})
+
+	Describe("Manager action summary", func() {
+		It("returns per-status counts per team in one request", func() {
+			_, err := db.Exec(`
+				INSERT INTO action_items (id, team_id, title, status, created_by)
+				VALUES
+					('int_ai_s1', 'int_ai_team1', 'a', 'open', 'int_ai_lead'),
+					('int_ai_s2', 'int_ai_team1', 'b', 'open', 'int_ai_lead'),
+					('int_ai_s3', 'int_ai_team1', 'c', 'on_hold', 'int_ai_lead'),
+					('int_ai_s4', 'int_ai_team1', 'd', 'in_progress', 'int_ai_lead'),
+					('int_ai_s5', 'int_ai_team1', 'e', 'done', 'int_ai_lead')
+			`)
+			Expect(err).NotTo(HaveOccurred())
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/managers/int_ai_mgr/teams/action-items", nil)
+			req.Header.Set("Authorization", "Bearer "+tokenFor("int_ai_mgr", "level-3"))
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+			var resp dto.TeamsActionSummaryResponse
+			Expect(json.Unmarshal(w.Body.Bytes(), &resp)).To(Succeed())
+			Expect(resp.Teams).To(HaveLen(1))
+			Expect(resp.Teams[0].OpenCount).To(Equal(4)) // everything not done
+			Expect(resp.Teams[0].StatusCounts).To(Equal(dto.ActionStatusCountsResponse{
+				Open: 2, OnHold: 1, InProgress: 1, Completed: 1,
+			}))
+		})
+	})
+
+	Describe("Clearing optional fields", func() {
+		patch := func(body string) *httptest.ResponseRecorder {
+			req := httptest.NewRequest(http.MethodPatch, "/api/v1/teams/int_ai_team1/action-items/int_ai_clr", bytes.NewReader([]byte(body)))
+			req.Header.Set("Authorization", "Bearer "+tokenFor("int_ai_lead", "level-4"))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			return w
+		}
+		stored := func() (assignee, dimension, due sql.NullString) {
+			Expect(db.QueryRow(`SELECT assigned_to, dimension_id, due_date::text FROM action_items WHERE id = 'int_ai_clr'`).
+				Scan(&assignee, &dimension, &due)).To(Succeed())
+			return
+		}
+
+		BeforeEach(func() {
+			_, err := db.Exec(`
+				INSERT INTO action_items (id, team_id, title, status, created_by, assigned_to, dimension_id, due_date)
+				VALUES ('int_ai_clr', 'int_ai_team1', 'Clear me', 'open', 'int_ai_lead', 'int_ai_member',
+					(SELECT id FROM health_dimensions LIMIT 1), '2026-05-04')`)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("clears assignee, dimension and due date when sent as null", func() {
+			Expect(patch(`{"assignedTo":null,"dimensionId":null,"dueDate":null}`).Code).To(Equal(http.StatusOK))
+			assignee, dimension, due := stored()
+			Expect(assignee.Valid).To(BeFalse())
+			Expect(dimension.Valid).To(BeFalse())
+			Expect(due.Valid).To(BeFalse())
+		})
+
+		It("leaves omitted fields unchanged", func() {
+			Expect(patch(`{"title":"Renamed"}`).Code).To(Equal(http.StatusOK))
+			assignee, dimension, due := stored()
+			Expect(assignee.String).To(Equal("int_ai_member"))
+			Expect(dimension.Valid).To(BeTrue())
+			Expect(due.String).To(Equal("2026-05-04"))
+		})
+
+		It("clears one field without touching the others", func() {
+			Expect(patch(`{"assignedTo":null}`).Code).To(Equal(http.StatusOK))
+			assignee, dimension, due := stored()
+			Expect(assignee.Valid).To(BeFalse())
+			Expect(dimension.Valid).To(BeTrue())
+			Expect(due.String).To(Equal("2026-05-04"))
+		})
+
+		It("still rejects an assignee outside the team", func() {
+			Expect(patch(`{"assignedTo":"int_ai_outsider"}`).Code).To(Equal(http.StatusBadRequest))
+		})
+
+		It("only lets the creator clear a field", func() {
+			req := httptest.NewRequest(http.MethodPatch, "/api/v1/teams/int_ai_team1/action-items/int_ai_clr", bytes.NewReader([]byte(`{"assignedTo":null}`)))
+			req.Header.Set("Authorization", "Bearer "+tokenFor("int_ai_member", "level-5"))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusForbidden))
 		})
 	})
 

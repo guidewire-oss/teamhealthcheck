@@ -56,6 +56,10 @@ describe('ActionItemDueDate', () => {
     // A UTC-midnight interpretation (e.g. `new Date("2026-05-04")`) would
     // display as 3 May in any timezone behind UTC. Explicit component
     // parsing must always show 4 May regardless of the host timezone.
+    // vitest.config.ts pins TZ to America/Los_Angeles; guard so this test
+    // fails loudly if that setting is ever removed instead of passing vacuously.
+    expect(new Date('2026-05-04').getDate()).toBe(3);
+
     render(<ActionItemDueDate dueDate="2026-05-04" status="open" />);
     expect(screen.getByTestId('action-item-due-date-text')).toHaveTextContent('Due 4 May 2026');
   });

@@ -26,11 +26,11 @@ func NewActionItemHandler(db *sql.DB) *ActionItemHandler {
 // ListActionItems handles GET /api/v1/teams/:teamId/action-items
 //
 // @Summary List a team's action items
-// @Description Returns the action items belonging to the given team, newest first, optionally narrowed by status (open, in_progress, done) and/or assessment period via query parameters. Each item includes its dimension, creator, assignee, title, description, status, due date, assessment period, and timestamps, with names resolved for the linked dimension, creator, and assignee. Access requires membership on the team or manager-or-above privileges.
+// @Description Returns the action items belonging to the given team, newest first, optionally narrowed by status (open, on_hold, in_progress, done) and/or assessment period via query parameters. Each item includes its dimension, creator, assignee, title, description, status, due date, assessment period, and timestamps, with names resolved for the linked dimension, creator, and assignee. Access requires membership on the team or manager-or-above privileges.
 // @Tags Action Items
 // @Produce json
 // @Param teamId path string true "Team ID"
-// @Param status query string false "Filter by status (open, in_progress, done)"
+// @Param status query string false "Filter by status (open, on_hold, in_progress, done)"
 // @Param period query string false "Filter by assessment period"
 // @Success 200 {object} dto.ActionItemsResponse
 // @Failure 500 {object} dto.ErrorResponse "Failed to fetch/scan/read action items"
@@ -223,7 +223,7 @@ func (h *ActionItemHandler) CreateActionItem(c *gin.Context) {
 // UpdateActionItem handles PATCH /api/v1/teams/:teamId/action-items/:id
 //
 // @Summary Update a team action item
-// @Description Partially updates the action item identified by the path ID within the given team; only the fields present in the request body are changed. Status, when provided, must be one of open, in_progress, or done. When assignedTo is set, the target user must already be a member of the team or the request is rejected with a 400. Returns a 404 if no matching item exists for that team. Access requires membership on the team or manager-or-above privileges.
+// @Description Partially updates the action item identified by the path ID within the given team; only the fields present in the request body are changed. dimensionId, assignedTo and dueDate may be set to null to clear them; omitting a key leaves it unchanged. Status, when provided, must be one of open, on_hold, in_progress, or done. When assignedTo is set, the target user must already be a member of the team or the request is rejected with a 400. Returns a 404 if no matching item exists for that team. Access requires membership on the team or manager-or-above privileges.
 // @Tags Action Items
 // @Accept json
 // @Produce json
@@ -259,7 +259,7 @@ func (h *ActionItemHandler) UpdateActionItem(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, dto.ErrorResponse{Error: "Invalid status", Message: "status must be open, on_hold, in_progress, or done"})
 		return
 	}
-	if !dto.ValidDueDate(req.DueDate) {
+	if !dto.ValidDueDate(req.DueDate.Value) {
 		c.JSON(http.StatusBadRequest, dto.ErrorResponse{Error: "Invalid dueDate format, expected YYYY-MM-DD"})
 		return
 	}
@@ -291,8 +291,8 @@ func (h *ActionItemHandler) UpdateActionItem(c *gin.Context) {
 	// Any edit to the content fields (as opposed to a pure status
 	// transition) is restricted to the creator, and only while the item is
 	// not Done.
-	editsContent := req.DimensionID != nil || req.AssignedTo != nil || req.Title != nil ||
-		req.Description != nil || req.DueDate != nil || req.AssessmentPeriod != nil
+	editsContent := req.DimensionID.Present || req.AssignedTo.Present || req.Title != nil ||
+		req.Description != nil || req.DueDate.Present || req.AssessmentPeriod != nil
 	if editsContent {
 		if claims.UserID != createdBy {
 			c.JSON(http.StatusForbidden, dto.ErrorResponse{Error: "Only the creator of this action item may edit it"})
@@ -305,9 +305,10 @@ func (h *ActionItemHandler) UpdateActionItem(c *gin.Context) {
 	}
 
 	// Enforce that assignedTo (if set) is a member of this team or the
-	// creator's direct manager.
-	if req.AssignedTo != nil {
-		allowed, err := h.isAssigneeAllowed(c.Request.Context(), teamID, createdBy, *req.AssignedTo)
+	// creator's direct manager. A null assignedTo clears the assignee and
+	// needs no membership check.
+	if req.AssignedTo.Value != nil {
+		allowed, err := h.isAssigneeAllowed(c.Request.Context(), teamID, createdBy, *req.AssignedTo.Value)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to validate assignee", Message: err.Error()})
 			return
@@ -318,22 +319,25 @@ func (h *ActionItemHandler) UpdateActionItem(c *gin.Context) {
 		}
 	}
 
+	// Clearable columns use CASE on a "present" flag so an explicit null
+	// clears the value while an absent key leaves it unchanged (COALESCE
+	// cannot tell the two apart). The other columns keep COALESCE.
 	res, err := h.db.ExecContext(c.Request.Context(), `
 		UPDATE action_items SET
-			dimension_id      = COALESCE($3, dimension_id),
-			assigned_to       = COALESCE($4, assigned_to),
-			title             = COALESCE($5, title),
-			description       = COALESCE($6, description),
-			status            = COALESCE($7, status),
-			due_date          = COALESCE($8, due_date),
-			assessment_period = COALESCE($9, assessment_period),
+			dimension_id      = CASE WHEN $3::boolean THEN $4::varchar ELSE dimension_id END,
+			assigned_to       = CASE WHEN $5::boolean THEN $6::varchar ELSE assigned_to END,
+			title             = COALESCE($7, title),
+			description       = COALESCE($8, description),
+			status            = COALESCE($9, status),
+			due_date          = CASE WHEN $10::boolean THEN $11::date ELSE due_date END,
+			assessment_period = COALESCE($12, assessment_period),
 			updated_at        = NOW()
-		WHERE id = $1 AND team_id = $2 AND status = $10`,
+		WHERE id = $1 AND team_id = $2 AND status = $13`,
 		itemID, teamID,
-		nullableString(req.DimensionID),
-		nullableString(req.AssignedTo),
+		req.DimensionID.Present, nullableString(req.DimensionID.Value),
+		req.AssignedTo.Present, nullableString(req.AssignedTo.Value),
 		req.Title, req.Description, req.Status,
-		nullableString(req.DueDate),
+		req.DueDate.Present, nullableString(req.DueDate.Value),
 		nullableString(req.AssessmentPeriod),
 		currentStatus,
 	)
@@ -389,7 +393,7 @@ func (h *ActionItemHandler) DeleteActionItem(c *gin.Context) {
 // GetTeamsActionSummary handles GET /api/v1/managers/:managerId/teams/action-items
 //
 // @Summary Get action item counts by team
-// @Description Returns, for every team the given manager supervises, the team's ID, name, and count of action items whose status is not "done", ordered by team name. Access requires a manager-or-above role, and the authenticated caller may only request their own summary; requesting another manager's summary is rejected with a 403.
+// @Description Returns, for every team the given manager supervises, the team's ID, name, and count of action items whose status is not "done" plus per-status counts (open, onHold, inProgress, completed), ordered by team name. Access requires a manager-or-above role, and the authenticated caller may only request their own summary; requesting another manager's summary is rejected with a 403.
 // @Tags Action Items
 // @Produce json
 // @Param managerId path string true "Manager ID"
@@ -409,10 +413,15 @@ func (h *ActionItemHandler) GetTeamsActionSummary(c *gin.Context) {
 	}
 
 	rows, err := h.db.QueryContext(c.Request.Context(), `
-		SELECT t.id, t.name, COUNT(ai.id) AS open_count
+		SELECT t.id, t.name,
+			COUNT(ai.id) FILTER (WHERE ai.status != 'done') AS open_count,
+			COUNT(ai.id) FILTER (WHERE ai.status = 'open') AS status_open,
+			COUNT(ai.id) FILTER (WHERE ai.status = 'on_hold') AS status_on_hold,
+			COUNT(ai.id) FILTER (WHERE ai.status = 'in_progress') AS status_in_progress,
+			COUNT(ai.id) FILTER (WHERE ai.status = 'done') AS status_done
 		FROM teams t
 		INNER JOIN team_supervisors ts ON ts.team_id = t.id AND ts.user_id = $1
-		LEFT JOIN action_items ai ON ai.team_id = t.id AND ai.status != 'done'
+		LEFT JOIN action_items ai ON ai.team_id = t.id
 		GROUP BY t.id, t.name
 		ORDER BY t.name`, managerID)
 	if err != nil {
@@ -424,7 +433,10 @@ func (h *ActionItemHandler) GetTeamsActionSummary(c *gin.Context) {
 	summaries := []dto.TeamActionSummaryResponse{}
 	for rows.Next() {
 		var s dto.TeamActionSummaryResponse
-		if err := rows.Scan(&s.TeamID, &s.TeamName, &s.OpenCount); err != nil {
+		if err := rows.Scan(
+			&s.TeamID, &s.TeamName, &s.OpenCount,
+			&s.StatusCounts.Open, &s.StatusCounts.OnHold, &s.StatusCounts.InProgress, &s.StatusCounts.Completed,
+		); err != nil {
 			c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to read action summaries", Message: err.Error()})
 			return
 		}
@@ -454,7 +466,18 @@ func (h *ActionItemHandler) isAssigneeAllowed(ctx context.Context, teamID, creat
 }
 
 // GetDirectManager handles GET /api/v1/teams/:teamId/action-items/direct-manager
-// Returns the authenticated user's direct manager (reports_to), if any.
+//
+// @Summary Get the caller's direct manager
+// @Description Returns the authenticated user's direct manager (reports_to) so the UI can offer them as an assignee. The id and name are null when the user has no manager. Access requires membership on the team or manager-or-above privileges.
+// @Tags Action Items
+// @Produce json
+// @Param teamId path string true "Team ID"
+// @Success 200 {object} dto.DirectManagerResponse
+// @Failure 500 {object} dto.ErrorResponse "Failed to resolve direct manager"
+// @Security BearerAuth
+// @Failure 401 {object} dto.ErrorResponse "Unauthorized"
+// @Failure 403 {object} dto.ErrorResponse "Access denied: team membership or manager-or-above privileges required"
+// @Router /teams/{teamId}/action-items/direct-manager [get]
 func (h *ActionItemHandler) GetDirectManager(c *gin.Context) {
 	claims, ok := middleware.GetClaimsFromContext(c)
 	if !ok {
@@ -482,7 +505,18 @@ func (h *ActionItemHandler) GetDirectManager(c *gin.Context) {
 }
 
 // GetPodActionItems handles GET /api/v1/managers/:managerId/teams/:teamId/action-items
-// Returns the full, read-only action board for a pod in the manager's hierarchy.
+//
+// @Summary Get a pod's action items (read-only)
+// @Description Returns every action item for one team the given manager supervises, newest first. The authenticated caller may only request their own view (managerId must match the token) and the team must be one they supervise; otherwise the request is rejected with a 403. Access requires a manager-or-above role.
+// @Tags Action Items
+// @Produce json
+// @Param managerId path string true "Manager ID"
+// @Param teamId path string true "Team ID"
+// @Success 200 {object} dto.ActionItemsResponse
+// @Failure 403 {object} dto.ErrorResponse "Forbidden — not your view, or team is not in your hierarchy"
+// @Failure 500 {object} dto.ErrorResponse "Failed to validate pod access or fetch action items"
+// @Security BearerAuth
+// @Router /managers/{managerId}/teams/{teamId}/action-items [get]
 func (h *ActionItemHandler) GetPodActionItems(c *gin.Context) {
 	managerID := c.Param("managerId")
 	teamID := c.Param("teamId")

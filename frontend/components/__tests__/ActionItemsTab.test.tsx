@@ -110,13 +110,7 @@ describe('ActionItemsTab', () => {
     expect(updateActionItem).toHaveBeenCalledWith('team-1', 'item-1', { status: 'on_hold' });
   });
 
-  it('shows active, on hold and done counts separately in the header', async () => {
-    listActionItems.mockResolvedValue([
-      { ...baseItem, id: 'a', status: 'open' },
-      { ...baseItem, id: 'b', status: 'in_progress' },
-      { ...baseItem, id: 'c', status: 'on_hold' },
-      { ...baseItem, id: 'd', status: 'done' },
-    ]);
+  const renderTab = () =>
     render(
       <ActionItemsTab
         teamId="team-1"
@@ -126,7 +120,53 @@ describe('ActionItemsTab', () => {
         currentUserId="lead-1"
       />
     );
-    await waitFor(() => expect(screen.getByText(/2 active · 1 on hold · 1 done/)).toBeInTheDocument());
+
+  it('counts on-hold items in the active total and shows them as a sub-count', async () => {
+    listActionItems.mockResolvedValue([
+      { ...baseItem, id: 'a', status: 'open' },
+      { ...baseItem, id: 'b', status: 'in_progress' },
+      { ...baseItem, id: 'c', status: 'on_hold' },
+      { ...baseItem, id: 'd', status: 'done' },
+    ]);
+    renderTab();
+    // 3 non-done items (open + in progress + on hold), of which 1 is on hold.
+    await waitFor(() => expect(screen.getByText(/3 active \(1 on hold\) · 1 done/)).toBeInTheDocument());
+  });
+
+  it('omits the on-hold sub-count when nothing is on hold', async () => {
+    listActionItems.mockResolvedValue([
+      { ...baseItem, id: 'a', status: 'open' },
+      { ...baseItem, id: 'b', status: 'done' },
+    ]);
+    renderTab();
+    await waitFor(() => expect(screen.getByText(/1 active · 1 done/)).toBeInTheDocument());
+    expect(screen.queryByText(/on hold\)/)).not.toBeInTheDocument();
+  });
+
+  it('counts an all-on-hold board as fully active', async () => {
+    listActionItems.mockResolvedValue([
+      { ...baseItem, id: 'a', status: 'on_hold' },
+      { ...baseItem, id: 'b', status: 'on_hold' },
+    ]);
+    renderTab();
+    await waitFor(() => expect(screen.getByText(/2 active \(2 on hold\) · 0 done/)).toBeInTheDocument());
+  });
+
+  it('shows an error and keeps the card in place when a status change fails', async () => {
+    listActionItems.mockResolvedValue([{ ...baseItem, status: 'open' }]);
+    updateActionItem.mockRejectedValueOnce(new Error('boom'));
+    const user = userEvent.setup();
+    renderTab();
+    await user.click(await screen.findByTestId('advance-action-item-1'));
+    expect(await screen.findByText('Failed to update action item status')).toBeInTheDocument();
+    expect(screen.getByTestId('advance-action-item-1')).toBeInTheDocument(); // still Open, still "Start"
+  });
+
+  it('does not show the empty state when loading the board failed', async () => {
+    listActionItems.mockRejectedValueOnce(new Error('boom'));
+    renderTab();
+    expect(await screen.findByText('Failed to load action items')).toBeInTheDocument();
+    expect(screen.queryByTestId('action-items-empty')).not.toBeInTheDocument();
   });
 
   it('moves an In Progress card to Done when Mark Done is clicked', async () => {

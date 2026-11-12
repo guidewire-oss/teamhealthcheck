@@ -75,9 +75,11 @@ export default function ActionItemModal({
         const payload: UpdateActionItemPayload = {
           title: title.trim(),
           description: description.trim(),
-          dimensionId: dimensionId || undefined,
-          assignedTo: assignedTo || undefined,
-          dueDate: isoDueDate,
+          // null (not undefined) so emptying a field actually clears it:
+          // undefined is dropped from the JSON body and the server keeps the old value.
+          dimensionId: dimensionId || null,
+          assignedTo: assignedTo || null,
+          dueDate: isoDueDate ?? null,
           // No assessmentPeriod: an edit must not re-stamp the item with whatever
           // period the dashboard happens to be showing.
         };
@@ -183,6 +185,7 @@ export default function ActionItemModal({
               <select
                 value={assignedTo}
                 onChange={(e) => setAssignedTo(e.target.value)}
+                data-testid="action-item-assignee-select"
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="">— Unassigned —</option>
