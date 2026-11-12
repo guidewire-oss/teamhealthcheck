@@ -11,6 +11,7 @@ function mockTruncated(scrollHeight: number, clientHeight: number) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 const item: ActionItem = {

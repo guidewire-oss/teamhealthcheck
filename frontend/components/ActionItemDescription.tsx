@@ -19,6 +19,12 @@ export default function ActionItemDescription({ description }: ActionItemDescrip
   const [isTruncated, setIsTruncated] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
 
+  // New text starts collapsed so it is re-measured under the clamp; otherwise
+  // an expanded card could keep a stale "Show less" for a short replacement.
+  useEffect(() => {
+    setIsExpanded(false);
+  }, [description]);
+
   useEffect(() => {
     // Truncation can only be measured while the 2-line clamp is applied, so
     // skip re-measuring once expanded — that would always read as "not

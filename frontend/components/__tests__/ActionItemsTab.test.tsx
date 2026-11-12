@@ -110,6 +110,47 @@ describe('ActionItemsTab', () => {
     expect(updateActionItem).toHaveBeenCalledWith('team-1', 'item-1', { status: 'on_hold' });
   });
 
+  it('shows active, on hold and done counts separately in the header', async () => {
+    listActionItems.mockResolvedValue([
+      { ...baseItem, id: 'a', status: 'open' },
+      { ...baseItem, id: 'b', status: 'in_progress' },
+      { ...baseItem, id: 'c', status: 'on_hold' },
+      { ...baseItem, id: 'd', status: 'done' },
+    ]);
+    render(
+      <ActionItemsTab
+        teamId="team-1"
+        assessmentPeriod="2026 - 1st Half"
+        teamMembers={[]}
+        canEdit={true}
+        currentUserId="lead-1"
+      />
+    );
+    await waitFor(() => expect(screen.getByText(/2 active · 1 on hold · 1 done/)).toBeInTheDocument());
+  });
+
+  it('moves an In Progress card to Done when Mark Done is clicked', async () => {
+    listActionItems.mockResolvedValue([{ ...baseItem, status: 'in_progress' }]);
+    const user = userEvent.setup();
+    render(
+      <ActionItemsTab
+        teamId="team-1"
+        assessmentPeriod="2026 - 1st Half"
+        teamMembers={[]}
+        canEdit={true}
+        currentUserId="lead-1"
+      />
+    );
+    await waitFor(() => expect(screen.getByText('Mark Done')).toBeInTheDocument());
+
+    await user.click(screen.getByText('Mark Done'));
+
+    expect(updateActionItem).toHaveBeenCalledWith('team-1', 'item-1', { status: 'done' });
+    // The card leaves In Progress, so its transition buttons are gone.
+    await waitFor(() => expect(screen.queryByText('Mark Done')).not.toBeInTheDocument());
+    expect(screen.queryByText('Move to Hold')).not.toBeInTheDocument();
+  });
+
   it('shows Resume on an On Hold card', async () => {
     listActionItems.mockResolvedValue([{ ...baseItem, status: 'on_hold' }]);
     render(
@@ -145,6 +186,21 @@ describe('ActionItemsTab', () => {
         teamMembers={[]}
         canEdit={true}
         currentUserId="someone-else"
+      />
+    );
+    await waitFor(() => expect(screen.getByText('Improve standups')).toBeInTheDocument());
+    expect(screen.queryByTestId('edit-action-item-1')).not.toBeInTheDocument();
+  });
+
+  it('never shows the edit icon on a Done item, even for its creator', async () => {
+    listActionItems.mockResolvedValue([{ ...baseItem, status: 'done' }]);
+    render(
+      <ActionItemsTab
+        teamId="team-1"
+        assessmentPeriod="2026 - 1st Half"
+        teamMembers={[]}
+        canEdit={true}
+        currentUserId="lead-1"
       />
     );
     await waitFor(() => expect(screen.getByText('Improve standups')).toBeInTheDocument());

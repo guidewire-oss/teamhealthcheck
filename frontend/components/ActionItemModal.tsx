@@ -78,7 +78,8 @@ export default function ActionItemModal({
           dimensionId: dimensionId || undefined,
           assignedTo: assignedTo || undefined,
           dueDate: isoDueDate,
-          assessmentPeriod: assessmentPeriod || undefined,
+          // No assessmentPeriod: an edit must not re-stamp the item with whatever
+          // period the dashboard happens to be showing.
         };
         await updateActionItem(teamId, editItem.id, payload);
       } else {

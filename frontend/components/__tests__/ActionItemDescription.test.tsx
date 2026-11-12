@@ -74,6 +74,20 @@ describe('ActionItemDescription', () => {
     expect(text.className).toContain('break-words');
   });
 
+  it('collapses and re-measures when the description changes, so a short replacement has no toggle', async () => {
+    mockTruncated(100, 40);
+    const user = userEvent.setup();
+    const { rerender } = render(<ActionItemDescription description="A long description that overflows." />);
+    await user.click(screen.getByTestId('action-item-description-toggle'));
+    expect(screen.getByTestId('action-item-description-toggle')).toHaveTextContent('Show less');
+
+    vi.restoreAllMocks();
+    mockTruncated(40, 40); // the replacement text fits
+    rerender(<ActionItemDescription description="Short." />);
+
+    expect(screen.queryByTestId('action-item-description-toggle')).not.toBeInTheDocument();
+  });
+
   it('keeps expansion state independent across multiple description instances', async () => {
     mockTruncated(100, 40);
     const user = userEvent.setup();

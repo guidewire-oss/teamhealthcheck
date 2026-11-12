@@ -143,7 +143,7 @@ export default function ActionItemsTab({
           <h2 className="text-xl font-semibold text-gray-900">Action Items</h2>
           {items.length > 0 && (
             <p className="text-xs text-gray-400 mt-0.5">
-              {openCount + inProgressCount} active · {items.filter((i) => i.status === 'done').length} done
+              {openCount + inProgressCount} active · {items.filter((i) => i.status === 'on_hold').length} on hold · {items.filter((i) => i.status === 'done').length} done
             </p>
           )}
         </div>

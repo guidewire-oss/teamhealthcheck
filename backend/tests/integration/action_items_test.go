@@ -109,6 +109,24 @@ var _ = Describe("Integration: Action Items API", func() {
 			Expect(w.Code).To(Equal(http.StatusBadRequest))
 		})
 
+		It("rejects an assignee whose team membership has been deactivated", func() {
+			_, err := db.Exec(`UPDATE team_members SET is_active = false WHERE team_id = 'int_ai_team1' AND user_id = 'int_ai_member'`)
+			Expect(err).NotTo(HaveOccurred())
+
+			leadToken := tokenFor("int_ai_lead", "level-4")
+			body, _ := json.Marshal(map[string]interface{}{
+				"title":      "Assign to a deactivated member",
+				"assignedTo": "int_ai_member",
+			})
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/teams/int_ai_team1/action-items", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+leadToken)
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusBadRequest))
+		})
+
 		It("resolves the direct manager via GET .../direct-manager", func() {
 			leadToken := tokenFor("int_ai_lead", "level-4")
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/teams/int_ai_team1/action-items/direct-manager", nil)

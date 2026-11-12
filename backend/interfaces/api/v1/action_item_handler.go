@@ -328,13 +328,14 @@ func (h *ActionItemHandler) UpdateActionItem(c *gin.Context) {
 			due_date          = COALESCE($8, due_date),
 			assessment_period = COALESCE($9, assessment_period),
 			updated_at        = NOW()
-		WHERE id = $1 AND team_id = $2`,
+		WHERE id = $1 AND team_id = $2 AND status = $10`,
 		itemID, teamID,
 		nullableString(req.DimensionID),
 		nullableString(req.AssignedTo),
 		req.Title, req.Description, req.Status,
 		nullableString(req.DueDate),
 		nullableString(req.AssessmentPeriod),
+		currentStatus,
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{Error: "Failed to update action item", Message: err.Error()})
@@ -342,7 +343,9 @@ func (h *ActionItemHandler) UpdateActionItem(c *gin.Context) {
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		c.JSON(http.StatusNotFound, dto.ErrorResponse{Error: "Action item not found"})
+		// The row existed when validated above, so no match means its status
+		// changed in between; reject instead of applying a stale transition.
+		c.JSON(http.StatusConflict, dto.ErrorResponse{Error: "Action item was changed by another request, please retry"})
 		return
 	}
 
@@ -441,7 +444,7 @@ func (h *ActionItemHandler) isAssigneeAllowed(ctx context.Context, teamID, creat
 	var allowed bool
 	err := h.db.QueryRowContext(ctx, `
 		SELECT
-			EXISTS(SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2)
+			EXISTS(SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2 AND is_active)
 			OR EXISTS(SELECT 1 FROM users WHERE id = $3 AND reports_to = $2)
 	`, teamID, candidateID, creatorID).Scan(&allowed)
 	if err != nil {

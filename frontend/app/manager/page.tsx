@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { getCurrentUser, logout, authenticatedFetch, User } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
@@ -197,18 +197,24 @@ export default function ManagerPage() {
   const [podLoading, setPodLoading] = useState(false);
   const [podError, setPodError] = useState<string | null>(null);
 
+  // Team id of the most recent pod click; a slower earlier response is ignored.
+  const latestPodRequest = useRef<string | null>(null);
+
   const openPod = async (teamId: string, teamName: string) => {
     if (!user) return;
+    latestPodRequest.current = teamId;
     setSelectedPodTeam({ id: teamId, name: teamName });
     setPodLoading(true);
     setPodError(null);
     try {
       const items = await listPodActionItems((user as any).id, teamId);
+      if (latestPodRequest.current !== teamId) return;
       setPodItems(items);
     } catch {
+      if (latestPodRequest.current !== teamId) return;
       setPodError('Failed to load action items for this pod');
     } finally {
-      setPodLoading(false);
+      if (latestPodRequest.current === teamId) setPodLoading(false);
     }
   };
 
