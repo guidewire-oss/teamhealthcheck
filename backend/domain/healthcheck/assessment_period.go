@@ -130,3 +130,45 @@ func SortAssessmentPeriodsDescending(periods []string) {
 		return periods[i] < periods[j]
 	})
 }
+
+// IsSelectableAssessmentPeriod reports whether period may be offered in a
+// dashboard period selector: a half-year period, in either its canonical form
+// "YYYY H1"/"YYYY H2" (halfYearlyPeriodPattern) or the older label
+// "YYYY - 1st Half"/"YYYY - 2nd Half" (legacyPeriodPattern), which still names
+// a real half-year and may be stored on existing sessions. It is a format
+// rule, not a list of years, so a future half-year (e.g. "2027 H1") becomes
+// selectable as soon as completed sessions exist for it, with no code change.
+//
+// Every other string that may exist in health_check_sessions.assessment_period
+// -- quarterly ("2026 Q3"), monthly ("2026 Mar"), yearly or free text -- is
+// deliberately NOT selectable. Those rows are left untouched in the database;
+// they are simply never offered as a filter choice, so no period-filtered view
+// can match them (the filter compares the stored string exactly). Nothing is
+// converted: a legacy label is offered, and filtered on, as the string stored.
+//
+// KNOWN, ACCEPTED SPLIT: a legacy label names the same half-year as its
+// canonical form ("2025 - 1st Half" is "2025 H2") but is a different stored
+// string, and new submissions store only the canonical form. If both exist the
+// selector lists that half twice, and each option filters only the sessions
+// stored under its own string. The frontend labels such twins apart
+// (describePeriodOptions). Merging them would mean changing every period
+// query and rewriting or aliasing stored values, which is deliberately out of
+// scope until the historical mapping is confirmed.
+func IsSelectableAssessmentPeriod(period string) bool {
+	return halfYearlyPeriodPattern.MatchString(period) || legacyPeriodPattern.MatchString(period)
+}
+
+// SelectableAssessmentPeriods returns the distinct selectable periods from
+// raw, most recent first. raw is not modified.
+func SelectableAssessmentPeriods(raw []string) []string {
+	seen := make(map[string]bool, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, p := range raw {
+		if IsSelectableAssessmentPeriod(p) && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	SortAssessmentPeriodsDescending(out)
+	return out
+}
