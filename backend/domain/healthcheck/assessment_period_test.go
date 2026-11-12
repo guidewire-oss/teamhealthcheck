@@ -167,3 +167,51 @@ func TestAssessmentPeriodSortKey_RejectsMalformedValues(t *testing.T) {
 		}
 	}
 }
+
+// Only canonical half-years are selectable; every legacy or off-cadence value
+// seen in the DEV data (2026 Q1, 2026 Q3, 2026 Mar) must be rejected.
+func TestIsSelectableAssessmentPeriod(t *testing.T) {
+	cases := []struct {
+		period string
+		want   bool
+	}{
+		{"2026 H1", true},
+		{"2026 H2", true},
+		{"2027 H1", true}, // future half-years need no code change
+		{"2026 Q1", false},
+		{"2026 Q3", false},
+		{"2026 Mar", false},
+		{"2026", false},
+		{"2024 - 1st Half", false},
+		{"2026 H3", false},
+		{"2026 h1", false},
+		{" 2026 H1", false},
+		{"", false},
+		{"free text", false},
+	}
+	for _, c := range cases {
+		if got := IsSelectableAssessmentPeriod(c.period); got != c.want {
+			t.Errorf("IsSelectableAssessmentPeriod(%q) = %v, want %v", c.period, got, c.want)
+		}
+	}
+}
+
+func TestSelectableAssessmentPeriods_ExposesOnlyHalfYearsAndLeavesInputAlone(t *testing.T) {
+	raw := []string{"2026 Q3", "2026 H1", "2026 Mar", "2026 H2", "2026 Q1", "2026 H1"}
+	original := append([]string(nil), raw...)
+
+	got := SelectableAssessmentPeriods(raw)
+
+	want := []string{"2026 H2", "2026 H1"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("got %v, want %v (deduplicated, most recent first, no Q1/Q3/Mar)", got, want)
+	}
+	for i := range raw {
+		if raw[i] != original[i] {
+			t.Fatalf("input was modified: %v, want %v", raw, original)
+		}
+	}
+	if empty := SelectableAssessmentPeriods(nil); empty == nil || len(empty) != 0 {
+		t.Fatalf("got %v for no input, want an empty non-nil slice (the API must return [] not null)", empty)
+	}
+}

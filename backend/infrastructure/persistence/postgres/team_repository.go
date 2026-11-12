@@ -225,6 +225,13 @@ func (r *TeamRepository) FindBySupervisorID(ctx context.Context, supervisorID st
 // (FindByID, FindAll, FindByLeadID, ...) also select it, so none of them
 // work against a database that lacks the column.
 //
+// Only ACTIVE teams (teams.is_active) are returned. A deactivated team is
+// not a live pod, so it must not be counted as opted in, appear in the
+// dashboard's lists, or be a reminder candidate — whatever its
+// health_check_enabled flag says. The filter lives here, in the one query
+// every dashboard count, list and reminder plan is derived from, so none of
+// them can disagree. Inactive rows are left untouched in the database.
+//
 // Deliberately does NOT return a member count: eligibility for the
 // individual survey (Level 4 + Level 5 only) can't be answered from this
 // query — see FindEligibleMemberIDs, the caller's actual source for that.
@@ -247,6 +254,7 @@ func (r *TeamRepository) FindSurveyCompletionTeams(ctx context.Context) ([]team.
 			LIMIT 1
 		) sup ON true
 		LEFT JOIN users tl ON tl.id = t.team_lead_id
+		WHERE t.is_active
 		ORDER BY t.name
 	`)
 	if err != nil {

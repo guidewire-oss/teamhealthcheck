@@ -130,3 +130,34 @@ func SortAssessmentPeriodsDescending(periods []string) {
 		return periods[i] < periods[j]
 	})
 }
+
+// IsSelectableAssessmentPeriod reports whether period may be offered in a
+// dashboard period selector: exactly the canonical half-year form "YYYY H1" or
+// "YYYY H2" (see halfYearlyPeriodPattern). It is a format rule, not a list of
+// years, so a future half-year (e.g. "2027 H1") becomes selectable as soon as
+// completed sessions exist for it, with no code change.
+//
+// Every other string that may exist in health_check_sessions.assessment_period
+// -- quarterly ("2026 Q3"), monthly ("2026 Mar"), yearly, "YYYY - 1st Half" or
+// free text -- is deliberately NOT selectable. Those rows are left untouched
+// in the database; they are simply never offered as a filter choice, so no
+// period-filtered view can match them (the filter compares the stored string
+// exactly).
+func IsSelectableAssessmentPeriod(period string) bool {
+	return halfYearlyPeriodPattern.MatchString(period)
+}
+
+// SelectableAssessmentPeriods returns the distinct selectable periods from
+// raw, most recent first. raw is not modified.
+func SelectableAssessmentPeriods(raw []string) []string {
+	seen := make(map[string]bool, len(raw))
+	out := make([]string, 0, len(raw))
+	for _, p := range raw {
+		if IsSelectableAssessmentPeriod(p) && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	SortAssessmentPeriodsDescending(out)
+	return out
+}

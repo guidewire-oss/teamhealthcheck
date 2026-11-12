@@ -572,8 +572,9 @@ func (r *HealthCheckRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// FindDistinctAssessmentPeriods returns all unique assessment periods from
-// submitted sessions, most recent first. Ordering is done in Go
+// FindDistinctAssessmentPeriods returns the unique SELECTABLE assessment
+// periods (canonical half-years only) from submitted sessions, most recent
+// first. Ordering is done in Go
 // (healthcheck.SortAssessmentPeriodsDescending) rather than in SQL: this
 // app's period strings come in five different formats (monthly, quarterly,
 // half-yearly, yearly, and a legacy half-year format — see
@@ -604,12 +605,12 @@ func (r *HealthCheckRepository) FindDistinctAssessmentPeriods(ctx context.Contex
 		return nil, fmt.Errorf("error iterating assessment periods: %w", err)
 	}
 
-	if periods == nil {
-		periods = []string{}
-	}
-	healthcheck.SortAssessmentPeriodsDescending(periods)
-
-	return periods, nil
+	// Only canonical half-year periods ("YYYY H1"/"YYYY H2") are selectable;
+	// stored sessions with any other value stay in the table but are never
+	// offered (see healthcheck.IsSelectableAssessmentPeriod). This is the one
+	// source for every period dropdown and for the admin dashboard's period
+	// validation, so all dashboards agree.
+	return healthcheck.SelectableAssessmentPeriods(periods), nil
 }
 
 // scanSessions is a helper function to scan query results into sessions

@@ -591,9 +591,10 @@ function wholeSubtreeToVisibleGroup(group: SurveyCompletionPersonGroup): Visible
 /**
  * Walks down from `group`, emitting one VisibleGroup entry per subtree
  * that independently qualifies as fully completed (isPersonSubtreeFullyCompleted).
- * A node that does NOT qualify is never emitted itself -- per requirement
- * 3, a parent with even one incomplete descendant must not appear -- but
- * its children are still checked independently and promoted to top-level
+ * A node that does NOT qualify is never emitted with its whole subtree -- a
+ * parent with an incomplete descendant never lists that descendant -- but it
+ * is still shown with just its own fully-completed direct pods, so the list
+ * matches the Fully complete card's pod count. Its children are checked independently and promoted to top-level
  * entries in `out` if THEY qualify on their own, even though their real
  * parent didn't. This is what lets e.g. a fully-completed manager surface
  * even when their director's own subtree has some other, unrelated,
@@ -608,6 +609,34 @@ function collectFullyCompletedGroups(
     if (query && !fullyCompletedSubtreeMatchesSearch(group, query)) return;
     out.push(wholeSubtreeToVisibleGroup(group));
     return;
+  }
+  // This leader's subtree is not fully complete, so the leader is not itself a
+  // "fully completed" result. Their OWN fully-completed pods are still
+  // fully-completed pods though -- the Fully complete card counts every such
+  // pod -- so list them under their owner, with only those pods and no children
+  // (an incomplete sibling pod or subordinate is never shown). Without this a
+  // complete pod vanishes from the list whenever its owner has any other pod
+  // that is in progress, not started or opted out.
+  const completePods = (group.directTeams ?? []).filter(
+    (t) =>
+      isPodFullyCompleted(t) &&
+      (!query || group.person.name.toLowerCase().includes(query) || t.teamName.toLowerCase().includes(query)),
+  );
+  if (completePods.length > 0) {
+    const stats = countVisibleTeamStats(completePods);
+    out.push({
+      type: 'person',
+      key: `person:${group.person.id}`,
+      id: group.person.id,
+      name: group.person.name,
+      level: group.person.level,
+      totalTeams: stats.total,
+      optedInTeams: stats.optedIn,
+      completionPercent: 100,
+      remindCount: stats.remind,
+      visibleDirectTeams: completePods,
+      visibleChildren: [],
+    });
   }
   for (const child of group.children ?? []) {
     collectFullyCompletedGroups(child, query, out);
