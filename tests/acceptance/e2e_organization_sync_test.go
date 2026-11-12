@@ -208,14 +208,27 @@ var _ = Describe("E2E: Organization Provider Sync", Serial, Ordered, Label("e2e"
 		}, 15*time.Second, 500*time.Millisecond).Should(BeTrue(),
 			"Sync Now should be enabled once DATA_PROVIDER_BASE_URL and DATA_PROVIDER_API_TOKEN are configured")
 
+		// The panel restores the latest stored run on load, so a run left by an
+		// earlier spec (for example an override run) can already be showing a
+		// result. Remember its id so we wait for the run this click starts,
+		// not for that leftover one.
+		result := page.Locator("[data-testid='sync-result']")
+		previousRunID := ""
+		if visible, _ := result.IsVisible(); visible {
+			previousRunID, _ = result.GetAttribute("data-run-id")
+		}
+
 		By("Clicking Sync Now")
 		Expect(syncButton.Click()).To(Succeed())
 
-		By("Waiting for the sync result panel")
-		result := page.Locator("[data-testid='sync-result']")
+		By("Waiting for the result panel of the run this click started")
 		Eventually(func() bool {
 			visible, _ := result.IsVisible()
-			return visible
+			if !visible {
+				return false
+			}
+			runID, _ := result.GetAttribute("data-run-id")
+			return runID != "" && runID != previousRunID
 		}, 30*time.Second, 500*time.Millisecond).Should(BeTrue(),
 			"a successful sync should report its counts rather than an error")
 
