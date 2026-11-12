@@ -756,6 +756,119 @@ describe('buildFullyCompletedGroups', () => {
   });
 });
 
+// Regression: the Fully complete card counts pods, so a fully completed pod must
+// be listed under its owner even when that owner has other pods that are not
+// complete (in progress, not started, opted out).
+describe('buildFullyCompletedGroups — complete pod under an owner with incomplete pods', () => {
+  const done = team({ teamId: 'done', teamName: 'Done Pod', completed: 6, total: 6, status: 'complete' });
+  const ownerWith = (...others: SurveyCompletionTeam[]): SurveyCompletionPersonGroup => ({
+    type: 'person',
+    person: person('own', 'Some Owner', 'Manager'),
+    totalTeams: 1 + others.length,
+    optedInTeams: 1 + others.length,
+    completionPercent: 50,
+    remindCount: others.length,
+    directTeams: [done, ...others],
+    children: [],
+  });
+  const collectPods = (g: SurveyCompletionGroup): SurveyCompletionTeam[] =>
+    g.type === 'person'
+      ? [...(g.directTeams ?? []), ...(g.children ?? []).flatMap(collectPods)]
+      : (g.teams ?? []);
+  const shown = (g: SurveyCompletionPersonGroup, query = '') => {
+    const v = buildFullyCompletedGroups([g], query);
+    return v.flatMap((x) => (x.type === 'person' ? x.visibleDirectTeams.map((t) => t.teamId) : []));
+  };
+
+  it.each([
+    ['in progress', team({ teamId: 'o', completed: 2, total: 6, status: 'in_progress' })],
+    ['not started', team({ teamId: 'o', completed: 0, total: 6, status: 'not_started', postWorkshopCompleted: false })],
+    ['opted out', team({ teamId: 'o', completed: 0, total: 0, status: 'opted_out', postWorkshopCompleted: false })],
+  ])('lists the complete pod and not the %s sibling', (_label, other) => {
+    expect(shown(ownerWith(other))).toEqual(['done']);
+  });
+
+  it('a pod at 100% without its post-workshop session is not listed', () => {
+    const noWorkshop = team({ teamId: 'nw', completed: 3, total: 3, status: 'in_progress', postWorkshopCompleted: false });
+    expect(shown(ownerWith(noWorkshop))).toEqual(['done']);
+  });
+
+  it('shows only the complete pod and no incomplete child under a non-qualifying owner', () => {
+    const child: SurveyCompletionPersonGroup = {
+      type: 'person',
+      person: person('kid', 'Kid', 'Manager'),
+      totalTeams: 1,
+      optedInTeams: 1,
+      completionPercent: 10,
+      remindCount: 1,
+      directTeams: [team({ teamId: 'kid-pod', completed: 1, total: 9, status: 'in_progress' })],
+      children: [],
+    };
+    const owner = { ...ownerWith(), directTeams: [done], children: [child] };
+    const v = buildFullyCompletedGroups([owner], '');
+    expect(v).toHaveLength(1);
+    if (v[0].type !== 'person') throw new Error('expected person');
+    expect(v[0].visibleDirectTeams.map((t) => t.teamId)).toEqual(['done']);
+    expect(v[0].visibleChildren).toEqual([]);
+  });
+
+  it('search by pod name or owner name still finds it', () => {
+    const other = team({ teamId: 'o', completed: 0, total: 6, status: 'not_started', postWorkshopCompleted: false });
+    expect(shown(ownerWith(other), 'done pod')).toEqual(['done']);
+    expect(shown(ownerWith(other), 'some owner')).toEqual(['done']);
+    expect(shown(ownerWith(other), 'zzz')).toEqual([]);
+  });
+
+  it('parity: the number of listed pods equals the number of complete pods the card counts', () => {
+    const groups: SurveyCompletionGroup[] = [
+      ownerWith(team({ teamId: 'o1', completed: 1, total: 6, status: 'in_progress' })),
+      {
+        type: 'other',
+        label: 'Other',
+        totalTeams: 2,
+        optedInTeams: 2,
+        completionPercent: 50,
+        remindCount: 1,
+        teams: [
+          team({ teamId: 'other-done', completed: 2, total: 2, status: 'complete' }),
+          team({ teamId: 'other-inc', completed: 0, total: 2, status: 'not_started', postWorkshopCompleted: false }),
+        ],
+      },
+    ];
+    // The card counts every pod whose backend status is 'complete'; derive that
+    // from the fixture itself rather than hardcoding it.
+    const allPods = groups.flatMap((g) => collectPods(g));
+    const cardCount = allPods.filter((t) => t.status === 'complete').length;
+    expect(cardCount).toBe(2);
+    expect(countVisibleTeams(buildFullyCompletedGroups(groups, ''))).toBe(cardCount);
+  });
+
+  it('does not list an in-progress pod that merely rounds to 100% (199/200 with post-workshop done)', () => {
+    const rounded = team({
+      teamId: 'rounded', completed: 199, total: 200, status: 'in_progress', postWorkshopCompleted: true,
+    });
+    const notStarted = team({ teamId: 'ns', completed: 0, total: 6, status: 'not_started', postWorkshopCompleted: false });
+    // The owner has a genuinely incomplete pod, so only backend-complete pods are listed.
+    expect(shown(ownerWith(rounded, notStarted))).toEqual(['done']);
+  });
+
+  it('marks a leader listed only for their own complete pods as subtreeIncomplete, so no Completed badge is implied', () => {
+    const other = team({ teamId: 'o', completed: 0, total: 6, status: 'not_started', postWorkshopCompleted: false });
+    const v = buildFullyCompletedGroups([ownerWith(other)], '');
+    expect(v).toHaveLength(1);
+    if (v[0].type !== 'person') throw new Error('expected person');
+    expect(v[0].subtreeIncomplete).toBe(true);
+    expect(v[0].completionPercent).toBe(50); // the owner's real figure, not a forced 100
+  });
+
+  it('does not mark a leader whose whole subtree is complete', () => {
+    const v = buildFullyCompletedGroups([ownerWith()], '');
+    expect(v).toHaveLength(1);
+    if (v[0].type !== 'person') throw new Error('expected person');
+    expect(v[0].subtreeIncomplete).toBeUndefined();
+  });
+});
+
 // Not Started and Opted Out must never be conflated: opted_out comes purely
 // from the pod's canonical `status` field (never inferred from a 0%
 // completion percentage), and matchesCardFilter/buildVisibleGroups compare
@@ -875,10 +988,18 @@ describe('buildVisibleGroups — Not Started and Opted Out filters', () => {
     expect(optedOutIds.has('pod-nested-ns')).toBe(false);
   });
 
-  it('the Fully Completed filter continues to work unaffected by this fixture', () => {
-    // Neither root nor nested leader qualifies (they have not_started/opted_out
-    // descendants), and no subtree here independently qualifies either.
-    expect(buildFullyCompletedGroups(groups, '')).toHaveLength(0);
+  it('the Fully Completed filter lists only the complete pod, under its non-qualifying owner', () => {
+    // Neither root nor nested leader qualifies as a whole subtree (they have
+    // not_started/opted_out descendants), but Root Leader owns one fully
+    // completed pod, which the Fully complete card counts and the list must show.
+    const visible = buildFullyCompletedGroups(groups, '');
+    expect(visible).toHaveLength(1);
+    const root = visible[0];
+    if (root.type !== 'person') throw new Error('expected person');
+    expect(root.name).toBe('Root Leader');
+    expect(root.visibleDirectTeams.map((t) => t.teamId)).toEqual(['pod-complete']);
+    expect(root.visibleChildren).toEqual([]);
+    expect(root.subtreeIncomplete).toBe(true);
   });
 });
 
