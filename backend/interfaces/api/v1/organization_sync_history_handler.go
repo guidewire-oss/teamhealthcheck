@@ -136,9 +136,20 @@ var (
 	// backslash-escaped inside an embedded JSON string) and then a separator, so
 	// a word that merely starts with a key name (tokenizer, secretary) is left
 	// alone. This covers "password": "x" and 'password': 'x' as well as password=x.
-	// An unquoted value runs to the next whitespace, which can redact more than
-	// the secret; that is the safe direction for this filter.
-	secretPairRe = regexp.MustCompile(`(?i)(authorization|api[_-]?key|apikey|token|secret|password|passwd|pwd|credentials?)((?:\\?["'])?\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)`)
+	// These are Go raw strings, so \b, \s and \S are single regex escapes, and the
+	// \\? in the pattern is an optional literal backslash, not an over-escape.
+	//
+	// The value is matched, in this order, as:
+	//   1. a backslash-escaped quoted string, \"...\" or \'...\', which is how a
+	//      quoted value looks inside JSON that was itself embedded in a string;
+	//   2. a plain "..." or '...' string, where a backslash escapes the next
+	//      character, so an escaped quote inside the value does not end it early;
+	//   3. otherwise a run of non-whitespace characters.
+	// Quoted values are therefore redacted in full, spaces included. An unquoted
+	// value ends at the first whitespace, because nothing in the text says where a
+	// secret with a space in it would end; anything after that space is not
+	// redacted. Secrets in an error message should be quoted or free of spaces.
+	secretPairRe = regexp.MustCompile(`(?i)(authorization|api[_-]?key|apikey|token|secret|password|passwd|pwd|credentials?)((?:\\?["'])?\s*[:=]\s*)(\\"(?:[^\\]|\\[^"])*\\"|\\'(?:[^\\]|\\[^'])*\\'|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)`)
 	bearerRe     = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}`)
 	urlUserRe    = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/\s:@]+(:[^/\s@]*)?@`)
 	urlQueryRe   = regexp.MustCompile(`(\bhttps?://[^\s?#]+)\?[^\s]*`)

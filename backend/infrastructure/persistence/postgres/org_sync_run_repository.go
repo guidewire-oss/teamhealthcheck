@@ -47,7 +47,7 @@ func NewOrgSyncRunRepository(db *sql.DB) *OrgSyncRunRepository {
 const runColumns = `id, status, stage, initiated_by, snapshot_type, source_generated_at,
 	created_at, started_at, completed_at, heartbeat_at,
 	inserted_users, updated_users, inserted_teams, updated_teams, membership_changes,
-	unchanged_users, unchanged_teams, deactivated_records, retry_count, error_code, error_message, failed_stage, worker_id, hold_report,
+	unchanged_users, unchanged_teams, unchanged_recorded, deactivated_records, retry_count, error_code, error_message, failed_stage, worker_id, hold_report,
 	health_checks_disabled, health_checks_enabled, mass_deletion_overridden, trigger_type`
 
 type rowScanner interface{ Scan(dest ...any) error }
@@ -59,17 +59,22 @@ func scanRun(row rowScanner) (*orgsyncrun.Run, error) {
 		srcAt, started, completed, heartbeat   sql.NullTime
 		errCode, errMsg, failedStage, workerID sql.NullString
 		hold                                   []byte
-		unchangedUsers, unchangedTeams         sql.NullInt64
+		unchangedUsers, unchangedTeams         int
+		unchangedRecorded                      bool
 		trigger                                string
 	)
 	if err := row.Scan(&r.ID, &status, &stage, &r.InitiatedBy, &snapType, &srcAt,
 		&r.CreatedAt, &started, &completed, &heartbeat,
 		&r.InsertedUsers, &r.UpdatedUsers, &r.InsertedTeams, &r.UpdatedTeams, &r.MembershipChanges,
-		&unchangedUsers, &unchangedTeams, &r.DeactivatedRecords, &r.RetryCount, &errCode, &errMsg, &failedStage, &workerID, &hold,
+		&unchangedUsers, &unchangedTeams, &unchangedRecorded, &r.DeactivatedRecords, &r.RetryCount, &errCode, &errMsg, &failedStage, &workerID, &hold,
 		&r.HealthChecksDisabled, &r.HealthChecksEnabled, &r.MassDeletionOverridden, &trigger); err != nil {
 		return nil, err
 	}
-	r.UnchangedUsers, r.UnchangedTeams = nullInt(unchangedUsers), nullInt(unchangedTeams)
+	// The columns are NOT NULL and hold 0 when nothing was recorded, so the flag,
+	// not the value, says whether a count is real. Unknown stays nil, never 0.
+	if unchangedRecorded {
+		r.UnchangedUsers, r.UnchangedTeams = &unchangedUsers, &unchangedTeams
+	}
 	r.Status = orgsyncrun.Status(status)
 	r.Trigger = orgsyncrun.Trigger(trigger)
 	r.Stage = orgsyncrun.Stage(stage)
@@ -93,14 +98,6 @@ func scanRun(row rowScanner) (*orgsyncrun.Run, error) {
 	}
 	r.HoldReport = hold
 	return &r, nil
-}
-
-func nullInt(n sql.NullInt64) *int {
-	if !n.Valid {
-		return nil
-	}
-	v := int(n.Int64)
-	return &v
 }
 
 func nullTime(t sql.NullTime) *time.Time {
@@ -132,12 +129,11 @@ func (r *OrgSyncRunRepository) CreatePending(ctx context.Context, p orgsyncrun.N
 	if trigger == "" {
 		trigger = orgsyncrun.TriggerManual
 	}
-	// unchanged_* are written as NULL explicitly: a new run has not recorded
-	// them yet, and the column default (kept at 0 for old replicas during a
-	// rolling deploy, see migration 000032) must not turn that into a stored 0.
+	// unchanged_recorded keeps its default FALSE: a new run has not recorded its
+	// unchanged counts yet (see migration 000032).
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO org_sync_runs (id, status, stage, initiated_by, idempotency_key, snapshot_type, trigger_type, unchanged_users, unchanged_teams)
-		VALUES ($1, 'PENDING', $5, $2, $3, $4, $6, NULL, NULL)
+		INSERT INTO org_sync_runs (id, status, stage, initiated_by, idempotency_key, snapshot_type, trigger_type)
+		VALUES ($1, 'PENDING', $5, $2, $3, $4, $6)
 	`, p.ID, p.InitiatedBy, key, string(p.SnapshotType), string(orgsyncrun.StageQueued), string(trigger))
 	if err != nil {
 		var pqErr *pq.Error

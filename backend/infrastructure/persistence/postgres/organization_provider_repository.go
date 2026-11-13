@@ -1221,7 +1221,7 @@ func markRunSucceeded(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput
 			source_generated_at = $2,
 			inserted_users = $3, updated_users = $4, inserted_teams = $5, updated_teams = $6,
 			membership_changes = $7, deactivated_records = $8,
-			unchanged_users = $9, unchanged_teams = $10,
+			unchanged_users = $9, unchanged_teams = $10, unchanged_recorded = TRUE,
 			health_checks_disabled = $11, health_checks_enabled = $12, mass_deletion_overridden = $13,
 			snapshot_type = $14
 		WHERE id = $1 AND status = ANY($15)

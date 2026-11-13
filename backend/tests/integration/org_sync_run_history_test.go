@@ -96,11 +96,9 @@ var _ = Describe("Org sync run history (real Postgres)", func() {
 		It("persists each run's own counts and keeps unchanged unknown (nil) distinct from 0", func() {
 			// r1: recorded counts incl. a genuine 0 unchanged on one side.
 			_, err := db.Exec(`UPDATE org_sync_runs SET inserted_users=2, updated_users=1, inserted_teams=1,
-				updated_teams=0, membership_changes=3, unchanged_users=7, unchanged_teams=0 WHERE id='r1'`)
+				updated_teams=0, membership_changes=3, unchanged_users=7, unchanged_teams=0, unchanged_recorded=TRUE WHERE id='r1'`)
 			Expect(err).NotTo(HaveOccurred())
-			// r3: committed zeros, unchanged never recorded.
-			_, err = db.Exec(`UPDATE org_sync_runs SET unchanged_users=NULL, unchanged_teams=NULL WHERE id='r3'`)
-			Expect(err).NotTo(HaveOccurred())
+			// r3: committed zeros, unchanged never recorded (flag left FALSE).
 
 			r1, err := repo.Get(ctx, "r1")
 			Expect(err).NotTo(HaveOccurred())
@@ -117,7 +115,18 @@ var _ = Describe("Org sync run history (real Postgres)", func() {
 			Expect(r3.UnchangedTeams).To(BeNil())
 		})
 
-		It("does not store unchanged counts for a run created by the repository", func() {
+		It("reports a genuine all-zero count as 0 once the run recorded it", func() {
+			_, err := db.Exec(`UPDATE org_sync_runs SET unchanged_users=0, unchanged_teams=0, unchanged_recorded=TRUE WHERE id='r3'`)
+			Expect(err).NotTo(HaveOccurred())
+			r3, err := repo.Get(ctx, "r3")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r3.UnchangedUsers).NotTo(BeNil())
+			Expect(*r3.UnchangedUsers).To(Equal(0))
+			Expect(r3.UnchangedTeams).NotTo(BeNil())
+			Expect(*r3.UnchangedTeams).To(Equal(0))
+		})
+
+		It("leaves unchanged unknown for a run created by the repository", func() {
 			// r5 is RUNNING and the single-active index allows only one active run.
 			_, err := db.Exec(`UPDATE org_sync_runs SET status='FAILED' WHERE id='r5'`)
 			Expect(err).NotTo(HaveOccurred())
@@ -129,19 +138,31 @@ var _ = Describe("Org sync run history (real Postgres)", func() {
 
 			created, err := repo.Get(ctx, "r-new")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(created.UnchangedUsers).To(BeNil(), "CreatePending writes NULL itself; it must not depend on the column default")
+			Expect(created.UnchangedUsers).To(BeNil())
 			Expect(created.UnchangedTeams).To(BeNil())
 		})
 
-		It("still reads a row inserted without the unchanged columns, as an older replica would write it", func() {
-			// Migration 000032 keeps DEFAULT 0 so a pre-000032 binary, whose INSERT omits
-			// these columns, does not produce NULLs it cannot scan. Such a row reads as 0.
+		It("never stores NULL in the count columns, so a pre-000032 replica can still scan every row", func() {
+			// The previous release scans these columns into a plain int. A NULL would make
+			// every read of that row fail, so none may exist, however the row was written.
+			_, err := db.Exec(`UPDATE org_sync_runs SET status='FAILED' WHERE id='r5'`)
+			Expect(err).NotTo(HaveOccurred())
+			_, _, err = repo.CreatePending(ctx, orgsyncrun.NewParams{
+				ID: "r-new", InitiatedBy: "admin", SnapshotType: orgprovider.SnapshotComplete,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var nulls int
+			Expect(db.QueryRow(`SELECT count(*) FROM org_sync_runs WHERE unchanged_users IS NULL OR unchanged_teams IS NULL`).Scan(&nulls)).To(Succeed())
+			Expect(nulls).To(BeZero())
+		})
+
+		It("reads a row an older replica wrote, which cannot set the flag, as unknown not as 0", func() {
+			// r2 was inserted with a plain INSERT that omits the unchanged columns and the flag.
 			r2, err := repo.Get(ctx, "r2")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(r2.UnchangedUsers).NotTo(BeNil())
-			Expect(*r2.UnchangedUsers).To(Equal(0))
-			Expect(r2.UnchangedTeams).NotTo(BeNil())
-			Expect(*r2.UnchangedTeams).To(Equal(0))
+			Expect(r2.UnchangedUsers).To(BeNil())
+			Expect(r2.UnchangedTeams).To(BeNil())
 		})
 	})
 })
