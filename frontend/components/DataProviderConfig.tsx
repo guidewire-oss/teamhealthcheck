@@ -354,6 +354,7 @@ export default function DataProviderConfig() {
       {run?.status === "SUCCESS" && (
         <div
           data-testid="sync-result"
+          data-run-id={run.runId}
           className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg flex items-start gap-3"
         >
           <CheckCircle2 className="w-5 h-5 text-green-600 mt-0.5 flex-shrink-0" />

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { getCurrentUser, logout, authenticatedFetch, User } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
@@ -12,7 +12,10 @@ import { LogOut, Users, ChevronDown, AlertCircle, Activity, LineChart as LineCha
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import OnboardingModal from '@/components/OnboardingModal';
 import BrandMark from '@/components/BrandMark';
-import { listManagerTeamsActionSummary, TeamActionSummary } from '@/lib/api/action-items';
+import ManagerActionSummary from '@/components/ManagerActionSummary';
+import { listPodActionItems, ActionItem } from '@/lib/api/action-items';
+import { useManagerActionSummary } from '@/lib/useManagerActionSummary';
+import PodActionBoard from '@/components/PodActionBoard';
 import * as XLSX from 'xlsx';
 import DocsLink from '@/components/DocsLink';
 
@@ -172,8 +175,36 @@ export default function ManagerPage() {
   const [trendsView, setTrendsView] = useState<'overview' | 'dimensions'>('dimensions');
   const [selectedTrendTeam, setSelectedTrendTeam] = useState<string>(''); // '' = all teams averaged
   const [showOnboarding, setShowOnboarding] = useState(false);
-  const [actionSummary, setActionSummary] = useState<TeamActionSummary[]>([]);
-  const [actionSummaryLoading, setActionSummaryLoading] = useState(false);
+  const {
+    summary: actionSummary,
+    loading: actionSummaryLoading,
+    error: actionSummaryError,
+  } = useManagerActionSummary(user?.id, activeTab === 'actions');
+  const [selectedPodTeam, setSelectedPodTeam] = useState<{ id: string; name: string } | null>(null);
+  const [podItems, setPodItems] = useState<ActionItem[]>([]);
+  const [podLoading, setPodLoading] = useState(false);
+  const [podError, setPodError] = useState<string | null>(null);
+
+  // Team id of the most recent pod click; a slower earlier response is ignored.
+  const latestPodRequest = useRef<string | null>(null);
+
+  const openPod = async (teamId: string, teamName: string) => {
+    if (!user) return;
+    latestPodRequest.current = teamId;
+    setSelectedPodTeam({ id: teamId, name: teamName });
+    setPodLoading(true);
+    setPodError(null);
+    try {
+      const items = await listPodActionItems((user as any).id, teamId);
+      if (latestPodRequest.current !== teamId) return;
+      setPodItems(items);
+    } catch {
+      if (latestPodRequest.current !== teamId) return;
+      setPodError('Failed to load action items for this pod');
+    } finally {
+      if (latestPodRequest.current === teamId) setPodLoading(false);
+    }
+  };
 
   useEffect(() => {
     const currentUser = getCurrentUser();
@@ -318,12 +349,6 @@ export default function ManagerPage() {
       fetchRadarData(user.id, selectedPeriod);
     } else if (user && activeTab === 'trends') {
       fetchTrendsData(user.id, selectedTrendTeam || undefined);
-    } else if (user && activeTab === 'actions') {
-      setActionSummaryLoading(true);
-      listManagerTeamsActionSummary(user.id)
-        .then(setActionSummary)
-        .catch(() => setActionSummary([]))
-        .finally(() => setActionSummaryLoading(false));
     }
   }, [user, activeTab, selectedPeriod, selectedTrendTeam]);
 
@@ -1266,56 +1291,41 @@ export default function ManagerPage() {
           </div>
         )}
         {/* Actions Tab */}
-        {!loading && !error && activeTab === 'actions' && (
-          <div className="bg-white rounded-xl shadow-sm border p-6" data-testid="manager-actions-panel">
-            <h3 className="text-xl font-semibold text-gray-900 mb-1">Action Items Across Teams</h3>
-            <p className="text-sm text-gray-500 mb-6">Open and in-progress action items per team supervised by you.</p>
-            {actionSummaryLoading ? (
+        {!loading && !error && activeTab === 'actions' && selectedPodTeam && (
+          <div className="bg-white rounded-xl shadow-sm border p-6" data-testid="manager-pod-action-board">
+            <button
+              onClick={() => setSelectedPodTeam(null)}
+              className="text-sm text-indigo-600 hover:text-indigo-800 font-medium mb-3 flex items-center gap-1"
+              data-testid="pod-board-back-btn"
+            >
+              ← Back to all teams
+            </button>
+            <h3 className="text-xl font-semibold text-gray-900 mb-1">{selectedPodTeam.name} — Action Items</h3>
+            <p className="text-sm text-gray-500 mb-6">Read-only view of every action item for this pod.</p>
+            {podLoading ? (
               <div className="flex items-center justify-center py-12">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
               </div>
-            ) : actionSummary.length === 0 ? (
-              <div className="text-center py-12 text-gray-400">
-                <ListTodo className="w-10 h-10 mx-auto mb-3 text-gray-200" />
-                <p className="font-medium text-gray-500">No action items found</p>
-                <p className="text-sm mt-1">Team Leads create action items on their team dashboards.</p>
+            ) : podError ? (
+              <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                {podError}
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Team</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Open / In Progress</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {actionSummary.map((row) => (
-                      <tr key={row.teamId} data-testid="manager-action-row">
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{row.teamName}</td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{row.openCount}</td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          {row.openCount === 0 ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700">
-                              <CheckCircle className="w-3 h-3" /> All done
-                            </span>
-                          ) : row.openCount <= 3 ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-50 text-yellow-700">
-                              <Clock className="w-3 h-3" /> In progress
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700">
-                              <AlertCircle className="w-3 h-3" /> Needs attention
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <PodActionBoard items={podItems} />
             )}
+          </div>
+        )}
+        {!loading && !error && activeTab === 'actions' && !selectedPodTeam && (
+          <div className="bg-white rounded-xl shadow-sm border p-6" data-testid="manager-actions-panel">
+            <h3 className="text-xl font-semibold text-gray-900 mb-1">Action Items Across Teams</h3>
+            <p className="text-sm text-gray-500 mb-6">View open, on-hold, in-progress, and completed action items for teams you supervise. Select a team to open its full action board.</p>
+            <ManagerActionSummary
+              summary={actionSummary}
+              loading={actionSummaryLoading}
+              error={actionSummaryError}
+              onSelectTeam={openPod}
+            />
           </div>
         )}
       </div>

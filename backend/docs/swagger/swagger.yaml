@@ -55,6 +55,21 @@ definitions:
                     $ref: '#/definitions/ActionItemResponse'
                 type: array
         type: object
+    ActionStatusCountsResponse:
+        properties:
+            completed:
+                example: 3
+                type: integer
+            inProgress:
+                example: 1
+                type: integer
+            onHold:
+                example: 1
+                type: integer
+            open:
+                example: 2
+                type: integer
+        type: object
     AddTeamMemberRequest:
         properties:
             userId:
@@ -339,6 +354,15 @@ definitions:
                 items:
                     $ref: '#/definitions/HealthDimensionDTO'
                 type: array
+        type: object
+    DirectManagerResponse:
+        properties:
+            id:
+                example: manager1
+                type: string
+            name:
+                example: Morgan Manager
+                type: string
         type: object
     ErrorResponse:
         properties:
@@ -996,8 +1020,12 @@ definitions:
     TeamActionSummaryResponse:
         properties:
             openCount:
-                example: 1
+                example: 4
                 type: integer
+            statusCounts:
+                allOf:
+                    - $ref: '#/definitions/ActionStatusCountsResponse'
+                description: Per-status counts, so clients don't have to download every card to tally them.
             teamId:
                 example: team-phoenix
                 type: string
@@ -1200,15 +1228,18 @@ definitions:
             assignedTo:
                 example: alice
                 type: string
+                x-nullable: true
             description:
                 example: Codebase health scored 2.6. Add tests to the payments and auth packages first.
                 type: string
             dimensionId:
                 example: health
                 type: string
+                x-nullable: true
             dueDate:
                 example: "2026-12-15"
                 type: string
+                x-nullable: true
             status:
                 example: in_progress
                 type: string
@@ -2697,9 +2728,43 @@ paths:
             summary: Get a manager's subordinates
             tags:
                 - Managers
+    /managers/{managerId}/teams/{teamId}/action-items:
+        get:
+            description: Returns every action item for one team the given manager supervises, newest first. The authenticated caller may only request their own view (managerId must match the token) and the team must be one they supervise; otherwise the request is rejected with a 403. Access requires a manager-or-above role.
+            parameters:
+                - description: Manager ID
+                  in: path
+                  name: managerId
+                  required: true
+                  type: string
+                - description: Team ID
+                  in: path
+                  name: teamId
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/ActionItemsResponse'
+                "403":
+                    description: Forbidden — not your view, or team is not in your hierarchy
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to validate pod access or fetch action items
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get a pod's action items (read-only)
+            tags:
+                - Action Items
     /managers/{managerId}/teams/action-items:
         get:
-            description: Returns, for every team the given manager supervises, the team's ID, name, and count of action items whose status is not "done", ordered by team name. Access requires a manager-or-above role, and the authenticated caller may only request their own summary; requesting another manager's summary is rejected with a 403.
+            description: Returns, for every team the given manager supervises, the team's ID, name, and count of action items whose status is not "done" plus per-status counts (open, onHold, inProgress, completed), ordered by team name. Access requires a manager-or-above role, and the authenticated caller may only request their own summary; requesting another manager's summary is rejected with a 403.
             parameters:
                 - description: Manager ID
                   in: path
@@ -2780,14 +2845,14 @@ paths:
                 - Teams
     /teams/{teamId}/action-items:
         get:
-            description: Returns the action items belonging to the given team, newest first, optionally narrowed by status (open, in_progress, done) and/or assessment period via query parameters. Each item includes its dimension, creator, assignee, title, description, status, due date, assessment period, and timestamps, with names resolved for the linked dimension, creator, and assignee. Access requires membership on the team or manager-or-above privileges.
+            description: Returns the action items belonging to the given team, newest first, optionally narrowed by status (open, on_hold, in_progress, done) and/or assessment period via query parameters. Each item includes its dimension, creator, assignee, title, description, status, due date, assessment period, and timestamps, with names resolved for the linked dimension, creator, and assignee. Access requires membership on the team or manager-or-above privileges.
             parameters:
                 - description: Team ID
                   in: path
                   name: teamId
                   required: true
                   type: string
-                - description: Filter by status (open, in_progress, done)
+                - description: Filter by status (open, on_hold, in_progress, done)
                   in: query
                   name: status
                   type: string
@@ -2911,7 +2976,7 @@ paths:
         patch:
             consumes:
                 - application/json
-            description: Partially updates the action item identified by the path ID within the given team; only the fields present in the request body are changed. Status, when provided, must be one of open, in_progress, or done. When assignedTo is set, the target user must already be a member of the team or the request is rejected with a 400. Returns a 404 if no matching item exists for that team. Access requires membership on the team or manager-or-above privileges.
+            description: Partially updates the action item identified by the path ID within the given team; only the fields present in the request body are changed. dimensionId, assignedTo and dueDate may be set to null to clear them; omitting a key leaves it unchanged. Status, when provided, must be one of open, on_hold, in_progress, or done. When assignedTo is set, the target user must already be a member of the team or the request is rejected with a 400. Returns a 404 if no matching item exists for that team. Access requires membership on the team or manager-or-above privileges.
             parameters:
                 - description: Team ID
                   in: path
@@ -2961,6 +3026,39 @@ paths:
             security:
                 - BearerAuth: []
             summary: Update a team action item
+            tags:
+                - Action Items
+    /teams/{teamId}/action-items/direct-manager:
+        get:
+            description: Returns the authenticated user's direct manager (reports_to) so the UI can offer them as an assignee. The id and name are null when the user has no manager. Access requires membership on the team or manager-or-above privileges.
+            parameters:
+                - description: Team ID
+                  in: path
+                  name: teamId
+                  required: true
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: OK
+                    schema:
+                        $ref: '#/definitions/DirectManagerResponse'
+                "401":
+                    description: Unauthorized
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "403":
+                    description: 'Access denied: team membership or manager-or-above privileges required'
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+                "500":
+                    description: Failed to resolve direct manager
+                    schema:
+                        $ref: '#/definitions/ErrorResponse'
+            security:
+                - BearerAuth: []
+            summary: Get the caller's direct manager
             tags:
                 - Action Items
     /teams/{teamId}/dashboard/health-summary:

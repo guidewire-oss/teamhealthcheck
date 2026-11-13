@@ -41,7 +41,7 @@ describe('CompletionByTeamPanel — in-progress-only filtering', () => {
           // Raw canonical status is still in_progress (completed < total),
           // but 199/200 rounds to 100% -- must be excluded just like a
           // genuinely complete team, never shown as a green "Completed" row.
-          team('Rounds To Complete Pod', { status: 'in_progress', completed: 199, total: 200 }),
+          team('Rounds To Complete Pod', { status: 'in_progress', completed: 199, total: 200, postWorkshopCompleted: true }),
         ]}
       />,
     );
@@ -87,7 +87,7 @@ describe('CompletionByTeamPanel — in-progress-only filtering', () => {
   });
 
   it('shows the in-progress empty state when the only in_progress team rounds up to 100%', () => {
-    render(<CompletionByTeamPanel teamStats={[team('Rounds To Complete Pod', { completed: 199, total: 200 })]} />);
+    render(<CompletionByTeamPanel teamStats={[team('Rounds To Complete Pod', { completed: 199, total: 200, postWorkshopCompleted: true })]} />);
 
     expect(screen.getByTestId('team-bars-empty-state')).toHaveTextContent('No teams currently in progress.');
   });
