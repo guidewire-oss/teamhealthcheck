@@ -5,12 +5,14 @@ import { AlertCircle, CheckCircle2, Clock, Loader2, RefreshCw, X, XCircle } from
 import {
   listSyncRunHistory,
   type PaginationMeta,
+  type SyncRunSnapshotType,
   type SyncRunHistoryItem,
   type SyncRunStatus,
   type SyncRunTrigger,
 } from "@/lib/api/admin";
 import {
   NOT_AVAILABLE,
+  SNAPSHOT_OPTIONS,
   STATUS_OPTIONS,
   TRIGGER_OPTIONS,
   errorCodeLabel,
@@ -188,6 +190,7 @@ function DetailsDialog({ run, onClose }: { run: SyncRunHistoryItem; onClose: () 
 export default function SyncHistory() {
   const [status, setStatus] = useState<SyncRunStatus | "">("");
   const [trigger, setTrigger] = useState<SyncRunTrigger | "">("");
+  const [snapshotType, setSnapshotType] = useState<SyncRunSnapshotType | "">("");
   const [page, setPage] = useState(1);
   const [runs, setRuns] = useState<SyncRunHistoryItem[]>([]);
   const [pagination, setPagination] = useState<PaginationMeta | null>(null);
@@ -205,7 +208,7 @@ export default function SyncHistory() {
     try {
       const res = await listSyncRunHistory({
         page, pageSize: SYNC_HISTORY_PAGE_SIZE,
-        status: status || undefined, trigger: trigger || undefined,
+        status: status || undefined, trigger: trigger || undefined, snapshotType: snapshotType || undefined,
       });
       if (mine !== seq.current) return;
       setRuns(res.runs);
@@ -216,7 +219,7 @@ export default function SyncHistory() {
     } finally {
       if (mine === seq.current) setLoading(false);
     }
-  }, [page, status, trigger]);
+  }, [page, status, trigger, snapshotType]);
 
   // The summary asks the server for the newest run overall, newest success and
   // newest failure, so "None" for failures means there really are none -- not
@@ -241,7 +244,26 @@ export default function SyncHistory() {
 
   const refresh = () => { load(); loadSummary(); };
   const closeDetails = useCallback(() => setSelected(null), []);
-  const noRunsEver = !loading && !error && runs.length === 0 && !status && !trigger && page === 1;
+  const noRunsEver = !loading && !error && runs.length === 0 && !status && !trigger && !snapshotType && page === 1;
+
+  // After a failed fetch, `pagination` still describes the last page that loaded,
+  // not the one that failed. Previous is therefore driven by the requested page,
+  // and Next stays off because the failed page's total is unknown.
+  const paginationNav = pagination && (
+    <nav className="flex items-center justify-between gap-3 mt-3 text-sm" aria-label="Sync history pagination">
+      <span data-testid="sync-history-page-info">
+        {error
+          ? `Page ${page}`
+          : `Page ${pagination.page} of ${Math.max(pagination.totalPages, 1)} · ${pagination.totalItems} run${pagination.totalItems === 1 ? "" : "s"}`}
+      </span>
+      <span className="flex gap-2">
+        <button disabled={loading || (error ? page <= 1 : !pagination.hasPreviousPage)} onClick={() => setPage((p) => p - 1)}
+          className="px-3 py-1 border rounded disabled:opacity-50" data-testid="sync-history-prev">Previous</button>
+        <button disabled={loading || !!error || !pagination.hasNextPage} onClick={() => setPage((p) => p + 1)}
+          className="px-3 py-1 border rounded disabled:opacity-50" data-testid="sync-history-next">Next</button>
+      </span>
+    </nav>
+  );
 
   return (
     <div data-testid="sync-history">
@@ -298,14 +320,27 @@ export default function SyncHistory() {
             {TRIGGER_OPTIONS.map((t) => <option key={t} value={t}>{triggerLabel(t)}</option>)}
           </select>
         </label>
+        <label className="flex items-center gap-2 text-sm text-gray-800">
+          Snapshot
+          <select data-testid="sync-filter-snapshot" value={snapshotType} className="border border-gray-300 rounded px-2 py-1"
+            onChange={(e) => { setSnapshotType(e.target.value as SyncRunSnapshotType | ""); setPage(1); }}>
+            <option value="">All</option>
+            {SNAPSHOT_OPTIONS.map((s) => <option key={s} value={s}>{snapshotLabel(s)}</option>)}
+          </select>
+        </label>
       </div>
 
-      {error ? (
-        <div role="alert" data-testid="sync-history-error" className="flex items-center gap-3 text-sm text-red-700">
+      {error && (
+        <div role="alert" data-testid="sync-history-error" className="flex items-center gap-3 text-sm text-red-700 mb-3">
           <AlertCircle className="w-4 h-4" aria-hidden="true" />
           <span>{error}</span>
           <button onClick={load} className="px-3 py-1 border border-red-300 rounded hover:bg-red-50" data-testid="sync-history-retry">Retry</button>
         </div>
+      )}
+      {error ? (
+        // The rows on screen belong to an earlier page, so they stay hidden, but
+        // the pagination stays so the user can go back from the page that failed.
+        paginationNav
       ) : loading && runs.length === 0 ? (
         <p className="text-sm text-gray-500" data-testid="sync-history-loading">Loading sync history...</p>
       ) : runs.length === 0 ? (
@@ -365,19 +400,7 @@ export default function SyncHistory() {
             </table>
           </div>
 
-          {pagination && (
-            <nav className="flex items-center justify-between gap-3 mt-3 text-sm" aria-label="Sync history pagination">
-              <span data-testid="sync-history-page-info">
-                Page {pagination.page} of {Math.max(pagination.totalPages, 1)} · {pagination.totalItems} run{pagination.totalItems === 1 ? "" : "s"}
-              </span>
-              <span className="flex gap-2">
-                <button disabled={!pagination.hasPreviousPage || loading} onClick={() => setPage((p) => p - 1)}
-                  className="px-3 py-1 border rounded disabled:opacity-50" data-testid="sync-history-prev">Previous</button>
-                <button disabled={!pagination.hasNextPage || loading} onClick={() => setPage((p) => p + 1)}
-                  className="px-3 py-1 border rounded disabled:opacity-50" data-testid="sync-history-next">Next</button>
-              </span>
-            </nav>
-          )}
+          {paginationNav}
         </div>
       )}
 

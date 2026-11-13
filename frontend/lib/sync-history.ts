@@ -31,6 +31,8 @@ export const SNAPSHOT_LABELS: Record<SyncRunSnapshotType, string> = {
   PARTIAL: 'Partial snapshot',
 };
 
+export const SNAPSHOT_OPTIONS: SyncRunSnapshotType[] = ['COMPLETE', 'PARTIAL'];
+
 export const STAGE_LABELS: Record<string, string> = {
   QUEUED: 'Queued',
   ACQUIRING_LOCK: 'Acquiring lock',

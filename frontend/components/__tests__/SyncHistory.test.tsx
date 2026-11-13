@@ -39,7 +39,11 @@ const running = run({
 // Route calls by filter so the table and the three summary queries each get the right data.
 const serve = (all: any[]) =>
   listRuns.mockImplementation(async (p: any = {}) => {
-    let rs = all.filter((r) => (!p.status || r.status === p.status) && (!p.trigger || r.trigger === p.trigger));
+    let rs = all.filter(
+      (r) => (!p.status || r.status === p.status)
+        && (!p.trigger || r.trigger === p.trigger)
+        && (!p.snapshotType || r.snapshotType === p.snapshotType),
+    );
     const size = p.pageSize ?? 20;
     const totalItems = rs.length;
     rs = rs.slice(((p.page ?? 1) - 1) * size, (p.page ?? 1) * size);
@@ -84,7 +88,65 @@ describe('SyncHistory', () => {
     await waitFor(() => expect(screen.getByTestId('sync-summary-latest')).toHaveTextContent('In progress'));
     expect(screen.getByTestId('sync-summary-success')).toHaveTextContent('Manual · Complete snapshot');
     expect(screen.getByTestId('sync-summary-failed')).toHaveTextContent('Scheduled · Complete snapshot');
+    // Each card must come from its own request, not from the newest run overall.
+    expect(listRuns).toHaveBeenCalledWith({ pageSize: 1 });
+    expect(listRuns).toHaveBeenCalledWith({ pageSize: 1, status: 'SUCCESS' });
     expect(listRuns).toHaveBeenCalledWith({ pageSize: 1, status: 'FAILED' });
+    // The success card is the succeeded run, not the in-progress one.
+    expect(screen.getByTestId('sync-summary-success')).not.toHaveTextContent('In progress');
+  });
+
+  it('labels complete and partial runs distinctly in the table and summary, and sends no snapshot filter by default', async () => {
+    const partial = run({ runId: 'run-partial-0000-0000-0000-000000000003', snapshotType: 'PARTIAL', trigger: 'SCHEDULED', createdAt: '2026-11-02T10:00:00Z' });
+    serve([partial, run()]);
+    render(<SyncHistory />);
+    const rows = await screen.findAllByTestId('sync-history-row');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('Partial snapshot');
+    expect(rows[0]).not.toHaveTextContent('Complete snapshot');
+    expect(rows[1]).toHaveTextContent('Complete snapshot');
+    expect(rows[1]).not.toHaveTextContent('Partial snapshot');
+    // The newest run is the partial one; the newest success is whichever succeeded, here also the partial.
+    await waitFor(() => expect(screen.getByTestId('sync-summary-latest')).toHaveTextContent('Scheduled · Partial snapshot'));
+    // With the snapshot filter left on All, no request may carry one.
+    expect(listRuns.mock.calls.every(([p]: any[]) => p?.snapshotType === undefined)).toBe(true);
+  });
+
+  it('filters by snapshot type server-side, resets to page 1 and combines with other filters', async () => {
+    const complete = Array.from({ length: 25 }, (_, i) => run({ runId: `run-c${String(i).padStart(2, '0')}-xxxxxxxx`, createdAt: `2026-11-01T10:${String(59 - i).padStart(2, '0')}:00Z` }));
+    const partials = [1, 2].map((n) => run({ runId: `run-p${n}-xxxxxxxxxx`, snapshotType: 'PARTIAL', trigger: 'SCHEDULED', createdAt: `2026-10-0${n}T10:00:00Z` }));
+    serve([...complete, ...partials]);
+    render(<SyncHistory />);
+    await screen.findAllByTestId('sync-history-row');
+
+    // Offers exactly the two snapshot types, labelled as the rows are.
+    const select = screen.getByTestId('sync-filter-snapshot') as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => [o.value, o.textContent])).toEqual([
+      ['', 'All'], ['COMPLETE', 'Complete snapshot'], ['PARTIAL', 'Partial snapshot'],
+    ]);
+
+    // Move to page 2, then filter: the request must go back to page 1.
+    fireEvent.click(screen.getByTestId('sync-history-next'));
+    await waitFor(() => expect(screen.getByTestId('sync-history-page-info')).toHaveTextContent('Page 2'));
+    fireEvent.change(select, { target: { value: 'PARTIAL' } });
+    await waitFor(() => expect(screen.getAllByTestId('sync-history-row')).toHaveLength(2));
+    expect(listRuns).toHaveBeenCalledWith({ page: 1, pageSize: 20, status: undefined, trigger: undefined, snapshotType: 'PARTIAL' });
+    for (const row of screen.getAllByTestId('sync-history-row')) {
+      expect(row).toHaveTextContent('Partial snapshot');
+      expect(row).not.toHaveTextContent('Complete snapshot');
+    }
+
+    // Combined with the sync type filter, and the empty state names the filters, not "never ran".
+    fireEvent.change(screen.getByTestId('sync-filter-trigger'), { target: { value: 'MANUAL' } });
+    expect(await screen.findByTestId('sync-history-empty')).toHaveTextContent('No sync runs match these filters.');
+    expect(listRuns).toHaveBeenCalledWith({ page: 1, pageSize: 20, status: undefined, trigger: 'MANUAL', snapshotType: 'PARTIAL' });
+
+    // Back to All sends no snapshot type again.
+    fireEvent.change(screen.getByTestId('sync-filter-trigger'), { target: { value: '' } });
+    fireEvent.change(select, { target: { value: '' } });
+    await waitFor(() => expect(screen.getByTestId('sync-history-page-info')).toHaveTextContent('Page 1 of 2'));
+    const last = listRuns.mock.calls.filter(([p]: any[]) => p?.pageSize === 20).at(-1)![0];
+    expect(last.snapshotType).toBeUndefined();
   });
 
   it('says "None" for failures when there are none', async () => {
@@ -149,8 +211,10 @@ describe('SyncHistory', () => {
     fireEvent.click(await screen.findByTestId('sync-history-row'));
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).queryByTestId('sync-run-failure')).not.toBeInTheDocument();
-    expect(within(dialog).getByText('Queued at')).toBeInTheDocument();
-    expect(within(dialog).getByText('Provider snapshot generated at')).toBeInTheDocument();
+    // Assert the values, not just the labels.
+    const timeOf = (label: string) => (within(dialog).getByText(label).nextSibling as HTMLElement).querySelector('time');
+    expect(timeOf('Queued at')).toHaveAttribute('dateTime', '2026-11-01T10:00:00Z');
+    expect(timeOf('Provider snapshot generated at')).toHaveAttribute('dateTime', '2026-11-01T09:00:00Z');
     expect(within(dialog).getByText('30 s')).toBeInTheDocument();
   });
 
@@ -170,9 +234,45 @@ describe('SyncHistory', () => {
     listRuns.mockRejectedValueOnce(new Error('Failed to load sync history'));
     render(<SyncHistory />);
     expect(await screen.findByTestId('sync-history-error')).toHaveTextContent('Failed to load sync history');
+    // Nothing has loaded yet, so there is no page to go back to.
+    expect(screen.queryByTestId('sync-history-prev')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('sync-history-retry'));
     expect(await screen.findByTestId('sync-history-table')).toBeInTheDocument();
     expect(screen.queryByTestId('sync-history-error')).not.toBeInTheDocument();
+  });
+
+  it('keeps Previous available when a later page fails to load, and recovers by going back', async () => {
+    const many = Array.from({ length: 25 }, (_, i) => run({ runId: `run-${String(i).padStart(2, '0')}-xxxxxxxx`, createdAt: `2026-11-01T10:${String(59 - i).padStart(2, '0')}:00Z` }));
+    serve(many);
+    const ok = listRuns.getMockImplementation()!;
+    // Fail only the table request for page 2; every other request succeeds.
+    let failPage2 = true;
+    listRuns.mockImplementation(async (p: any = {}) => {
+      if (failPage2 && p.page === 2) throw new Error('Failed to load sync history');
+      return ok(p);
+    });
+    render(<SyncHistory />);
+    await screen.findAllByTestId('sync-history-row');
+    expect(screen.getByTestId('sync-history-prev')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('sync-history-next'));
+    expect(await screen.findByTestId('sync-history-error')).toHaveTextContent('Failed to load sync history');
+
+    // Rows from page 1 are not shown as if they were page 2, but the pagination stays.
+    expect(screen.queryByTestId('sync-history-table')).not.toBeInTheDocument();
+    expect(screen.getByTestId('sync-history-page-info')).toHaveTextContent('Page 2');
+    expect(screen.getByTestId('sync-history-prev')).toBeEnabled();
+    expect(screen.getByTestId('sync-history-next')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('sync-history-prev'));
+    expect(await screen.findByTestId('sync-history-table')).toBeInTheDocument();
+    expect(screen.queryByTestId('sync-history-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('sync-history-page-info')).toHaveTextContent('Page 1 of 2');
+
+    // Retry on the failed page also recovers once the server does.
+    failPage2 = false;
+    fireEvent.click(screen.getByTestId('sync-history-next'));
+    await waitFor(() => expect(screen.getByTestId('sync-history-page-info')).toHaveTextContent('Page 2 of 2'));
   });
 
   it('has no write controls', async () => {

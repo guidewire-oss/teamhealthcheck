@@ -132,9 +132,12 @@ func (r *OrgSyncRunRepository) CreatePending(ctx context.Context, p orgsyncrun.N
 	if trigger == "" {
 		trigger = orgsyncrun.TriggerManual
 	}
+	// unchanged_* are written as NULL explicitly: a new run has not recorded
+	// them yet, and the column default (kept at 0 for old replicas during a
+	// rolling deploy, see migration 000032) must not turn that into a stored 0.
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO org_sync_runs (id, status, stage, initiated_by, idempotency_key, snapshot_type, trigger_type)
-		VALUES ($1, 'PENDING', $5, $2, $3, $4, $6)
+		INSERT INTO org_sync_runs (id, status, stage, initiated_by, idempotency_key, snapshot_type, trigger_type, unchanged_users, unchanged_teams)
+		VALUES ($1, 'PENDING', $5, $2, $3, $4, $6, NULL, NULL)
 	`, p.ID, p.InitiatedBy, key, string(p.SnapshotType), string(orgsyncrun.StageQueued), string(trigger))
 	if err != nil {
 		var pqErr *pq.Error

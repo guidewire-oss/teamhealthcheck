@@ -2,6 +2,7 @@ package v1
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"regexp"
 	"strings"
@@ -57,8 +58,12 @@ func (h *OrganizationProviderHandler) ListSyncRunHistory(c *gin.Context) {
 		filter.SnapshotType = orgprovider.SnapshotType(v)
 	}
 
-	page := parsePositiveIntParam(c, "page", 1)
 	pageSize := min(parsePositiveIntParam(c, "pageSize", defaultSyncHistoryPageSize), maxSyncHistoryPageSize)
+	// page is any positive integer from the caller. Clamp it before multiplying,
+	// or (page-1)*pageSize can overflow int, go negative and make PostgreSQL
+	// reject the OFFSET with a 500. A page this far out is past the last page
+	// anyway, so it returns an empty list like any other out-of-range page.
+	page := min(parsePositiveIntParam(c, "page", 1), math.MaxInt32/pageSize)
 	filter.Limit = pageSize
 	filter.Offset = (page - 1) * pageSize
 
@@ -124,7 +129,16 @@ func syncRunHistoryItem(r *orgsyncrun.Run) dto.SyncRunHistoryItemDTO {
 
 var (
 	// credential-looking "key: value" / "key=value" pairs and bearer tokens.
-	secretPairRe = regexp.MustCompile(`(?i)\b(authorization|api[_-]?key|apikey|token|secret|password|passwd|pwd|credential[s]?)\b(\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)`)
+	//
+	// The key has no leading \b on purpose: \b never matches inside an
+	// identifier, so it would miss db_password=, ACCESS_TOKEN= and clientSecret:.
+	// The key must still be followed by an optional closing quote (plain, or
+	// backslash-escaped inside an embedded JSON string) and then a separator, so
+	// a word that merely starts with a key name (tokenizer, secretary) is left
+	// alone. This covers "password": "x" and 'password': 'x' as well as password=x.
+	// An unquoted value runs to the next whitespace, which can redact more than
+	// the secret; that is the safe direction for this filter.
+	secretPairRe = regexp.MustCompile(`(?i)(authorization|api[_-]?key|apikey|token|secret|password|passwd|pwd|credentials?)((?:\\?["'])?\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)`)
 	bearerRe     = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}`)
 	urlUserRe    = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/\s:@]+(:[^/\s@]*)?@`)
 	urlQueryRe   = regexp.MustCompile(`(\bhttps?://[^\s?#]+)\?[^\s]*`)

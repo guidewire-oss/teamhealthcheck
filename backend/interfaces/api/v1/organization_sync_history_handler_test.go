@@ -190,6 +190,16 @@ var _ = Describe("Organization Provider Handler: sync run history", func() {
 		Expect(beyond["runs"]).NotTo(BeNil(), "an empty page is [] not null")
 	})
 
+	It("returns an empty page, not an error, for a page number that would overflow the offset", func() {
+		// (page-1)*pageSize overflows int64 for this page; unclamped, the offset goes negative.
+		resp := get(path+"?pageSize=100&page=9223372036854775807", adminToken)
+		Expect(resp.Code).To(Equal(http.StatusOK))
+		body := decode(resp)
+		Expect(runs(body)).To(BeEmpty())
+		Expect(body["runs"]).NotTo(BeNil(), "an empty page is [] not null")
+		Expect(body["pagination"].(map[string]any)["totalItems"]).To(BeEquivalentTo(5))
+	})
+
 	It("defaults the page size to 20 and caps it at 100", func() {
 		Expect(decode(get(path, adminToken))["pagination"].(map[string]any)["pageSize"]).To(BeEquivalentTo(20))
 		Expect(decode(get(path+"?pageSize=5000", adminToken))["pagination"].(map[string]any)["pageSize"]).To(BeEquivalentTo(100))
