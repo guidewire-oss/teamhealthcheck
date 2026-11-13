@@ -8,7 +8,7 @@ vi.mock('@/lib/api/admin', async (importOriginal) => {
 });
 
 import SyncHistory from '../SyncHistory';
-import { formatDuration, initiatorLabel, shortId, statusLabel, stageLabel } from '@/lib/sync-history';
+import { formatCount, formatDuration, initiatorLabel, shortId, statusLabel, stageLabel } from '@/lib/sync-history';
 
 const run = (over: Record<string, any> = {}) => ({
   runId: 'run-aaaaaaaa-bbbb-cccc-dddd-000000000001', snapshotType: 'COMPLETE', trigger: 'MANUAL',
@@ -20,6 +20,10 @@ const run = (over: Record<string, any> = {}) => ({
 const page = (runs: any[], over: Record<string, any> = {}) => ({
   runs,
   pagination: { page: 1, pageSize: 20, totalItems: runs.length, totalPages: runs.length ? 1 : 0, hasNextPage: false, hasPreviousPage: false, ...over },
+});
+
+const counts = (over: Record<string, any> = {}) => ({
+  insertedUsers: 0, updatedUsers: 0, unchangedUsers: 1193, insertedTeams: 0, updatedTeams: 0, unchangedTeams: 237, membershipChanges: 0, ...over,
 });
 
 const failed = run({
@@ -179,7 +183,84 @@ describe('SyncHistory', () => {
   });
 });
 
+describe('SyncHistory added counts', () => {
+  const rowFor = (id: string) => screen.getAllByTestId('sync-history-row').find((r) => r.textContent?.includes(id.slice(0, 8)))!;
+
+  it('shows each run its own added counts in the table and details, and keeps them across filter, page and detail navigation', async () => {
+    const a = run({ runId: 'aaaaaaaa-run-a', ...counts({ insertedUsers: 2, insertedTeams: 1, updatedUsers: 5, membershipChanges: 4, unchangedUsers: 10, unchangedTeams: 3 }) });
+    const b = run({ runId: 'bbbbbbbb-run-b', trigger: 'SCHEDULED', ...counts() });
+    serve([a, b]);
+    render(<SyncHistory />);
+    await screen.findByTestId('sync-history-table');
+    expect(screen.getByRole('columnheader', { name: 'Users added' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Teams added' })).toBeInTheDocument();
+    const [ra, rb] = [rowFor('aaaaaaaa'), rowFor('bbbbbbbb')];
+    expect(within(ra).getByTestId('sync-users-added')).toHaveTextContent(/^2$/);
+    expect(within(ra).getByTestId('sync-teams-added')).toHaveTextContent(/^1$/);
+    // A genuine zero is shown as 0, not hidden.
+    expect(within(rb).getByTestId('sync-users-added')).toHaveTextContent(/^0$/);
+    expect(within(rb).getByTestId('sync-teams-added')).toHaveTextContent(/^0$/);
+
+    fireEvent.click(within(ra).getByRole('button', { name: /view details/i }));
+    let d = screen.getByRole('dialog');
+    expect(within(d).getByTestId('detail-users-added')).toHaveTextContent(/^2$/);
+    expect(within(d).getByTestId('detail-teams-added')).toHaveTextContent(/^1$/);
+    expect(within(d).getByTestId('detail-users-updated')).toHaveTextContent(/^5$/); // updates are not additions
+    expect(within(d).getByTestId('detail-users-unchanged')).toHaveTextContent(/^10$/);
+    expect(within(d).getByTestId('detail-teams-unchanged')).toHaveTextContent(/^3$/);
+    expect(within(d).getByTestId('detail-membership-changes')).toHaveTextContent(/^4$/);
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    // Filter to B, then open its details: still B's own zeros.
+    fireEvent.change(screen.getByTestId('sync-filter-trigger'), { target: { value: 'SCHEDULED' } });
+    await waitFor(() => expect(screen.getAllByTestId('sync-history-row')).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: /view details/i }));
+    d = screen.getByRole('dialog');
+    expect(within(d).getByTestId('detail-users-added')).toHaveTextContent(/^0$/);
+    expect(within(d).getByTestId('detail-membership-changes')).toHaveTextContent(/^0$/);
+  });
+
+  it('shows a legacy/unknown count as unavailable, never as 0', async () => {
+    serve([run({ ...counts({ unchangedUsers: null, unchangedTeams: null }) }), run({ runId: 'legacy-00-run', insertedUsers: null, insertedTeams: null })]);
+    render(<SyncHistory />);
+    await screen.findByTestId('sync-history-table');
+    const legacy = rowFor('legacy-00');
+    expect(within(legacy).getByTestId('sync-users-added')).toHaveTextContent('—');
+    expect(within(legacy).getByTestId('sync-teams-added')).toHaveTextContent('—');
+    fireEvent.click(within(legacy).getByRole('button', { name: /view details/i }));
+    expect(within(screen.getByRole('dialog')).getByTestId('detail-users-added')).toHaveTextContent('Not available');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    // Added is known (0) but unchanged was never recorded.
+    fireEvent.click(within(screen.getAllByTestId('sync-history-row')[0]).getByRole('button', { name: /view details/i }));
+    const d = screen.getByRole('dialog');
+    expect(within(d).getByTestId('detail-users-added')).toHaveTextContent(/^0$/);
+    expect(within(d).getByTestId('detail-users-unchanged')).toHaveTextContent('Not available');
+  });
+
+  it('shows no counts for running and failed runs and explains why', async () => {
+    serve([running, failed]);
+    render(<SyncHistory />);
+    await screen.findByTestId('sync-history-table');
+    for (const r of screen.getAllByTestId('sync-history-row')) {
+      expect(within(r).getByTestId('sync-users-added')).toHaveTextContent('—');
+      expect(within(r).getByTestId('sync-teams-added')).toHaveTextContent('—');
+    }
+    fireEvent.click(within(rowFor('run-live-')).getByRole('button', { name: /view details/i }));
+    expect(within(screen.getByRole('dialog')).getByTestId('sync-run-counts')).toHaveTextContent('This run has not finished.');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(within(rowFor('run-fail')).getByRole('button', { name: /view details/i }));
+    expect(within(screen.getByRole('dialog')).getByTestId('sync-run-counts')).toHaveTextContent('did not apply any changes');
+  });
+});
+
 describe('sync-history helpers', () => {
+  it('formatCount keeps 0 and only treats null/undefined as unavailable', () => {
+    expect(formatCount(0)).toBe('0');
+    expect(formatCount(7)).toBe('7');
+    expect(formatCount(null)).toBe('—');
+    expect(formatCount(undefined, 'Not available')).toBe('Not available');
+  });
+
   it('maps known values and falls back to the raw value for unknown ones', () => {
     expect(statusLabel('PENDING')).toBe('Queued');
     expect(statusLabel('SOMETHING_NEW')).toBe('SOMETHING_NEW');

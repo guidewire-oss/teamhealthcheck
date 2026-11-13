@@ -59,6 +59,13 @@ export const ERROR_CODE_LABELS: Record<string, string> = {
 
 export const NOT_AVAILABLE = '—';
 
+/**
+ * A count for display. Only null/undefined mean "not available"; a real 0 is
+ * shown as "0" (no truthiness check).
+ */
+export const formatCount = (n: number | null | undefined, unavailable: string = NOT_AVAILABLE): string =>
+  n === null || n === undefined ? unavailable : String(n);
+
 const label = <T extends string>(map: Record<string, string>, v: T | null | undefined): string =>
   v ? (map[v] ?? v) : NOT_AVAILABLE;
 

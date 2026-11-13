@@ -59,15 +59,17 @@ func scanRun(row rowScanner) (*orgsyncrun.Run, error) {
 		srcAt, started, completed, heartbeat   sql.NullTime
 		errCode, errMsg, failedStage, workerID sql.NullString
 		hold                                   []byte
+		unchangedUsers, unchangedTeams         sql.NullInt64
 		trigger                                string
 	)
 	if err := row.Scan(&r.ID, &status, &stage, &r.InitiatedBy, &snapType, &srcAt,
 		&r.CreatedAt, &started, &completed, &heartbeat,
 		&r.InsertedUsers, &r.UpdatedUsers, &r.InsertedTeams, &r.UpdatedTeams, &r.MembershipChanges,
-		&r.UnchangedUsers, &r.UnchangedTeams, &r.DeactivatedRecords, &r.RetryCount, &errCode, &errMsg, &failedStage, &workerID, &hold,
+		&unchangedUsers, &unchangedTeams, &r.DeactivatedRecords, &r.RetryCount, &errCode, &errMsg, &failedStage, &workerID, &hold,
 		&r.HealthChecksDisabled, &r.HealthChecksEnabled, &r.MassDeletionOverridden, &trigger); err != nil {
 		return nil, err
 	}
+	r.UnchangedUsers, r.UnchangedTeams = nullInt(unchangedUsers), nullInt(unchangedTeams)
 	r.Status = orgsyncrun.Status(status)
 	r.Trigger = orgsyncrun.Trigger(trigger)
 	r.Stage = orgsyncrun.Stage(stage)
@@ -91,6 +93,14 @@ func scanRun(row rowScanner) (*orgsyncrun.Run, error) {
 	}
 	r.HoldReport = hold
 	return &r, nil
+}
+
+func nullInt(n sql.NullInt64) *int {
+	if !n.Valid {
+		return nil
+	}
+	v := int(n.Int64)
+	return &v
 }
 
 func nullTime(t sql.NullTime) *time.Time {

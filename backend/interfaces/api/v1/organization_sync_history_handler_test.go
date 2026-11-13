@@ -93,6 +93,7 @@ var _ = Describe("Organization Provider Handler: sync run history", func() {
 		return out
 	}
 	str := func(s string) *string { return &s }
+	num := func(n int) *int { return &n }
 	at := func(d time.Duration) *time.Time { t := base.Add(d); return &t }
 
 	BeforeEach(func() {
@@ -105,18 +106,24 @@ var _ = Describe("Organization Provider Handler: sync run history", func() {
 		store.runs["run-3"] = &orgsyncrun.Run{ID: "run-3", Status: orgsyncrun.StatusSuccess, Stage: orgsyncrun.StageCompleted,
 			Trigger: orgsyncrun.TriggerScheduled, SnapshotType: orgprovider.SnapshotComplete, InitiatedBy: "scheduler",
 			CreatedAt: base.Add(2 * time.Hour), StartedAt: at(2*time.Hour + time.Second), CompletedAt: at(2*time.Hour + 31*time.Second),
-			SourceGeneratedAt: at(time.Hour)}
+			SourceGeneratedAt: at(time.Hour),
+			// 2 users + 1 team added; one existing user updated; membership-only change.
+			InsertedUsers: 2, UpdatedUsers: 1, UnchangedUsers: num(7), InsertedTeams: 1, UpdatedTeams: 0, UnchangedTeams: num(3), MembershipChanges: 4}
 		store.runs["run-1"] = &orgsyncrun.Run{ID: "run-1", Status: orgsyncrun.StatusSuccess, Stage: orgsyncrun.StageCompleted,
 			Trigger: orgsyncrun.TriggerManual, SnapshotType: orgprovider.SnapshotComplete, InitiatedBy: "admin",
-			CreatedAt: base, StartedAt: at(time.Second), CompletedAt: at(10 * time.Second)}
+			CreatedAt: base, StartedAt: at(time.Second), CompletedAt: at(10 * time.Second),
+			// Legacy success: counts recorded, unchanged never recorded (nil).
+			InsertedUsers: 0, UpdatedUsers: 0, InsertedTeams: 0, UpdatedTeams: 0, MembershipChanges: 0}
 		store.runs["run-5"] = &orgsyncrun.Run{ID: "run-5", Status: orgsyncrun.StatusRunning, Stage: orgsyncrun.StageUpsertingUsers,
 			Trigger: orgsyncrun.TriggerManual, SnapshotType: orgprovider.SnapshotComplete, InitiatedBy: "admin",
-			CreatedAt: base.Add(4 * time.Hour), StartedAt: at(4*time.Hour + time.Second)}
+			CreatedAt: base.Add(4 * time.Hour), StartedAt: at(4*time.Hour + time.Second),
+			InsertedUsers: 3, InsertedTeams: 1} // in-flight values must never be shown
 		store.runs["run-2"] = &orgsyncrun.Run{ID: "run-2", Status: orgsyncrun.StatusFailed, Stage: orgsyncrun.StageFailed,
 			Trigger: orgsyncrun.TriggerManual, SnapshotType: orgprovider.SnapshotComplete, InitiatedBy: "admin",
 			CreatedAt: base.Add(time.Hour), StartedAt: at(time.Hour + time.Second), CompletedAt: at(time.Hour + 3*time.Second),
-			FailedStage: func() *orgsyncrun.Stage { s := orgsyncrun.StageFetching; return &s }(),
-			ErrorCode:   str(orgsyncrun.CodeProviderFetchFailed),
+			FailedStage:   func() *orgsyncrun.Stage { s := orgsyncrun.StageFetching; return &s }(),
+			InsertedUsers: 5, InsertedTeams: 2, // leftovers of a rolled-back apply must never be shown
+			ErrorCode: str(orgsyncrun.CodeProviderFetchFailed),
 			ErrorMessage: str("Provider call to https://user:pw@provider.example/orgs?apiKey=abc123 failed. " +
 				"Authorization: Bearer abcdefgh12345678 password=hunter2")}
 		store.runs["run-4"] = &orgsyncrun.Run{ID: "run-4", Status: orgsyncrun.StatusFailed, Stage: orgsyncrun.StageFailed,
@@ -150,6 +157,14 @@ var _ = Describe("Organization Provider Handler: sync run history", func() {
 		})
 		It("allows an admin", func() {
 			Expect(get(path, adminToken).Code).To(Equal(http.StatusOK))
+		})
+		It("denies a non-admin the counts on the list and single-run endpoints", func() {
+			for _, u := range []string{path, path + "/run-3", path + "/latest"} {
+				w := get(u, memberToken)
+				Expect(w.Code).To(Equal(http.StatusForbidden), u)
+				Expect(w.Body.String()).NotTo(ContainSubstring("insertedUsers"), u)
+			}
+			Expect(get(path+"/run-3", "").Code).To(Equal(http.StatusUnauthorized))
 		})
 	})
 
@@ -221,7 +236,8 @@ var _ = Describe("Organization Provider Handler: sync run history", func() {
 			}
 			Expect(keys).To(ConsistOf("runId", "snapshotType", "trigger", "status", "stage", "initiatedBy",
 				"createdAt", "startedAt", "completedAt", "sourceGeneratedAt", "durationSeconds",
-				"failedStage", "errorCode", "errorMessage"))
+				"failedStage", "errorCode", "errorMessage",
+				"insertedUsers", "updatedUsers", "unchangedUsers", "insertedTeams", "updatedTeams", "unchangedTeams", "membershipChanges"))
 			body := get(path, adminToken).Body.String()
 			for _, banned := range []string{"idempotency", "workerId", "heartbeat", "holdReport", "massDeletion"} {
 				Expect(strings.ToLower(body)).NotTo(ContainSubstring(strings.ToLower(banned)))
@@ -255,6 +271,48 @@ var _ = Describe("Organization Provider Handler: sync run history", func() {
 			}
 			Expect(msg).To(ContainSubstring("Provider call to"))
 			Expect(msg).To(ContainSubstring("[redacted]"))
+		})
+
+		It("reports exactly what a succeeded run committed", func() {
+			r := find("run-3")
+			Expect(r["insertedUsers"]).To(BeEquivalentTo(2))
+			Expect(r["insertedTeams"]).To(BeEquivalentTo(1))
+			Expect(r["updatedUsers"]).To(BeEquivalentTo(1), "updates are reported apart from additions")
+			Expect(r["membershipChanges"]).To(BeEquivalentTo(4), "membership changes are not added users")
+			Expect(r["unchangedUsers"]).To(BeEquivalentTo(7))
+			Expect(r["unchangedTeams"]).To(BeEquivalentTo(3))
+		})
+
+		It("keeps each run's own counts and renders genuine zeros as 0, not null", func() {
+			Expect(find("run-3")["insertedUsers"]).To(BeEquivalentTo(2))
+			z := find("run-1")
+			for _, k := range []string{"insertedUsers", "updatedUsers", "insertedTeams", "updatedTeams", "membershipChanges"} {
+				Expect(z[k]).To(BeEquivalentTo(0), k)
+			}
+		})
+
+		It("reports unchanged as null (not 0) when the run never recorded it", func() {
+			Expect(find("run-1")["unchangedUsers"]).To(BeNil())
+			Expect(find("run-1")["unchangedTeams"]).To(BeNil())
+		})
+
+		It("reports no counts for running or failed runs, whatever the row holds", func() {
+			for _, id := range []string{"run-5", "run-2", "run-4"} {
+				r := find(id)
+				for _, k := range []string{"insertedUsers", "updatedUsers", "unchangedUsers", "insertedTeams", "updatedTeams", "unchangedTeams", "membershipChanges"} {
+					Expect(r[k]).To(BeNil(), id+" "+k)
+				}
+			}
+		})
+
+		It("agrees with the single-run endpoint that Settings reads", func() {
+			w := get(path+"/run-3", adminToken)
+			Expect(w.Code).To(Equal(http.StatusOK))
+			one := decode(w)
+			h := find("run-3")
+			for _, k := range []string{"insertedUsers", "updatedUsers", "unchangedUsers", "insertedTeams", "updatedTeams", "unchangedTeams", "membershipChanges"} {
+				Expect(h[k]).To(Equal(one[k]), k)
+			}
 		})
 
 		It("caps very long error messages", func() {

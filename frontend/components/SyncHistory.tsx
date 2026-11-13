@@ -15,6 +15,7 @@ import {
   TRIGGER_OPTIONS,
   errorCodeLabel,
   exactTimestamp,
+  formatCount,
   formatDuration,
   formatTimestamp,
   initiatorLabel,
@@ -111,6 +112,19 @@ function DetailsDialog({ run, onClose }: { run: SyncRunHistoryItem; onClose: () 
     ["Provider snapshot generated at", run.sourceGeneratedAt ? <Time key="g" iso={run.sourceGeneratedAt} /> : NOT_AVAILABLE],
   ];
 
+  // Same wording as Settings > "Sync complete". Only a succeeded run has counts.
+  const na = "Not available";
+  const c = (n: number | null) => formatCount(n, na);
+  const countRows: [string, string, string][] = [
+    ["Users added", "users-added", c(run.insertedUsers)],
+    ["Users updated", "users-updated", c(run.updatedUsers)],
+    ["Users unchanged", "users-unchanged", c(run.unchangedUsers)],
+    ["Teams added", "teams-added", c(run.insertedTeams)],
+    ["Teams updated", "teams-updated", c(run.updatedTeams)],
+    ["Teams unchanged", "teams-unchanged", c(run.unchangedTeams)],
+    ["Membership changes", "membership-changes", c(run.membershipChanges)],
+  ];
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div
@@ -135,6 +149,22 @@ function DetailsDialog({ run, onClose }: { run: SyncRunHistoryItem; onClose: () 
             </div>
           ))}
         </dl>
+        <div className="mt-4" data-testid="sync-run-counts">
+          <h4 className="text-sm font-medium text-gray-900">Records changed by this run</h4>
+          <dl className="mt-1 grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-1 text-sm">
+            {countRows.map(([k, id, v]) => (
+              <div key={id} className="contents">
+                <dt className="font-medium text-gray-600">{k}</dt>
+                <dd className="sm:col-span-2 text-gray-900" data-testid={`detail-${id}`}>{v}</dd>
+              </div>
+            ))}
+          </dl>
+          {run.status !== "SUCCESS" && (
+            <p className="mt-1 text-xs text-gray-500">
+              Counts are recorded only when a run completes successfully. {isActive(run.status) ? "This run has not finished." : "This run did not apply any changes."}
+            </p>
+          )}
+        </div>
         {run.status === "FAILED" && (
           <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900" data-testid="sync-run-failure">
             <h4 className="font-medium">Failure</h4>
@@ -291,6 +321,8 @@ export default function SyncHistory() {
                 <tr>
                   <th scope="col" className="py-2 pr-3">Sync type</th>
                   <th scope="col" className="py-2 pr-3">Status</th>
+                  <th scope="col" className="py-2 pr-3">Users added</th>
+                  <th scope="col" className="py-2 pr-3">Teams added</th>
                   <th scope="col" className="py-2 pr-3 hidden md:table-cell">Stage</th>
                   <th scope="col" className="py-2 pr-3 hidden lg:table-cell">Initiated by</th>
                   <th scope="col" className="py-2 pr-3">Started</th>
@@ -307,6 +339,8 @@ export default function SyncHistory() {
                       <div className="text-xs text-gray-500">{snapshotLabel(r.snapshotType)} · <span title={r.runId} className="font-mono">{shortId(r.runId)}</span></div>
                     </td>
                     <td className="py-2 pr-3"><StatusBadge status={r.status} /></td>
+                    <td className="py-2 pr-3" data-testid="sync-users-added" title={r.insertedUsers === null ? "Not available" : undefined}>{formatCount(r.insertedUsers)}</td>
+                    <td className="py-2 pr-3" data-testid="sync-teams-added" title={r.insertedTeams === null ? "Not available" : undefined}>{formatCount(r.insertedTeams)}</td>
                     <td className="py-2 pr-3 hidden md:table-cell">{stageLabel(r.stage)}</td>
                     <td className="py-2 pr-3 hidden lg:table-cell break-all max-w-[12rem]">{initiatorLabel(r.initiatedBy)}</td>
                     <td className="py-2 pr-3">

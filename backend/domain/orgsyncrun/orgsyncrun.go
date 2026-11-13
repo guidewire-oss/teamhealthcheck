@@ -132,13 +132,16 @@ type Run struct {
 
 	InsertedUsers      int
 	UpdatedUsers       int
-	UnchangedUsers     int
 	InsertedTeams      int
 	UpdatedTeams       int
-	UnchangedTeams     int
 	MembershipChanges  int
 	DeactivatedRecords int
 	RetryCount         int
+
+	// UnchangedUsers and UnchangedTeams are nil when the run never recorded them
+	// (it did not succeed, or it predates the column): unknown is not zero.
+	UnchangedUsers *int
+	UnchangedTeams *int
 
 	// HealthChecksDisabled and HealthChecksEnabled count teams whose health
 	// checks this run switched off or on. MassDeletionOverridden is true when the

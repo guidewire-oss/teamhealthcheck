@@ -776,11 +776,11 @@ export interface SyncRun {
   /** Added = newly inserted. Updated = existing and a business field really changed. */
   insertedUsers: number;
   updatedUsers: number;
-  /** Existing and identical: never counted as updated. */
-  unchangedUsers: number;
+  /** Existing and identical: never counted as updated. null = not recorded for this run. */
+  unchangedUsers: number | null;
   insertedTeams: number;
   updatedTeams: number;
-  unchangedTeams: number;
+  unchangedTeams: number | null;
   /** Real membership additions, reactivations and removals only. */
   membershipChanges: number;
   /** People and teams marked inactive. Nothing is ever hard-deleted. */
@@ -1049,7 +1049,7 @@ export type SyncRunSnapshotType = 'COMPLETE' | 'PARTIAL';
 /**
  * One row of sync history, as the admin-only history endpoint returns it. It is
  * a deliberate subset of the persisted run: no idempotency key, worker id,
- * heartbeat, counters or raw hold report.
+ * heartbeat or raw hold report.
  */
 export interface SyncRunHistoryItem {
   runId: string;
@@ -1074,6 +1074,19 @@ export interface SyncRunHistoryItem {
   errorCode: string | null;
   /** Failed runs only; sanitized by the server. */
   errorMessage: string | null;
+  /**
+   * What this run committed, same meaning as the Settings "Sync complete"
+   * summary. All null unless status is SUCCESS (a queued, running or failed run
+   * committed nothing). null = not available; 0 is a real zero.
+   */
+  insertedUsers: number | null;
+  updatedUsers: number | null;
+  /** Also null for older runs that never recorded it. */
+  unchangedUsers: number | null;
+  insertedTeams: number | null;
+  updatedTeams: number | null;
+  unchangedTeams: number | null;
+  membershipChanges: number | null;
 }
 
 export interface SyncRunHistoryResponse {

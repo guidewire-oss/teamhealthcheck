@@ -91,4 +91,36 @@ var _ = Describe("Org sync run history (real Postgres)", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(runs[0]).To(Equal(*one))
 	})
+
+	Describe("per-run added counts", func() {
+		It("persists each run's own counts and keeps unchanged unknown (nil) distinct from 0", func() {
+			// r1: recorded counts incl. a genuine 0 unchanged on one side.
+			_, err := db.Exec(`UPDATE org_sync_runs SET inserted_users=2, updated_users=1, inserted_teams=1,
+				updated_teams=0, membership_changes=3, unchanged_users=7, unchanged_teams=0 WHERE id='r1'`)
+			Expect(err).NotTo(HaveOccurred())
+			// r3: committed zeros, unchanged never recorded.
+			_, err = db.Exec(`UPDATE org_sync_runs SET unchanged_users=NULL, unchanged_teams=NULL WHERE id='r3'`)
+			Expect(err).NotTo(HaveOccurred())
+
+			r1, err := repo.Get(ctx, "r1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect([]int{r1.InsertedUsers, r1.UpdatedUsers, r1.InsertedTeams, r1.MembershipChanges}).To(Equal([]int{2, 1, 1, 3}))
+			Expect(r1.UnchangedUsers).NotTo(BeNil())
+			Expect(*r1.UnchangedUsers).To(Equal(7))
+			Expect(r1.UnchangedTeams).NotTo(BeNil())
+			Expect(*r1.UnchangedTeams).To(Equal(0))
+
+			r3, err := repo.Get(ctx, "r3")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r3.InsertedUsers).To(Equal(0))
+			Expect(r3.UnchangedUsers).To(BeNil())
+			Expect(r3.UnchangedTeams).To(BeNil())
+		})
+
+		It("does not store unchanged counts for a run that has not succeeded", func() {
+			r2, err := repo.Get(ctx, "r2")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r2.UnchangedUsers).To(BeNil(), "new rows default to NULL, not 0")
+		})
+	})
 })

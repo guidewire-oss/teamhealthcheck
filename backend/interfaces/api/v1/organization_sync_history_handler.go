@@ -103,6 +103,11 @@ func syncRunHistoryItem(r *orgsyncrun.Run) dto.SyncRunHistoryItemDTO {
 		secs := int64(r.CompletedAt.Sub(*r.StartedAt) / time.Second)
 		d.DurationSeconds = &secs
 	}
+	if r.Status == orgsyncrun.StatusSuccess {
+		d.InsertedUsers, d.UpdatedUsers, d.UnchangedUsers = &r.InsertedUsers, &r.UpdatedUsers, r.UnchangedUsers
+		d.InsertedTeams, d.UpdatedTeams, d.UnchangedTeams = &r.InsertedTeams, &r.UpdatedTeams, r.UnchangedTeams
+		d.MembershipChanges = &r.MembershipChanges
+	}
 	if r.Status == orgsyncrun.StatusFailed {
 		if r.FailedStage != nil {
 			fs := string(*r.FailedStage)
