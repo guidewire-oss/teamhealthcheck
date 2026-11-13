@@ -33,15 +33,14 @@ describe('CompletionByTeamPanel — in-progress-only filtering', () => {
     expect(screen.queryByText('Complete Pod')).not.toBeInTheDocument();
   });
 
-  it('excludes an in_progress team whose percentage rounds up to exactly 100%', () => {
+  it('excludes a team that is complete via its post-workshop survey despite partial participation', () => {
     render(
       <CompletionByTeamPanel
         teamStats={[
           team('Alpha Pod'),
-          // Raw canonical status is still in_progress (completed < total),
-          // but 199/200 rounds to 100% -- must be excluded just like a
-          // genuinely complete team, never shown as a green "Completed" row.
-          team('Rounds To Complete Pod', { status: 'in_progress', completed: 199, total: 200 }),
+          // 199/200 individual responses, but the post-workshop survey is
+          // submitted: Fully complete, so it is excluded from in-progress.
+          team('Rounds To Complete Pod', { status: 'complete', completed: 199, total: 200, postWorkshopCompleted: true }),
         ]}
       />,
     );
@@ -86,8 +85,8 @@ describe('CompletionByTeamPanel — in-progress-only filtering', () => {
     expect(screen.getByTestId('team-bars-empty-state')).toHaveTextContent('No teams currently in progress.');
   });
 
-  it('shows the in-progress empty state when the only in_progress team rounds up to 100%', () => {
-    render(<CompletionByTeamPanel teamStats={[team('Rounds To Complete Pod', { completed: 199, total: 200 })]} />);
+  it('shows the in-progress empty state when the only partial-participation team has a submitted post-workshop survey', () => {
+    render(<CompletionByTeamPanel teamStats={[team('Rounds To Complete Pod', { status: 'complete', completed: 199, total: 200, postWorkshopCompleted: true })]} />);
 
     expect(screen.getByTestId('team-bars-empty-state')).toHaveTextContent('No teams currently in progress.');
   });
