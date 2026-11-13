@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Plus, Loader2, AlertCircle, ArrowRight, ArrowLeft, Trash2, Pencil } from 'lucide-react';
 import {
   ActionItem,
@@ -49,18 +49,26 @@ export default function ActionItemsTab({
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [directManager, setDirectManager] = useState<DirectManager | null>(null);
 
+  // Identifies the latest load. A response from an older request (e.g. the
+  // previous team after `teamId` changed) must not touch state.
+  const loadSeq = useRef(0);
+
   const loadItems = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    const isStale = () => seq !== loadSeq.current;
     try {
       setLoading(true);
       setError(null);
       setLoadError(false);
       const data = await listActionItems(teamId);
+      if (isStale()) return;
       setItems(data);
     } catch {
+      if (isStale()) return;
       setItems([]);
       setLoadError(true);
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
   }, [teamId]);
 
