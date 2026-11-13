@@ -1035,3 +1035,75 @@ export async function updateAutoSyncSchedule(
     { method: 'PUT', body: JSON.stringify({ enabled, frequency }) }
   );
 }
+
+// ============================================================================
+// SYNC HISTORY (read-only)
+// ============================================================================
+
+/** What started a run (org_sync_runs.trigger_type). */
+export type SyncRunTrigger = 'MANUAL' | 'SCHEDULED';
+
+/** Whether the provider snapshot was complete (org_sync_runs.snapshot_type). */
+export type SyncRunSnapshotType = 'COMPLETE' | 'PARTIAL';
+
+/**
+ * One row of sync history, as the admin-only history endpoint returns it. It is
+ * a deliberate subset of the persisted run: no idempotency key, worker id,
+ * heartbeat, counters or raw hold report.
+ */
+export interface SyncRunHistoryItem {
+  runId: string;
+  snapshotType: SyncRunSnapshotType;
+  trigger: SyncRunTrigger;
+  status: SyncRunStatus;
+  stage: string;
+  /** Administrator user id, or "scheduler" for an automatic run. */
+  initiatedBy: string;
+  /** When the run was accepted/queued -- not when work began. */
+  createdAt: string;
+  /** When a worker began processing; null while queued or if it failed first. */
+  startedAt: string | null;
+  /** When the run reached SUCCESS or FAILED; null while active. */
+  completedAt: string | null;
+  /** When the provider generated the applied snapshot; only for SUCCESS runs. */
+  sourceGeneratedAt: string | null;
+  /** startedAt -> completedAt; null when it cannot be calculated accurately. */
+  durationSeconds: number | null;
+  /** Failed runs only. */
+  failedStage: string | null;
+  errorCode: string | null;
+  /** Failed runs only; sanitized by the server. */
+  errorMessage: string | null;
+}
+
+export interface SyncRunHistoryResponse {
+  runs: SyncRunHistoryItem[];
+  pagination: PaginationMeta;
+}
+
+export interface ListSyncRunHistoryParams {
+  page?: number;
+  pageSize?: number;
+  status?: SyncRunStatus;
+  trigger?: SyncRunTrigger;
+  snapshotType?: SyncRunSnapshotType;
+  signal?: AbortSignal;
+}
+
+/** Fetches one page of sync-run history, newest first. Admin only. */
+export async function listSyncRunHistory(
+  params: ListSyncRunHistoryParams = {}
+): Promise<SyncRunHistoryResponse> {
+  const { page, pageSize, status, trigger, snapshotType, signal } = params;
+  const query = new URLSearchParams();
+  if (page !== undefined) query.set('page', String(page));
+  if (pageSize !== undefined) query.set('pageSize', String(pageSize));
+  if (status) query.set('status', status);
+  if (trigger) query.set('trigger', trigger);
+  if (snapshotType) query.set('snapshotType', snapshotType);
+  const qs = query.toString();
+  return createApiClient<SyncRunHistoryResponse>(
+    `${API_BASE_URL}/api/v1/admin/organization-provider/sync/runs${qs ? `?${qs}` : ''}`,
+    signal ? { signal } : undefined
+  );
+}

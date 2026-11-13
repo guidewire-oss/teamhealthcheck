@@ -210,6 +210,44 @@ func (r *OrgSyncRunRepository) LatestSuccessByTrigger(ctx context.Context, t org
 	return run, err
 }
 
+// List returns one page of runs newest first plus the total matching the filter.
+// Every filter is a bound parameter; a NULL parameter disables its predicate, so
+// one static query serves all combinations. The ORDER BY is covered by
+// idx_org_sync_runs_created for the unfiltered case; the table holds one row per
+// sync attempt, so the filtered scans stay small.
+func (r *OrgSyncRunRepository) List(ctx context.Context, f orgsyncrun.HistoryFilter) ([]orgsyncrun.Run, int, error) {
+	nullable := func(v string) any {
+		if v == "" {
+			return nil
+		}
+		return v
+	}
+	status, trigger, snap := nullable(string(f.Status)), nullable(string(f.Trigger)), nullable(string(f.SnapshotType))
+	const where = `WHERE ($1::text IS NULL OR status = $1)
+		AND ($2::text IS NULL OR trigger_type = $2)
+		AND ($3::text IS NULL OR snapshot_type = $3)`
+
+	var total int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM org_sync_runs `+where, status, trigger, snap).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count sync runs: %w", err)
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT `+runColumns+` FROM org_sync_runs `+where+`
+		ORDER BY created_at DESC, id DESC LIMIT $4 OFFSET $5`, status, trigger, snap, f.Limit, f.Offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list sync runs: %w", err)
+	}
+	defer rows.Close()
+	runs := []orgsyncrun.Run{}
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to scan sync run: %w", err)
+		}
+		runs = append(runs, *run)
+	}
+	return runs, total, rows.Err()
+}
+
 // SetStage records progress and refreshes the heartbeat on a non-terminal run.
 func (r *OrgSyncRunRepository) SetStage(ctx context.Context, id string, stage orgsyncrun.Stage) error {
 	return r.expectOne(ctx, `
@@ -313,5 +351,6 @@ func (r *OrgSyncRunRepository) expectOne(ctx context.Context, query string, args
 
 var (
 	_ orgsyncrun.Store           = (*OrgSyncRunRepository)(nil)
+	_ orgsyncrun.HistoryReader   = (*OrgSyncRunRepository)(nil)
 	_ orgsyncschedule.RunHistory = (*OrgSyncRunRepository)(nil)
 )
