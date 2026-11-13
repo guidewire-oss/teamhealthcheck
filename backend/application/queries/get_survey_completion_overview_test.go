@@ -193,6 +193,16 @@ func TestBuildTeamProgress(t *testing.T) {
 		}
 	})
 
+	t.Run("a draft post_workshop session is never counted as completed", func(t *testing.T) {
+		sessions := []*healthcheck.HealthCheckSession{
+			{TeamID: "pod-1", UserID: "lead", SurveyType: healthcheck.SurveyTypePostWorkshop, Completed: false},
+		}
+		progress := buildTeamProgress(sessions)
+		if p, ok := progress["pod-1"]; ok && p.postWorkshop {
+			t.Fatalf("a draft post_workshop session must not set postWorkshop")
+		}
+	})
+
 	t.Run("duplicate completed individual sessions for the same user only count once", func(t *testing.T) {
 		sessions := []*healthcheck.HealthCheckSession{
 			{ID: "s1", TeamID: "pod-1", UserID: "u1", SurveyType: healthcheck.SurveyTypeIndividual, Completed: true},

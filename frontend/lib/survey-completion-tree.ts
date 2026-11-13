@@ -29,16 +29,10 @@ export function getPodCompletionPercent(team: SurveyCompletionTeam): number {
 
 /**
  * A pod's EFFECTIVE display status -- scoped to individual pods only,
- * never applied to a Director/Manager (leadership) row. Only ever differs
- * from team.status for a pod that's in_progress or complete: rounding a
- * pod's completed/total ratio can make it read 100% (e.g. 199 of 200
- * members) while the backend still considers it "in_progress" (completed
- * < total). Showing "100% completed" next to an "In Progress" badge would
- * look like a contradiction, so once a pod's own rounded percentage
- * reaches 100 it always displays as the existing "complete" status
- * instead -- never a new status. not_started and opted_out pods are left
- * completely alone, since the 100%-vs-partial distinction this exists for
- * doesn't apply to them.
+ * never applied to a Director/Manager (leadership) row. For a pod that's
+ * in_progress or complete, the status follows isPodFullyCompleted (a
+ * submitted post-workshop survey), the same rule the backend uses.
+ * not_started and opted_out pods are left completely alone.
  */
 export function getPodDisplayStatus(team: SurveyCompletionTeam): SurveyStatus {
   if (team.status !== 'in_progress' && team.status !== 'complete') return team.status;
@@ -46,17 +40,15 @@ export function getPodDisplayStatus(team: SurveyCompletionTeam): SurveyStatus {
 }
 
 /**
- * A pod is fully completed when its own normalized completion percentage
- * is exactly 100% AND its post-workshop session is itself complete. Reuses
- * getPodCompletionPercent -- the SAME rounding and missing/invalid-data
- * handling already used for a pod's own displayed status -- so a pod's
- * Fully-Completed classification and what its Status column actually shows
- * can never disagree. 100% survey completion alone isn't enough: the
- * backend still treats a team as in_progress until its post-workshop
- * session is also complete.
+ * A pod is fully completed when its post-workshop session is complete for
+ * the period. Individual participation is a separate value: a pod at 4/5
+ * with a submitted post-workshop survey is fully completed and still
+ * displays 4/5. Mirrors the backend's deriveSurveyCompletionStatus so a
+ * pod's Fully-Completed classification and its Status column never
+ * disagree. Pods with no eligible members are never complete.
  */
 export function isPodFullyCompleted(team: SurveyCompletionTeam): boolean {
-  return getPodCompletionPercent(team) >= 100 && team.postWorkshopCompleted === true;
+  return team.total > 0 && team.postWorkshopCompleted === true;
 }
 
 /**

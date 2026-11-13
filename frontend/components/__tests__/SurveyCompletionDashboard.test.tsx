@@ -21,7 +21,7 @@ function team(overrides: Partial<SurveyCompletionTeam> = {}): SurveyCompletionTe
     teamName: 'Sunnyvale',
     completed: 3,
     total: 4,
-    postWorkshopCompleted: true,
+    postWorkshopCompleted: overrides.status === 'complete',
     status: 'in_progress',
     ...overrides,
   };
@@ -152,13 +152,12 @@ describe('TeamRow (Pods section) — 100% completion', () => {
     expect(screen.queryByTestId('survey-team-percent')).not.toBeInTheDocument();
   });
 
-  it('an in_progress pod whose rounded percentage reaches 100% also displays as green "Completed"', () => {
-    // 199 of 200 -- backend status is still in_progress, but the display
-    // must show Completed once it rounds to 100%.
-    renderRow(team({ status: 'in_progress', completed: 199, total: 200 }));
+  it('a pod with a submitted post-workshop survey displays as green "Completed" while keeping the real count', () => {
+    renderRow(team({ status: 'complete', completed: 4, total: 5, postWorkshopCompleted: true }));
 
     expect(screen.getByText('Completed')).toBeInTheDocument();
     expect(screen.queryByText('In Progress')).not.toBeInTheDocument();
+    expect(screen.getByTestId('survey-team-individual-completed')).toHaveTextContent('4 / 5');
   });
 });
 
@@ -320,8 +319,8 @@ describe('TeamRow (Pods section) — pale red row background', () => {
   // follows the pod's EFFECTIVE display status (getPodDisplayStatus), the same
   // one its Status column renders, so it reads Completed and gets no red. If
   // the row used the raw backend status instead, in_progress would turn it red.
-  it('does not paint a pod red when 199/200 rounds up to 100% and the Status column shows Completed', () => {
-    const { container } = renderRow(team({ status: 'in_progress', completed: 199, total: 200 }));
+  it('does not paint a pod red when 199/200 responded and its post-workshop survey is submitted (Completed)', () => {
+    const { container } = renderRow(team({ status: 'complete', completed: 199, total: 200, postWorkshopCompleted: true }));
     expect(screen.getByTestId('survey-team-individual-completed')).toHaveTextContent('199 / 200');
     expect(container.querySelector('tr')?.className).not.toMatch(/bg-red-50/);
   });
