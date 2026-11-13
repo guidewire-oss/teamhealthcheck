@@ -117,10 +117,31 @@ var _ = Describe("Org sync run history (real Postgres)", func() {
 			Expect(r3.UnchangedTeams).To(BeNil())
 		})
 
-		It("does not store unchanged counts for a run that has not succeeded", func() {
+		It("does not store unchanged counts for a run created by the repository", func() {
+			// r5 is RUNNING and the single-active index allows only one active run.
+			_, err := db.Exec(`UPDATE org_sync_runs SET status='FAILED' WHERE id='r5'`)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, _, err = repo.CreatePending(ctx, orgsyncrun.NewParams{
+				ID: "r-new", InitiatedBy: "admin", SnapshotType: orgprovider.SnapshotComplete,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			created, err := repo.Get(ctx, "r-new")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created.UnchangedUsers).To(BeNil(), "CreatePending writes NULL itself; it must not depend on the column default")
+			Expect(created.UnchangedTeams).To(BeNil())
+		})
+
+		It("still reads a row inserted without the unchanged columns, as an older replica would write it", func() {
+			// Migration 000032 keeps DEFAULT 0 so a pre-000032 binary, whose INSERT omits
+			// these columns, does not produce NULLs it cannot scan. Such a row reads as 0.
 			r2, err := repo.Get(ctx, "r2")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(r2.UnchangedUsers).To(BeNil(), "new rows default to NULL, not 0")
+			Expect(r2.UnchangedUsers).NotTo(BeNil())
+			Expect(*r2.UnchangedUsers).To(Equal(0))
+			Expect(r2.UnchangedTeams).NotTo(BeNil())
+			Expect(*r2.UnchangedTeams).To(Equal(0))
 		})
 	})
 })
