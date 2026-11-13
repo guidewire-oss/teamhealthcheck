@@ -591,3 +591,23 @@ describe('Admin Teams tab — Active / Inactive status', () => {
     expect(within(rowFor('Hopefarm')).getByTestId('team-status-badge')).toHaveTextContent('Active');
   });
 });
+
+describe('AdminPage Sync History tab', () => {
+  it('is a top-level tab after Settings and opens Sync History outside Settings', async () => {
+    listUsers.mockResolvedValue({ users: [], pagination: paginationFor(1, 25, 0) });
+    render(<AdminPage />);
+    const user = userEvent.setup();
+    const tab = await screen.findByTestId('sync-history-tab');
+    expect(tab).toHaveTextContent('Sync History');
+    expect(screen.getByTestId('settings-tab').compareDocumentPosition(tab) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByTestId('sync-history')).not.toBeInTheDocument();
+
+    await user.click(tab);
+    expect(await screen.findByTestId('sync-history')).toBeInTheDocument();
+    expect(screen.queryByTestId('data-provider-settings')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('settings-tab'));
+    await screen.findByTestId('data-provider-settings');
+    expect(screen.queryByTestId('sync-history')).not.toBeInTheDocument();
+  });
+});

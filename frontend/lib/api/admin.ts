@@ -776,11 +776,11 @@ export interface SyncRun {
   /** Added = newly inserted. Updated = existing and a business field really changed. */
   insertedUsers: number;
   updatedUsers: number;
-  /** Existing and identical: never counted as updated. */
-  unchangedUsers: number;
+  /** Existing and identical: never counted as updated. null = not recorded for this run. */
+  unchangedUsers: number | null;
   insertedTeams: number;
   updatedTeams: number;
-  unchangedTeams: number;
+  unchangedTeams: number | null;
   /** Real membership additions, reactivations and removals only. */
   membershipChanges: number;
   /** People and teams marked inactive. Nothing is ever hard-deleted. */
@@ -1033,5 +1033,90 @@ export async function updateAutoSyncSchedule(
   return createApiClient<AutoSyncSchedule>(
     `${API_BASE_URL}/api/v1/admin/organization-provider/auto-sync`,
     { method: 'PUT', body: JSON.stringify({ enabled, frequency }) }
+  );
+}
+
+// ============================================================================
+// SYNC HISTORY (read-only)
+// ============================================================================
+
+/** What started a run (org_sync_runs.trigger_type). */
+export type SyncRunTrigger = 'MANUAL' | 'SCHEDULED';
+
+/** Whether the provider snapshot was complete (org_sync_runs.snapshot_type). */
+export type SyncRunSnapshotType = 'COMPLETE' | 'PARTIAL';
+
+/**
+ * One row of sync history, as the admin-only history endpoint returns it. It is
+ * a deliberate subset of the persisted run: no idempotency key, worker id,
+ * heartbeat or raw hold report.
+ */
+export interface SyncRunHistoryItem {
+  runId: string;
+  snapshotType: SyncRunSnapshotType;
+  trigger: SyncRunTrigger;
+  status: SyncRunStatus;
+  stage: string;
+  /** Administrator user id, or "scheduler" for an automatic run. */
+  initiatedBy: string;
+  /** When the run was accepted/queued -- not when work began. */
+  createdAt: string;
+  /** When a worker began processing; null while queued or if it failed first. */
+  startedAt: string | null;
+  /** When the run reached SUCCESS or FAILED; null while active. */
+  completedAt: string | null;
+  /** When the provider generated the applied snapshot; only for SUCCESS runs. */
+  sourceGeneratedAt: string | null;
+  /** startedAt -> completedAt; null when it cannot be calculated accurately. */
+  durationSeconds: number | null;
+  /** Failed runs only. */
+  failedStage: string | null;
+  errorCode: string | null;
+  /** Failed runs only; sanitized by the server. */
+  errorMessage: string | null;
+  /**
+   * What this run committed, same meaning as the Settings "Sync complete"
+   * summary. All null unless status is SUCCESS (a queued, running or failed run
+   * committed nothing). null = not available; 0 is a real zero.
+   */
+  insertedUsers: number | null;
+  updatedUsers: number | null;
+  /** Also null for older runs that never recorded it. */
+  unchangedUsers: number | null;
+  insertedTeams: number | null;
+  updatedTeams: number | null;
+  unchangedTeams: number | null;
+  membershipChanges: number | null;
+}
+
+export interface SyncRunHistoryResponse {
+  runs: SyncRunHistoryItem[];
+  pagination: PaginationMeta;
+}
+
+export interface ListSyncRunHistoryParams {
+  page?: number;
+  pageSize?: number;
+  status?: SyncRunStatus;
+  trigger?: SyncRunTrigger;
+  snapshotType?: SyncRunSnapshotType;
+  signal?: AbortSignal;
+}
+
+/** Fetches one page of sync-run history, newest first. Admin only. */
+export async function listSyncRunHistory(
+  params: ListSyncRunHistoryParams = {}
+): Promise<SyncRunHistoryResponse> {
+  const { page, pageSize, status, trigger, snapshotType, signal } = params;
+  const query = new URLSearchParams();
+  if (page !== undefined) query.set('page', String(page));
+  if (pageSize !== undefined) query.set('pageSize', String(pageSize));
+  if (status) query.set('status', status);
+  if (trigger) query.set('trigger', trigger);
+  if (snapshotType) query.set('snapshotType', snapshotType);
+  const qs = query.toString();
+  return createApiClient<SyncRunHistoryResponse>(
+    `${API_BASE_URL}/api/v1/admin/organization-provider/sync/runs${qs ? `?${qs}` : ''}`,
+    signal ? { signal } : undefined
   );
 }
