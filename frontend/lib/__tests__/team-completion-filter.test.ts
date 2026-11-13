@@ -171,8 +171,9 @@ describe('buildInProgressBars', () => {
   it('excludes a team that is complete via its post-workshop survey despite partial participation', () => {
     const bars = buildInProgressBars([
       { teamId: 'Alpha', teamName: 'Alpha', completed: 1, total: 4, status: 'in_progress', postWorkshopCompleted: false },
-      // 4/5 individual responses, but the post-workshop survey is submitted.
-      { teamId: 'Partial', teamName: 'Partial', completed: 4, total: 5, status: 'complete', postWorkshopCompleted: true },
+      // Raw status in_progress (as if stale) passes the status filter, so only
+      // the post-workshop rule in buildCompletionBars can exclude it.
+      { teamId: 'Partial', teamName: 'Partial', completed: 4, total: 5, status: 'in_progress', postWorkshopCompleted: true },
     ]);
     expect(bars.map((b) => b.teamName)).toEqual(['Alpha']);
   });
@@ -189,7 +190,7 @@ describe('buildInProgressBars', () => {
   it('returns an empty array when nothing is genuinely in progress', () => {
     const bars = buildInProgressBars([
       { teamId: 'Beta', teamName: 'Beta', completed: 4, total: 4, status: 'complete', postWorkshopCompleted: true },
-      { teamId: 'Partial', teamName: 'Partial', completed: 4, total: 5, status: 'complete', postWorkshopCompleted: true },
+      { teamId: 'Partial', teamName: 'Partial', completed: 4, total: 5, status: 'in_progress', postWorkshopCompleted: true },
     ]);
     expect(bars).toEqual([]);
   });

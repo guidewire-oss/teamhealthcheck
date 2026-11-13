@@ -39,8 +39,9 @@ describe('CompletionByTeamPanel — in-progress-only filtering', () => {
         teamStats={[
           team('Alpha Pod'),
           // 199/200 individual responses, but the post-workshop survey is
-          // submitted: Fully complete, so it is excluded from in-progress.
-          team('Rounds To Complete Pod', { status: 'complete', completed: 199, total: 200, postWorkshopCompleted: true }),
+          // submitted, so it is Fully complete and excluded from in-progress.
+          // Raw status stays in_progress so it passes the status filter first.
+          team('Rounds To Complete Pod', { status: 'in_progress', completed: 199, total: 200, postWorkshopCompleted: true }),
         ]}
       />,
     );
@@ -86,7 +87,7 @@ describe('CompletionByTeamPanel — in-progress-only filtering', () => {
   });
 
   it('shows the in-progress empty state when the only partial-participation team has a submitted post-workshop survey', () => {
-    render(<CompletionByTeamPanel teamStats={[team('Rounds To Complete Pod', { status: 'complete', completed: 199, total: 200, postWorkshopCompleted: true })]} />);
+    render(<CompletionByTeamPanel teamStats={[team('Rounds To Complete Pod', { status: 'in_progress', completed: 199, total: 200, postWorkshopCompleted: true })]} />);
 
     expect(screen.getByTestId('team-bars-empty-state')).toHaveTextContent('No teams currently in progress.');
   });
