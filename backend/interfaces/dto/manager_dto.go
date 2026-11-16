@@ -17,7 +17,7 @@ type DimensionSummary struct {
 	ResponseCount int     `json:"responseCount"`
 	// Trend is the trend value ("improving", "stable", "declining") from the
 	// final completed post-workshop response for this team+dimension, if any.
-	Trend string `json:"trend,omitempty"`
+	Trend string `json:"trend,omitempty" enums:"improving,stable,declining"`
 } //@name DimensionSummary
 
 // ManagerTeamsHealthResponse represents the response for manager's teams health
