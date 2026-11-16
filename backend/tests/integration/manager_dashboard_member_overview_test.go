@@ -160,11 +160,19 @@ var _ = Describe("Integration: Manager Dashboard Member Overview API", func() {
 			`)
 			Expect(err).NotTo(HaveOccurred())
 
+			// A user may submit one individual survey per period, so the second team's
+			// session belongs to a different member.
+			_, err = db.Exec(`
+				INSERT INTO users (id, username, email, full_name, hierarchy_level_id)
+				VALUES ('int_mo_member2', 'int_mo_member2', 'int_mo_member2@test.com', 'Second Member', 'level-5')
+			`)
+			Expect(err).NotTo(HaveOccurred())
+
 			_, err = db.Exec(`
 				INSERT INTO health_check_sessions (id, team_id, user_id, date, assessment_period, survey_type, completed)
 				VALUES
 					('int_mo_session_t1', 'int_mo_team', 'int_mo_mgr', '2024-07-15', '2024 - 1st Half', 'individual', true),
-					('int_mo_session_t2', 'int_mo_team_2', 'int_mo_mgr', '2024-07-15', '2024 - 1st Half', 'individual', true)
+					('int_mo_session_t2', 'int_mo_team_2', 'int_mo_member2', '2024-07-15', '2024 - 1st Half', 'individual', true)
 			`)
 			Expect(err).NotTo(HaveOccurred())
 

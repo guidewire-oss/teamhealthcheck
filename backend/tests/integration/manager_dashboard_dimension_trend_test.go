@@ -118,13 +118,13 @@ var _ = Describe("Integration: Manager Dashboard Dimension Trend", func() {
 			Expect(funDim["trend"]).To(Equal("improving"))
 		})
 
-		It("should use only the most recent post-workshop session's trend when multiple exist", func() {
+		It("should use the most recent post-workshop session's trend across periods when no period is given", func() {
 			setupBaseFixtures()
 
 			_, err := db.Exec(`
 				INSERT INTO health_check_sessions (id, team_id, user_id, date, assessment_period, survey_type, completed)
 				VALUES
-					('int_dt_session_pw_old', 'int_dt_team', 'int_dt_mgr', '2024-07-01', '2024 - 1st Half', 'post_workshop', true),
+					('int_dt_session_pw_old', 'int_dt_team', 'int_dt_mgr', '2024-01-10', '2023 - 2nd Half', 'post_workshop', true),
 					('int_dt_session_pw_new', 'int_dt_team', 'int_dt_mgr', '2024-07-20', '2024 - 1st Half', 'post_workshop', true)
 			`)
 			Expect(err).NotTo(HaveOccurred())
@@ -137,7 +137,7 @@ var _ = Describe("Integration: Manager Dashboard Dimension Trend", func() {
 			`)
 			Expect(err).NotTo(HaveOccurred())
 
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/managers/int_dt_mgr/teams/health?assessmentPeriod=2024+-+1st+Half", nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/managers/int_dt_mgr/teams/health", nil)
 			req.Header.Set("Authorization", "Bearer "+managerToken)
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)

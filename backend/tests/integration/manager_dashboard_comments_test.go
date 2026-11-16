@@ -254,30 +254,24 @@ var _ = Describe("Integration: Manager Dashboard Final Post-Workshop Comments AP
 			Expect(comments).To(BeEmpty())
 		})
 
-		It("should keep only each member's latest session so resubmissions replace stale comments", func() {
+		It("should return each period's final comments when no period is given", func() {
 			setupBaseFixtures()
 
+			// The schema allows one completed post-workshop session per team per period,
+			// so "final" comments are one session per period.
 			_, err := db.Exec(`
-				INSERT INTO users (id, username, email, full_name, hierarchy_level_id)
-				VALUES ('int_pwc_member2', 'int_pwc_member2', 'int_pwc_member2@test.com', 'Member Two', 'level-5')
-			`)
-			Expect(err).NotTo(HaveOccurred())
-
-			_, err = db.Exec(`
 				INSERT INTO health_check_sessions (id, team_id, user_id, date, assessment_period, survey_type, completed)
 				VALUES
-					('int_pwc_resub_old', 'int_pwc_team', 'int_pwc_mgr', '2024-07-10', '2024 - 1st Half', 'post_workshop', true),
-					('int_pwc_resub_new', 'int_pwc_team', 'int_pwc_mgr', '2024-07-20', '2024 - 1st Half', 'post_workshop', true),
-					('int_pwc_other_member', 'int_pwc_team', 'int_pwc_member2', '2024-07-12', '2024 - 1st Half', 'post_workshop', true)
+					('int_pwc_period_old', 'int_pwc_team', 'int_pwc_mgr', '2024-01-15', '2023 - 2nd Half', 'post_workshop', true),
+					('int_pwc_period_new', 'int_pwc_team', 'int_pwc_mgr', '2024-07-20', '2024 - 1st Half', 'post_workshop', true)
 			`)
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = db.Exec(`
 				INSERT INTO health_check_responses (session_id, dimension_id, score, trend, comment)
 				VALUES
-					('int_pwc_resub_old', 'mission', 2, 'stable', 'Superseded comment'),
-					('int_pwc_resub_new', 'mission', 3, 'improving', 'Resubmitted comment'),
-					('int_pwc_other_member', 'mission', 3, 'stable', 'Other member comment')
+					('int_pwc_period_old', 'mission', 2, 'stable', 'Older period comment'),
+					('int_pwc_period_new', 'mission', 3, 'improving', 'Newer period comment')
 			`)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -297,7 +291,7 @@ var _ = Describe("Integration: Manager Dashboard Final Post-Workshop Comments AP
 			for _, c := range teamComments {
 				texts = append(texts, c.(map[string]interface{})["comment"].(string))
 			}
-			Expect(texts).To(ConsistOf("Resubmitted comment", "Other member comment"))
+			Expect(texts).To(ConsistOf("Older period comment", "Newer period comment"))
 		})
 	})
 })
