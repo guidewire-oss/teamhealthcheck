@@ -195,6 +195,17 @@ func (h *TeamAdminHandler) UpdateTeam(c *gin.Context) {
 		return
 	}
 
+	// Participation is PodIQ-owned: reject before anything else is applied, so a rejected
+	// request changes no other field.
+	if req.HealthCheckEnabled != nil {
+		c.JSON(http.StatusConflict, dto.ErrorResponse{
+			Error:   "Health check participation is managed in PodIQ",
+			Message: "Change enrollment in PodIQ and run Sync from PodIQ; it cannot be edited here.",
+			Code:    dto.CodeParticipationManagedByPodIQ,
+		})
+		return
+	}
+
 	// Check if team exists
 	tm, err := h.teamRepo.FindByID(c.Request.Context(), id)
 	if err != nil {

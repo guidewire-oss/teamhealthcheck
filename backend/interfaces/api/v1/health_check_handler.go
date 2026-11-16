@@ -173,6 +173,17 @@ func (h *HealthCheckHandler) SubmitHealthCheck(c *gin.Context) {
 			return
 		}
 
+		var disabledErr *healthcheck.ParticipationDisabledError
+		if errors.As(err, &disabledErr) {
+			log.WithField("team_id", req.TeamID).Warn("rejected health check submission for a team that is not enrolled")
+			c.JSON(http.StatusForbidden, dto.ErrorResponse{
+				Error:   "Health checks disabled for this team",
+				Message: disabledErr.Error(),
+				Code:    healthcheck.CodeParticipationDisabled,
+			})
+			return
+		}
+
 		var notOpenErr *healthcheck.PeriodNotOpenError
 		if errors.As(err, &notOpenErr) {
 			log.WithField("team_id", req.TeamID).WithField("survey_type", notOpenErr.SurveyType).
@@ -509,6 +520,25 @@ func (h *HealthCheckHandler) CheckSurveyEligibility(c *gin.Context) {
 		return
 	}
 
+	// A team that is not enrolled is never eligible, whatever its period history says.
+	if pc, ok := h.repository.(healthcheck.ParticipationChecker); ok && teamID != "" {
+		enabled, found, perr := pc.IsTeamHealthCheckEnabled(ctx, teamID)
+		if perr != nil {
+			c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+				Error:   "Failed to check survey eligibility",
+				Message: perr.Error(),
+			})
+			return
+		}
+		if found && !enabled {
+			c.JSON(http.StatusOK, dto.SurveyEligibilityResponse{
+				Eligible: false,
+				Reason:   healthcheck.CodeParticipationDisabled,
+			})
+			return
+		}
+	}
+
 	submittedPeriods, err := h.repository.FindSubmittedPeriods(ctx, healthcheck.LatestSubmissionQuery{
 		SurveyType: surveyType,
 		TeamID:     teamID,
@@ -556,7 +586,9 @@ func canQueryEligibilityScope(c *gin.Context, surveyType, teamID, userID string)
 	if surveyType == healthcheck.SurveyTypePostWorkshop {
 		return slices.Contains(claims.TeamIDs, teamID)
 	}
-	return userID == claims.UserID
+	// An Individual Survey lookup may also name the team (to learn whether it is opted in), but
+	// only one the caller belongs to or leads, so it cannot probe other teams' enrolment.
+	return userID == claims.UserID && (teamID == "" || slices.Contains(claims.TeamIDs, teamID))
 }
 
 // GetAssessmentPeriods handles GET /api/v1/assessment-periods

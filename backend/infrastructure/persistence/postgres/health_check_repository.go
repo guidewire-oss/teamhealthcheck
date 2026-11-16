@@ -692,3 +692,17 @@ func (r *HealthCheckRepository) scanSessions(ctx context.Context, query string, 
 
 	return sessions, nil
 }
+
+// IsTeamHealthCheckEnabled implements healthcheck.ParticipationChecker. A NULL flag is
+// treated as enabled, matching team_repository's read of the column.
+func (r *HealthCheckRepository) IsTeamHealthCheckEnabled(ctx context.Context, teamID string) (bool, bool, error) {
+	var enabled sql.NullBool
+	err := r.db.QueryRowContext(ctx, `SELECT health_check_enabled FROM teams WHERE id = $1`, teamID).Scan(&enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("failed to read team participation: %w", err)
+	}
+	return !enabled.Valid || enabled.Bool, true, nil
+}

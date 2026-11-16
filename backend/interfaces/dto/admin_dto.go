@@ -157,7 +157,15 @@ type UpdateTeamRequest struct {
 	TeamLeadID            *string `json:"teamLeadId"`
 	Cadence               *string `json:"cadence" binding:"omitempty,oneof=monthly half-yearly yearly"`
 	DistributionListEmail *string `json:"distributionListEmail" binding:"omitempty,email"`
+	// HealthCheckEnabled is never applied: enrollment is owned by PodIQ and written only by
+	// the organization sync. The field exists so a client that sends it gets an explicit
+	// rejection (CodeParticipationManagedByPodIQ) instead of a silent no-op.
+	HealthCheckEnabled *bool `json:"healthCheckEnabled,omitempty" swaggerignore:"true"`
 } //@name UpdateTeamRequest
+
+// CodeParticipationManagedByPodIQ is the ErrorResponse.Code returned when a local edit tries
+// to change a team's health-check participation.
+const CodeParticipationManagedByPodIQ = "participation_managed_by_podiq"
 
 // TeamsResponse represents response with list of teams
 type TeamsResponse struct {

@@ -139,6 +139,27 @@ func NewPeriodNotOpenError(surveyType string, period string, reason PeriodEligib
 	}
 }
 
+// CodeParticipationDisabled is the machine-readable ErrorResponse.Code returned when a
+// submission targets a team whose health_check_enabled flag is false.
+const CodeParticipationDisabled = "participation_disabled"
+
+// ParticipationDisabledError indicates a submission was rejected because the team has
+// opted out of health checks. Enrollment is owned by PodIQ and arrives through the
+// organization sync; THC only enforces it.
+type ParticipationDisabledError struct {
+	TeamID string
+}
+
+func (e *ParticipationDisabledError) Error() string {
+	return "Health checks are not enabled for this team. Enrollment is managed in PodIQ."
+}
+
+// ParticipationChecker reports whether a team currently participates in health checks.
+// found is false when the team does not exist; callers keep their existing behavior then.
+type ParticipationChecker interface {
+	IsTeamHealthCheckEnabled(ctx context.Context, teamID string) (enabled bool, found bool, err error)
+}
+
 // DimensionSummary represents aggregated dimension health
 type DimensionSummary struct {
 	DimensionID   string  `json:"dimensionId"`

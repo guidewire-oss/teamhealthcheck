@@ -31,6 +31,9 @@ type HealthCheckResponseCommand struct {
 // SubmitHealthCheckHandler handles the submit health check command
 type SubmitHealthCheckHandler struct {
 	repository healthcheck.Repository
+	// participation, when the repository supports it, rejects submissions for teams
+	// whose health_check_enabled flag is false.
+	participation healthcheck.ParticipationChecker
 	// now is the clock period eligibility is decided against. It is always the server's
 	// clock: the command's Date is stored as the session date but never decides which
 	// periods are open.
@@ -46,10 +49,14 @@ func NewSubmitHealthCheckHandler(repository healthcheck.Repository) *SubmitHealt
 // NewSubmitHealthCheckHandlerWithClock creates a command handler that reads "now" from the
 // given clock, so tests can pin the current date.
 func NewSubmitHealthCheckHandlerWithClock(repository healthcheck.Repository, now func() time.Time) *SubmitHealthCheckHandler {
-	return &SubmitHealthCheckHandler{
+	h := &SubmitHealthCheckHandler{
 		repository: repository,
 		now:        now,
 	}
+	if pc, ok := repository.(healthcheck.ParticipationChecker); ok {
+		h.participation = pc
+	}
+	return h
 }
 
 // Handle executes the command
@@ -62,6 +69,18 @@ func (h *SubmitHealthCheckHandler) Handle(cmd SubmitHealthCheckCommand) (*health
 	// Validate command
 	if err := h.validate(cmd); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	// Enrollment gate: applies to individual and post-workshop submissions alike, and to
+	// drafts as well as completed submissions. Existing sessions are never touched.
+	if h.participation != nil {
+		enabled, found, err := h.participation.IsTeamHealthCheckEnabled(context.Background(), cmd.TeamID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check team participation: %w", err)
+		}
+		if found && !enabled {
+			return nil, &healthcheck.ParticipationDisabledError{TeamID: cmd.TeamID}
+		}
 	}
 
 	// Default survey type

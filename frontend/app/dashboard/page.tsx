@@ -84,7 +84,7 @@ export default function DashboardPage() {
   // period; "not_open" means the period isn't open for submission (not yet started, already
   // over, or not a valid period).
   const [blockedInfo, setBlockedInfo] = useState<{
-    reason: 'duplicate' | 'not_open';
+    reason: 'duplicate' | 'not_open' | 'not_enrolled';
     surveyType: 'individual' | 'post_workshop';
     submittedPeriod: string;
     nextEligiblePeriod: string;
@@ -369,7 +369,7 @@ export default function DashboardPage() {
       const result = await checkSurveyEligibility(
         surveyType === 'post_workshop'
           ? { surveyType, assessmentPeriod: takeSurveyPeriod, teamId: teamId as string }
-          : { surveyType, assessmentPeriod: takeSurveyPeriod, userId: user.id },
+          : { surveyType, assessmentPeriod: takeSurveyPeriod, userId: user.id, teamId: teamId || undefined },
       );
 
       if (!result.eligible) {
@@ -379,7 +379,14 @@ export default function DashboardPage() {
         // submission that never happened and point to a blank "next survey".
         setPendingSurveyType(null);
         setBlockedInfo(
-          result.reason === 'duplicate'
+          result.reason === 'participation_disabled'
+            ? {
+                reason: 'not_enrolled',
+                surveyType,
+                submittedPeriod: '',
+                nextEligiblePeriod: '',
+              }
+            : result.reason === 'duplicate'
             ? {
                 reason: 'duplicate',
                 surveyType,
@@ -1709,7 +1716,11 @@ export default function DashboardPage() {
                   <AlertCircle className="w-5 h-5 text-amber-600" />
                 </div>
                 <h3 id="duplicate-submission-modal-title" className="text-xl font-semibold text-gray-900">
-                  {blockedInfo.reason === 'duplicate' ? 'Already Submitted' : 'Period Not Available'}
+                  {blockedInfo.reason === 'duplicate'
+                    ? 'Already Submitted'
+                    : blockedInfo.reason === 'not_enrolled'
+                    ? 'Team Not Opted In'
+                    : 'Period Not Available'}
                 </h3>
               </div>
               <button
@@ -1738,6 +1749,11 @@ export default function DashboardPage() {
                     </p>
                   )}
                 </>
+              ) : blockedInfo.reason === 'not_enrolled' ? (
+                <p className="text-base text-gray-700 leading-relaxed mb-8" data-testid="not-enrolled-message">
+                  Your team is not opted in to Team Health Check, so surveys are not available.
+                  Please contact your team lead or an administrator if this looks wrong.
+                </p>
               ) : (
                 <p className="text-base text-gray-700 leading-relaxed mb-8">
                   <span className="font-semibold">{blockedInfo.submittedPeriod}</span> is not open for
