@@ -256,6 +256,10 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 	if err := applyPodLeadLevels(ctx, tx, in, currentProtectedUserIDSet, track, result); err != nil {
 		return nil, err
 	}
+	// Truly last: a valid podiqRole is the final level decision for its user.
+	if err := applyPodIQRoleLevels(ctx, tx, in, currentProtectedUserIDSet, track); err != nil {
+		return nil, err
+	}
 	track.finish(result)
 	if err := recordAppliedSnapshot(ctx, tx, in.Snapshot.GeneratedAt); err != nil {
 		return nil, err
@@ -652,6 +656,15 @@ func upsertSnapshotUsers(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyIn
 		}
 		track.processedUsers++
 
+		// A role-mapped user is written at the level their role names, so a
+		// provider level THC lacks cannot break the foreign key and a stored
+		// level-4 is never held back by the pod-lead exemption. applyPodIQRoleLevels
+		// still decides the final level.
+		level, userSourceLevel, userLeadLevel := u.HierarchyLevelID, sourceLevel, leadLevel
+		if roleLevel, ok := podIQRoleLevel(u); ok {
+			level, userSourceLevel, userLeadLevel = roleLevel, "", ""
+		}
+
 		var inserted bool
 		err := tx.QueryRowContext(ctx, `
 			INSERT INTO users (id, username, email, full_name, hierarchy_level_id, reports_to, password_hash, auth_type, updated_at)
@@ -671,7 +684,7 @@ func upsertSnapshotUsers(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyIn
 			   OR (users.hierarchy_level_id IS DISTINCT FROM EXCLUDED.hierarchy_level_id
 			       AND NOT (users.hierarchy_level_id = $7 AND EXCLUDED.hierarchy_level_id = $6))
 			RETURNING (xmax = 0)
-		`, u.ID, u.Username, u.Email, u.DisplayName, u.HierarchyLevelID, sourceLevel, leadLevel).Scan(&inserted)
+		`, u.ID, u.Username, u.Email, u.DisplayName, level, userSourceLevel, userLeadLevel).Scan(&inserted)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue // existing row, identical business fields: unchanged
 		}
@@ -732,6 +745,9 @@ func applyPodLeadLevels(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInp
 		if orgprovider.IsProtectedUser(u.ID, u.HierarchyLevelID) || currentProtectedUserIDs[u.ID] {
 			continue
 		}
+		if _, ok := podIQRoleLevel(u); ok {
+			continue // the role decides this user's level; see applyPodIQRoleLevels
+		}
 		sourceIDs = append(sourceIDs, u.ID)
 	}
 	if len(sourceIDs) == 0 {
@@ -760,6 +776,49 @@ func applyPodLeadLevels(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInp
 
 	result.PodLeadsPromoted = promoted
 	result.PodLeadsReturned = returned
+	return nil
+}
+
+// podIQRoleLevel returns the level a user's podiqRole maps to. ok is false when
+// the user has no role or an invalid one (validation rejects those before apply).
+func podIQRoleLevel(u orgsnapshot.User) (string, bool) {
+	if u.PodIQRole == nil {
+		return "", false
+	}
+	return orgprovider.PodIQRoleLevelID(*u.PodIQRole)
+}
+
+// applyPodIQRoleLevels is the final level decision (contract v1.1 podiqRole):
+// L2 -> level-3, L1 -> level-4, Developer -> level-5. It overrides the
+// provider's hierarchyLevelId, teamLeadId and membership-based lead logic, and
+// applyPodLeadLevels skips these users entirely. Users without a role are not
+// touched. Protected users are never touched. Only rows whose level differs are
+// written, so an identical second sync reports no change.
+func applyPodIQRoleLevels(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker) error {
+	idsByLevel := make(map[string][]string)
+	for _, u := range in.Snapshot.Users {
+		level, ok := podIQRoleLevel(u)
+		if !ok {
+			continue
+		}
+		if orgprovider.IsProtectedUser(u.ID, u.HierarchyLevelID) || currentProtectedUserIDs[u.ID] {
+			continue
+		}
+		idsByLevel[level] = append(idsByLevel[level], u.ID)
+	}
+	for _, level := range orgprovider.PodIQRoleLevelIDs() {
+		ids := idsByLevel[level]
+		if len(ids) == 0 {
+			continue
+		}
+		if _, err := setUserLevels(ctx, tx, track, `
+			UPDATE users SET hierarchy_level_id = $2, updated_at = CURRENT_TIMESTAMP
+			WHERE id = ANY($1) AND hierarchy_level_id IS DISTINCT FROM $2
+			RETURNING id
+		`, pq.Array(ids), level); err != nil {
+			return fmt.Errorf("failed to apply podiqRole level %s: %w", level, err)
+		}
+	}
 	return nil
 }
 
