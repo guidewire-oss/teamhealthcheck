@@ -3,10 +3,22 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+
+	"github.com/lib/pq"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/healthcheck"
 )
+
+// uniqueViolationConstraints maps the Postgres unique-index names enforcing "one submission
+// per (scope, survey type, period)" to the survey type they guard, so a 23505
+// (unique violation) error from Save() can be translated into a friendly
+// healthcheck.DuplicateSubmissionError.
+var uniqueViolationConstraints = map[string]string{
+	"uniq_individual_period_submission":    healthcheck.SurveyTypeIndividual,
+	"uniq_post_workshop_period_submission": healthcheck.SurveyTypePostWorkshop,
+}
 
 // HealthCheckRepository implements the healthcheck.Repository interface
 type HealthCheckRepository struct {
@@ -49,6 +61,25 @@ func (r *HealthCheckRepository) Save(ctx context.Context, session *healthcheck.H
 	`, session.ID, session.TeamID, session.UserID, session.Date, session.AssessmentPeriod, surveyType, session.Completed)
 
 	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			if constraintSurveyType, known := uniqueViolationConstraints[pqErr.Constraint]; known {
+				// The failed insert aborted this transaction, and the lookup below runs on
+				// another pooled connection. Give this one back first: holding it while
+				// waiting for a second would let concurrent duplicate submissions exhaust a
+				// small pool and time out instead of getting a clean 409.
+				_ = tx.Rollback()
+				submitted, serr := r.FindSubmittedPeriods(ctx, healthcheck.LatestSubmissionQuery{
+					SurveyType: constraintSurveyType,
+					TeamID:     session.TeamID,
+					UserID:     session.UserID,
+				})
+				if serr == nil {
+					return healthcheck.NewDuplicateSubmissionError(constraintSurveyType, session.AssessmentPeriod, submitted)
+				}
+				return fmt.Errorf("submission rejected: %s for %s already submitted", constraintSurveyType, session.AssessmentPeriod)
+			}
+		}
 		return fmt.Errorf("failed to save session: %w", err)
 	}
 
@@ -191,7 +222,7 @@ func (r *HealthCheckRepository) FindTeamHealthByManager(ctx context.Context, man
 				INNER JOIN health_check_responses r ON r.session_id = s.id
 				WHERE ts.user_id = $1 AND s.survey_type = 'post_workshop'
 					AND s.completed = true AND s.assessment_period = $2
-				ORDER BY s.team_id, r.dimension_id, s.date DESC
+				ORDER BY s.team_id, r.dimension_id, s.date DESC, s.updated_at DESC NULLS LAST, s.id DESC
 			),
 			team_dimensions AS (
 				SELECT
@@ -267,7 +298,7 @@ func (r *HealthCheckRepository) FindTeamHealthByManager(ctx context.Context, man
 				INNER JOIN health_check_responses r ON r.session_id = s.id
 				WHERE ts.user_id = $1 AND s.survey_type = 'post_workshop'
 					AND s.completed = true
-				ORDER BY s.team_id, r.dimension_id, s.date DESC
+				ORDER BY s.team_id, r.dimension_id, s.date DESC, s.updated_at DESC NULLS LAST, s.id DESC
 			),
 			team_dimensions AS (
 				SELECT
@@ -609,7 +640,7 @@ func (r *HealthCheckRepository) GetTeamSubmissionStatus(ctx context.Context, tea
 		FROM team_members tm
 		LEFT JOIN health_check_sessions hcs ON tm.user_id = hcs.user_id AND tm.team_id = hcs.team_id
 			AND hcs.assessment_period = $2 AND hcs.survey_type = 'individual'
-		WHERE tm.team_id = $1
+		WHERE tm.team_id = $1 AND tm.is_active
 	`
 
 	var totalMembers, submittedMembers int
@@ -634,6 +665,47 @@ func (r *HealthCheckRepository) GetTeamSubmissionStatus(ctx context.Context, tea
 	}, nil
 }
 
+// FindSubmittedPeriods returns the assessment-period labels of every completed submission
+// matching the given survey type and scope, or an empty slice if none exist. Scoping:
+//   - individual:    matches by UserID only (a different user's submission never conflicts).
+//   - post_workshop: matches by TeamID only (one workshop consensus per team).
+//
+// Historical sessions that never recorded a period are left out: they cannot be matched to a
+// period, so they neither block a new submission nor break the scan below.
+//
+// This is the persisted source of truth healthcheck.CheckPeriodEligibility and
+// healthcheck.NextEligiblePeriodAfter are evaluated against -- eligibility is never inferred
+// from submission dates.
+func (r *HealthCheckRepository) FindSubmittedPeriods(ctx context.Context, query healthcheck.LatestSubmissionQuery) ([]string, error) {
+	var scopeColumn, scopeValue string
+	if query.SurveyType == healthcheck.SurveyTypePostWorkshop {
+		scopeColumn, scopeValue = "team_id", query.TeamID
+	} else {
+		scopeColumn, scopeValue = "user_id", query.UserID
+	}
+
+	rows, err := r.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT assessment_period
+		FROM health_check_sessions
+		WHERE %s = $1 AND survey_type = $2 AND completed = true
+		  AND assessment_period IS NOT NULL AND assessment_period <> ''
+	`, scopeColumn), scopeValue, query.SurveyType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query submitted periods: %w", err)
+	}
+	defer rows.Close()
+
+	var periods []string
+	for rows.Next() {
+		var period string
+		if err := rows.Scan(&period); err != nil {
+			return nil, fmt.Errorf("failed to scan submitted period: %w", err)
+		}
+		periods = append(periods, period)
+	}
+	return periods, rows.Err()
+}
+
 // Delete removes a session and its responses (cascade handled by DB)
 func (r *HealthCheckRepository) Delete(ctx context.Context, id string) error {
 	result, err := r.db.ExecContext(ctx, "DELETE FROM health_check_sessions WHERE id = $1", id)
@@ -653,12 +725,20 @@ func (r *HealthCheckRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// FindDistinctAssessmentPeriods returns all unique assessment periods from submitted sessions
+// FindDistinctAssessmentPeriods returns the unique SELECTABLE assessment
+// periods (half-years only) from submitted sessions, most recent
+// first. Ordering is done in Go
+// (healthcheck.SortAssessmentPeriodsDescending) rather than in SQL: this
+// app's period strings come in five different formats (monthly, quarterly,
+// half-yearly, yearly, and a legacy half-year format — see
+// frontend/lib/assessment-period.ts), and a plain `ORDER BY
+// assessment_period DESC` is a lexicographic STRING sort that has no
+// concept of month/quarter order across those formats (e.g. "H1" < "Mar" <
+// "Q1" alphabetically, unrelated to actual chronological order).
 func (r *HealthCheckRepository) FindDistinctAssessmentPeriods(ctx context.Context) ([]string, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT DISTINCT assessment_period FROM health_check_sessions
 		WHERE assessment_period IS NOT NULL AND assessment_period != '' AND completed = true
-		ORDER BY assessment_period DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query assessment periods: %w", err)
@@ -678,45 +758,39 @@ func (r *HealthCheckRepository) FindDistinctAssessmentPeriods(ctx context.Contex
 		return nil, fmt.Errorf("error iterating assessment periods: %w", err)
 	}
 
-	if periods == nil {
-		periods = []string{}
-	}
-
-	return periods, nil
+	// Only half-year periods ("YYYY H1"/"YYYY H2", or the older
+	// "YYYY - 1st/2nd Half" label) are selectable;
+	// stored sessions with any other value stay in the table but are never
+	// offered (see healthcheck.IsSelectableAssessmentPeriod). This is the one
+	// source for every period dropdown and for the admin dashboard's period
+	// validation, so all dashboards agree.
+	return healthcheck.SelectableAssessmentPeriods(periods), nil
 }
 
-// FindFinalPostWorkshopComments retrieves free-text comments from completed post_workshop
-// sessions for teams supervised by the given manager, scoped via team_supervisors and
-// optionally filtered by assessment period.
+// FindFinalPostWorkshopComments retrieves free-text comments from the final completed
+// post_workshop session of each team member, for teams supervised by the given manager.
+// "Final" means the most recent completed session per (team, member, assessment period),
+// so a re-submitted survey replaces that member's earlier comments while other members'
+// comments stay. When assessmentPeriod is empty, every period is included, each
+// resolved to its own final sessions.
 func (r *HealthCheckRepository) FindFinalPostWorkshopComments(ctx context.Context, managerID string, assessmentPeriod string) ([]healthcheck.PostWorkshopComment, error) {
-	var query string
-	var rows *sql.Rows
-	var err error
-
-	if assessmentPeriod != "" {
-		query = `
-			SELECT s.team_id, s.id, r.dimension_id, r.comment, s.date
+	query := `
+		WITH final_sessions AS (
+			SELECT DISTINCT ON (s.team_id, s.user_id, s.assessment_period) s.id
 			FROM health_check_sessions s
 			INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
-			INNER JOIN health_check_responses r ON r.session_id = s.id
 			WHERE ts.user_id = $1 AND s.survey_type = 'post_workshop' AND s.completed = true
-				AND s.assessment_period = $2
-				AND r.comment IS NOT NULL AND TRIM(r.comment) <> ''
-			ORDER BY s.team_id, s.date DESC, r.dimension_id
-		`
-		rows, err = r.db.QueryContext(ctx, query, managerID, assessmentPeriod)
-	} else {
-		query = `
-			SELECT s.team_id, s.id, r.dimension_id, r.comment, s.date
-			FROM health_check_sessions s
-			INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
-			INNER JOIN health_check_responses r ON r.session_id = s.id
-			WHERE ts.user_id = $1 AND s.survey_type = 'post_workshop' AND s.completed = true
-				AND r.comment IS NOT NULL AND TRIM(r.comment) <> ''
-			ORDER BY s.team_id, s.date DESC, r.dimension_id
-		`
-		rows, err = r.db.QueryContext(ctx, query, managerID)
-	}
+				AND ($2 = '' OR s.assessment_period = $2)
+			ORDER BY s.team_id, s.user_id, s.assessment_period, s.date DESC, s.updated_at DESC NULLS LAST, s.id DESC
+		)
+		SELECT s.team_id, s.id, r.dimension_id, r.comment, s.date
+		FROM health_check_sessions s
+		INNER JOIN final_sessions fs ON fs.id = s.id
+		INNER JOIN health_check_responses r ON r.session_id = s.id
+		WHERE r.comment IS NOT NULL AND TRIM(r.comment) <> ''
+		ORDER BY s.team_id, s.date DESC, r.dimension_id
+	`
+	rows, err := r.db.QueryContext(ctx, query, managerID, assessmentPeriod)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query final post-workshop comments: %w", err)
 	}

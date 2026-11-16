@@ -72,7 +72,7 @@ var _ = Describe("Data Provider Client", func() {
 
 		BeforeEach(func() {
 			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				receivedHeader = r.Header.Get("x-api-token")
+				receivedHeader = r.Header.Get("x-api-key")
 				receivedPath = r.URL.Path
 				w.WriteHeader(http.StatusOK)
 			}))
@@ -82,20 +82,20 @@ var _ = Describe("Data Provider Client", func() {
 			server.Close()
 		})
 
-		It("sends the configured token in the x-api-token header", func() {
+		It("sends the configured token in the x-api-key header", func() {
 			client, err := dataprovider.NewClient(&dataprovider.Config{
 				BaseURL:  server.URL,
 				APIToken: "secret-token",
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			resp, err := client.Do(context.Background(), http.MethodGet, "/pods", nil)
+			resp, err := client.Do(context.Background(), http.MethodGet, "/resource", nil)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 			Expect(receivedHeader).To(Equal("secret-token"))
-			Expect(receivedPath).To(Equal("/pods"))
+			Expect(receivedPath).To(Equal("/resource"))
 		})
 
 		It("joins the base URL and path correctly regardless of slashes", func() {
@@ -105,11 +105,11 @@ var _ = Describe("Data Provider Client", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			resp, err := client.Do(context.Background(), http.MethodGet, "/pods", nil)
+			resp, err := client.Do(context.Background(), http.MethodGet, "/resource", nil)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
-			Expect(receivedPath).To(Equal("/pods"))
+			Expect(receivedPath).To(Equal("/resource"))
 		})
 	})
 
@@ -131,7 +131,7 @@ var _ = Describe("Data Provider Client", func() {
 
 		It("rejects a relative base URL", func() {
 			client, err := dataprovider.NewClient(&dataprovider.Config{
-				BaseURL:  "/pods",
+				BaseURL:  "/resource",
 				APIToken: "secret-token",
 			})
 			Expect(err).To(HaveOccurred())

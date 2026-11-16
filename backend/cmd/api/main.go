@@ -14,10 +14,11 @@ import (
 	"github.com/XSAM/otelsql"
 	"github.com/agopalakrishnan/teams360/backend/application/services"
 	"github.com/agopalakrishnan/teams360/backend/application/trends"
+	"github.com/agopalakrishnan/teams360/backend/infrastructure/dataprovider"
 	"github.com/agopalakrishnan/teams360/backend/infrastructure/email"
 	"github.com/agopalakrishnan/teams360/backend/infrastructure/persistence/postgres"
 	"github.com/agopalakrishnan/teams360/backend/interfaces/api/middleware"
-	"github.com/agopalakrishnan/teams360/backend/interfaces/api/v1"
+	v1 "github.com/agopalakrishnan/teams360/backend/interfaces/api/v1"
 	"github.com/agopalakrishnan/teams360/backend/pkg/logger"
 	"github.com/agopalakrishnan/teams360/backend/pkg/telemetry"
 	"github.com/gin-gonic/gin"
@@ -25,10 +26,22 @@ import (
 	migratePostgres "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/lib/pq"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
+
+	_ "github.com/agopalakrishnan/teams360/backend/docs/swagger"
 )
 
+// @title Team360 API
+// @version 1.0
+// @description Team360 Health Check Application REST API. Assesses team health across 11 dimensions with hierarchical org support.
+// @BasePath /api/v1
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+// @description Type "Bearer" followed by a space and the JWT token.
 func main() {
 	ctx := context.Background()
 
@@ -159,25 +172,63 @@ func main() {
 	userRepo := postgres.NewUserRepository(db)
 	teamRepo := postgres.NewTeamRepository(db)
 	orgRepo := postgres.NewOrganizationRepository(db)
+	orgProviderRepo := postgres.NewOrganizationProviderRepository(db)
 
 	// Initialize services
 	trendsService := trends.NewService(db)
 	jwtService := services.NewJWTService()
 
-	// Initialize email service: SES > SMTP > disabled
+	// Initialize email service. EMAIL_MODE decides first: "log" sends nothing
+	// and ignores any SES/SMTP settings in the environment, so a local run can
+	// never reach a real inbox. An unrecognized value disables email rather
+	// than falling through to real delivery. With EMAIL_MODE unset the order
+	// is SES > SMTP > disabled.
 	var emailSender email.Sender
-	if sesCfg := email.LoadSESConfig(); sesCfg != nil {
-		ses, err := email.NewSESEmailService(sesCfg)
-		if err != nil {
-			log.WithError(err).Fatal("failed to initialize SES email service")
+	switch mode := email.Mode(); mode {
+	case "":
+		if sesCfg := email.LoadSESConfig(); sesCfg != nil {
+			ses, err := email.NewSESEmailService(sesCfg)
+			if err != nil {
+				log.WithError(err).Fatal("failed to initialize SES email service")
+			}
+			emailSender = ses
+			log.WithField("region", sesCfg.Region).Info("AWS SES email service configured")
+		} else if smtpCfg := email.LoadConfig(); smtpCfg != nil {
+			emailSender = email.NewSMTPEmailService(smtpCfg)
+			log.WithField("host", smtpCfg.Host).Info("SMTP email service configured")
+		} else {
+			log.Info("No email service configured, email notifications disabled")
 		}
-		emailSender = ses
-		log.WithField("region", sesCfg.Region).Info("AWS SES email service configured")
-	} else if smtpCfg := email.LoadConfig(); smtpCfg != nil {
-		emailSender = email.NewSMTPEmailService(smtpCfg)
-		log.WithField("host", smtpCfg.Host).Info("SMTP email service configured")
-	} else {
-		log.Info("No email service configured, email notifications disabled")
+	case email.ModeLog:
+		emailSender = email.LogSender{}
+		log.Warn("EMAIL_MODE=log: NO email will be sent. SES/SMTP settings are ignored; emails are written to this log instead")
+	default:
+		log.WithField("EMAIL_MODE", mode).Error("unknown EMAIL_MODE (valid: log); email is DISABLED and nothing will be sent")
+	}
+	if pod := email.TestPod(); pod != "" {
+		log.WithField("pod", pod).Warn("EMAIL_TEST_POD set: survey reminders are restricted to this pod's team lead and members")
+	}
+
+	// EMAIL_REDIRECT_TO sends reminders to test addresses instead of their real
+	// recipients. Only the reminder path gets the real transport, and only
+	// through the redirect; every other email (survey notifications, password
+	// reset) goes to the log-only sender, so nothing else can reach a real
+	// person. An unusable value disables email rather than falling back to real
+	// recipients.
+	reminderSender := emailSender
+	switch targets, configured, rerr := email.RedirectTargets(os.Getenv(email.EnvRedirectTo)); {
+	case rerr != nil:
+		log.WithError(rerr).Error("invalid EMAIL_REDIRECT_TO; email is DISABLED and nothing will be sent")
+		emailSender, reminderSender = nil, nil
+	case configured && emailSender != nil && email.Delivers(emailSender):
+		reminderSender = email.NewRedirectSender(emailSender, targets)
+		emailSender = email.LogSender{}
+		log.WithField("redirect_to", strings.Join(targets, ", ")).
+			Warn("EMAIL_REDIRECT_TO set: reminder emails go ONLY to these addresses, never to the real recipients; other emails are not sent")
+	case configured:
+		log.Warn("EMAIL_REDIRECT_TO is set but there is no delivering email service (none configured, or EMAIL_MODE=log); nothing will be sent")
+	case emailSender != nil && email.Delivers(emailSender):
+		log.Warn("email will be delivered to REAL recipients; set EMAIL_REDIRECT_TO to test safely")
 	}
 
 	// Initialize notification service
@@ -186,6 +237,40 @@ func main() {
 	// Initialize password reset service
 	passwordResetRepo := postgres.NewPasswordResetRepository(db)
 	passwordResetService := services.NewPasswordResetService(passwordResetRepo, userRepo, emailSender)
+
+	// Initialize organization provider sync (external org-data source).
+	// The provider credential is environment configuration only -- never
+	// persisted. A missing or invalid DATA_PROVIDER_BASE_URL/API_TOKEN leaves
+	// sync disabled and reported as such via GetSettings, rather than failing
+	// startup.
+	var dataProviderFetcher services.SnapshotFetcher
+	dataProviderCfg, err := dataprovider.LoadConfig()
+	if err != nil {
+		log.WithError(err).Warn("data provider misconfigured, organization provider sync disabled")
+	} else if dataProviderCfg == nil {
+		log.Info("data provider base URL not set, organization provider sync disabled")
+	} else if dataProviderClient, err := dataprovider.NewClient(dataProviderCfg); err != nil {
+		log.WithError(err).Warn("data provider misconfigured, organization provider sync disabled")
+	} else {
+		dataProviderFetcher = dataProviderClient
+		log.Info("organization data provider configured")
+	}
+	// orgRepo also serves the admin-configured mass-deletion threshold; without
+	// it the guard would silently fall back to the environment variable.
+	orgSyncService := services.NewOrganizationSyncService(orgProviderRepo, dataProviderFetcher, userRepo, teamRepo,
+		services.WithDeleteThresholdStore(orgRepo),
+		services.WithRunStore(postgres.NewOrgSyncRunRepository(db)),
+		services.WithHoldStore(postgres.NewOrgSyncHoldRepository(db)))
+
+	// Automatic sync: the schedule lives in the database and every replica polls
+	// it; an occurrence is claimed by compare-and-swap so it fires once. Runs go
+	// through the same StartRun path as the manual endpoint.
+	orgSyncRunRepo := postgres.NewOrgSyncRunRepository(db)
+	orgSyncScheduler := services.NewOrganizationSyncScheduler(
+		postgres.NewOrgSyncScheduleRepository(db), orgSyncRunRepo, orgSyncService)
+	schedulerCtx, stopScheduler := context.WithCancel(context.Background())
+	defer stopScheduler()
+	go orgSyncScheduler.Start(schedulerCtx)
 
 	// Initialize router (use gin.New() instead of gin.Default() to disable default logger)
 	router := gin.New()
@@ -204,9 +289,7 @@ func main() {
 	router.Use(middleware.MaxBodySizeMiddleware(10 * 1024 * 1024)) // 10MB max body size
 
 	// Health check endpoint (used by tests and load balancers)
-	router.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "healthy"})
-	})
+	router.GET("/health", healthLivenessHandler)
 
 	// Setup API routes with repository injection
 	v1.SetupHealthCheckRoutes(router, healthCheckRepo, orgRepo, jwtService, notificationService)
@@ -218,8 +301,17 @@ func main() {
 	v1.SetupActionItemRoutes(router, db, jwtService)    // Action item CRUD routes
 	v1.SetupUserRoutes(router, db, jwtService)          // User routes with JWT + same-user-or-manager
 	v1.SetupProtectedUserRoutes(router, db, jwtService) // Protected routes requiring JWT
-	v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, jwtService)
+	v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, healthCheckRepo, jwtService, v1.WithReminderSender(reminderSender), v1.WithReminderTestPod(email.TestPod()))
+	v1.SetupOrganizationProviderRoutes(router, orgSyncService, orgRepo, jwtService, v1.WithAutoSyncScheduler(orgSyncScheduler))
 	v1.SetupPasswordResetRoutes(router, passwordResetService, userRepo)
+
+	// Swagger UI - dev/staging only, disabled by default (never expose in production)
+	if os.Getenv("ENABLE_SWAGGER_UI") == "true" && os.Getenv("APP_ENV") == "production" {
+		log.Warn("ENABLE_SWAGGER_UI ignored: Swagger UI is never served when APP_ENV=production")
+	} else if os.Getenv("ENABLE_SWAGGER_UI") == "true" {
+		router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+		log.Info("Swagger UI enabled at /swagger/index.html")
+	}
 
 	// Static file serving for frontend SPA
 	webDir := os.Getenv("WEB_DIR")
@@ -324,6 +416,14 @@ func main() {
 	// Wait for interrupt signal
 	<-quit
 	log.Info("shutting down server gracefully...")
+}
+
+// healthLivenessHandler handles GET /health.
+// Returns 200 with a simple status payload, for tests and load balancers.
+// It lives at the server root, outside the /api/v1 base path, so it is not
+// part of the generated Swagger spec.
+func healthLivenessHandler(c *gin.Context) {
+	c.JSON(200, gin.H{"status": "healthy"})
 }
 
 func directoryRedirectPath(urlPath string, isDir bool) (string, bool) {

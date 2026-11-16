@@ -170,6 +170,9 @@ var _ = Describe("E2E: Complete Data Flow", Label("e2e", "critical"), func() {
 						submitBtn := page.Locator("button:has-text('Submit Responses')").First()
 						err = submitBtn.Click()
 						Expect(err).NotTo(HaveOccurred())
+						By("Confirming the submission in the confirmation modal")
+						err = page.Locator("[data-testid='submit-confirm-accept']").Click()
+						Expect(err).NotTo(HaveOccurred())
 					}
 				}
 

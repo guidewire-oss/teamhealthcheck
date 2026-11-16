@@ -185,7 +185,7 @@ var _ = Describe("E2E: Team Member Home Page", Label("e2e"), func() {
 				err = surveyButton.Click()
 				Expect(err).NotTo(HaveOccurred())
 
-				err = page.WaitForURL("**/survey", playwright.PageWaitForURLOptions{
+				err = page.WaitForURL("**/survey**", playwright.PageWaitForURLOptions{
 					Timeout: playwright.Float(5000),
 				})
 				Expect(err).NotTo(HaveOccurred())

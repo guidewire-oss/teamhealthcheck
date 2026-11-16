@@ -1,0 +1,474 @@
+package v1
+
+import (
+	"errors"
+	"net/http"
+	"slices"
+	"sort"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/agopalakrishnan/teams360/backend/application/queries"
+	"github.com/agopalakrishnan/teams360/backend/domain/healthcheck"
+	"github.com/agopalakrishnan/teams360/backend/domain/organization"
+	"github.com/agopalakrishnan/teams360/backend/domain/team"
+	"github.com/agopalakrishnan/teams360/backend/domain/user"
+	"github.com/agopalakrishnan/teams360/backend/infrastructure/email"
+	"github.com/agopalakrishnan/teams360/backend/interfaces/dto"
+)
+
+// SurveyCompletionAdminHandler serves the org-wide survey completion
+// dashboard (all teams, grouped by a recursive leadership hierarchy).
+type SurveyCompletionAdminHandler struct {
+	overviewHandler *queries.GetSurveyCompletionOverviewHandler
+	healthCheckRepo healthcheck.Repository
+	// reminderSender mails survey reminders. nil means email is not
+	// configured, and SendReminders answers 503 instead of silently doing
+	// nothing.
+	reminderSender email.Sender
+	// reminderTestPod, when set, limits reminders to that pod's team lead and
+	// members (EMAIL_TEST_POD), so a test run cannot reach anyone else.
+	reminderTestPod string
+	teamRepo        team.Repository
+}
+
+// NewSurveyCompletionAdminHandler creates a new handler.
+func NewSurveyCompletionAdminHandler(teamRepo team.Repository, healthCheckRepo healthcheck.Repository, userRepo user.Repository, orgRepo organization.Repository) *SurveyCompletionAdminHandler {
+	return &SurveyCompletionAdminHandler{
+		overviewHandler: queries.NewGetSurveyCompletionOverviewHandler(teamRepo, healthCheckRepo, userRepo, orgRepo),
+		healthCheckRepo: healthCheckRepo,
+		teamRepo:        teamRepo,
+	}
+}
+
+// GetSurveyCompletion handles GET /api/v1/admin/survey-completion.
+// assessmentPeriod is optional; when omitted, the most recent period with
+// any submitted data is used (FindDistinctAssessmentPeriods already returns
+// periods most-recent-first — see its own doc comment). When a caller does
+// supply assessmentPeriod, it must be one of those known periods; anything
+// else is rejected with 400 rather than silently querying an empty/nonexistent
+// period and returning a zeroed-out overview that looks like "no data yet"
+// instead of "you asked for a period that doesn't exist".
+func (h *SurveyCompletionAdminHandler) GetSurveyCompletion(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	assessmentPeriod, err := h.resolveAssessmentPeriod(c, c.Query("assessmentPeriod"))
+	if err != nil {
+		return // resolveAssessmentPeriod already responded
+	}
+
+	overview, err := h.overviewHandler.Handle(ctx, queries.GetSurveyCompletionOverviewQuery{AssessmentPeriod: assessmentPeriod})
+	if err != nil {
+		dto.RespondErrorWithDetails(c, http.StatusInternalServerError, "Failed to build survey completion overview", err.Error())
+		return
+	}
+
+	dto.RespondSuccess(c, http.StatusOK, buildSurveyCompletionResponse(overview))
+}
+
+// resolveAssessmentPeriod applies the period rule shared by the dashboard and
+// the reminders: an empty request means the most recent period with data, and
+// a named period must be one of the known ones. On failure it has already
+// written the error response, so the caller only returns.
+func (h *SurveyCompletionAdminHandler) resolveAssessmentPeriod(c *gin.Context, requested string) (string, error) {
+	periods, err := h.healthCheckRepo.FindDistinctAssessmentPeriods(c.Request.Context())
+	if err != nil {
+		dto.RespondErrorWithDetails(c, http.StatusInternalServerError, "Failed to resolve assessment periods", err.Error())
+		return "", err
+	}
+
+	if requested == "" {
+		if len(periods) > 0 {
+			return periods[0], nil
+		}
+		return "", nil
+	}
+	if !slices.Contains(periods, requested) {
+		dto.RespondErrorWithDetails(c, http.StatusBadRequest, "Unknown assessment period", requested)
+		return "", errors.New("unknown assessment period")
+	}
+	return requested, nil
+}
+
+// SendReminders handles POST /api/v1/admin/survey-completion/reminders.
+//
+// The body names a target (a pod, a leader, or the whole org) and the server
+// works out the recipients from the same survey-completion data the dashboard
+// shows, so the reminder reaches exactly the people the dashboard's preview
+// listed and a caller cannot address an arbitrary email.
+func (h *SurveyCompletionAdminHandler) SendReminders(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	if h.reminderSender == nil {
+		dto.RespondErrorWithDetails(c, http.StatusServiceUnavailable, "Email is not configured", "Email is not configured on this server, so reminders cannot be sent.")
+		return
+	}
+
+	var req dto.SurveyReminderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		dto.RespondErrorWithDetails(c, http.StatusBadRequest, "Invalid request body", err.Error())
+		return
+	}
+
+	assessmentPeriod, err := h.resolveAssessmentPeriod(c, req.AssessmentPeriod)
+	if err != nil {
+		return
+	}
+
+	overview, err := h.overviewHandler.Handle(ctx, queries.GetSurveyCompletionOverviewQuery{AssessmentPeriod: assessmentPeriod})
+	if err != nil {
+		dto.RespondErrorWithDetails(c, http.StatusInternalServerError, "Failed to build survey completion overview", err.Error())
+		return
+	}
+
+	teamLeadEmail := make(map[string]string, len(overview.Teams))
+	for _, t := range overview.Teams {
+		teamLeadEmail[t.TeamID] = t.TeamLeadEmail
+	}
+
+	plan, err := planSurveyReminders(buildSurveyCompletionResponse(overview).Groups, teamLeadEmail, req)
+	switch {
+	case errors.Is(err, errInvalidReminderRequest):
+		dto.RespondErrorWithDetails(c, http.StatusBadRequest, "Invalid reminder request", "scope must be team, person or org, with teamId or personId for the first two.")
+		return
+	case errors.Is(err, errReminderTargetNotFound):
+		dto.RespondErrorWithDetails(c, http.StatusNotFound, "Reminder target not found", "That team or leader is not in the survey completion data for this period.")
+		return
+	case errors.Is(err, errNothingToRemind):
+		dto.RespondErrorWithDetails(c, http.StatusUnprocessableEntity, "Nothing to remind", "No pods are in progress or not started, so there is nobody to remind.")
+		return
+	case err != nil:
+		dto.RespondErrorWithDetails(c, http.StatusInternalServerError, "Failed to plan reminders", err.Error())
+		return
+	}
+
+	if h.reminderTestPod != "" {
+		plan, err = restrictPlanToTestPod(ctx, plan, h.reminderTestPod, overview.Teams, h.teamRepo)
+		switch {
+		case errors.Is(err, errTestPodNotFound):
+			dto.RespondErrorWithDetails(c, http.StatusUnprocessableEntity, "Test pod not found",
+				"EMAIL_TEST_POD is set to \""+h.reminderTestPod+"\" but no pod has that name, so nothing was sent.")
+			return
+		case errors.Is(err, errTestPodAmbiguous):
+			dto.RespondErrorWithDetails(c, http.StatusUnprocessableEntity, "Test pod is ambiguous",
+				"EMAIL_TEST_POD is set to \""+h.reminderTestPod+"\" but more than one pod has that name, so nothing was sent.")
+			return
+		case err != nil:
+			dto.RespondErrorWithDetails(c, http.StatusInternalServerError, "Failed to apply the test pod restriction", err.Error())
+			return
+		case len(plan.Recipients) == 0:
+			dto.RespondErrorWithDetails(c, http.StatusUnprocessableEntity, "Nothing to remind in the test pod",
+				"EMAIL_TEST_POD limits reminders to \""+h.reminderTestPod+"\", and that pod has nobody to remind for this request (it may already be complete).")
+			return
+		}
+	}
+
+	result := sendReminderPlan(ctx, h.reminderSender, overview.AssessmentPeriod, req.Scope, plan)
+	result.TestPod = h.reminderTestPod
+	result.RedirectedTo = email.RedirectTargetsOf(h.reminderSender)
+	if result.RedirectedTo == nil {
+		result.RedirectedTo = []string{}
+	}
+	if result.Sent == 0 && len(result.Failed) > 0 {
+		// Every deliverable recipient failed: the transport is down, not a
+		// partial success, so don't report 200.
+		dto.RespondErrorWithDetails(c, http.StatusBadGateway, "Failed to send reminders", "The mail server rejected every reminder. Nothing was sent.")
+		return
+	}
+
+	dto.RespondSuccess(c, http.StatusOK, result)
+}
+
+// nodeBuilder accumulates one PersonNode's direct teams and child nodes
+// while walking overview.Teams/overview.Persons; converted to a
+// SurveyCompletionGroupDTO (recursively, via toDTO) once every team and
+// every parent/child link has been resolved.
+type nodeBuilder struct {
+	person      queries.PersonNode
+	directTeams []dto.SurveyCompletionTeamDTO
+	children    []*nodeBuilder
+}
+
+// toDTO recursively converts this node (and its whole subtree) into a
+// SurveyCompletionGroupDTO, sorting children alphabetically by name at
+// every level. It also returns every team in this node's subtree (its own
+// direct teams plus every descendant's), which the caller folds into its
+// own aggregate stats — this is how totals/remind-counts roll all the way
+// up to the root regardless of how many levels deep the subtree goes.
+func (n *nodeBuilder) toDTO() (dto.SurveyCompletionGroupDTO, []dto.SurveyCompletionTeamDTO) {
+	sort.Slice(n.children, func(i, j int) bool {
+		return n.children[i].person.Name < n.children[j].person.Name
+	})
+
+	subtreeTeams := append([]dto.SurveyCompletionTeamDTO(nil), n.directTeams...)
+	childDTOs := make([]dto.SurveyCompletionGroupDTO, 0, len(n.children))
+	for _, c := range n.children {
+		childDTO, childTeams := c.toDTO()
+		childDTOs = append(childDTOs, childDTO)
+		subtreeTeams = append(subtreeTeams, childTeams...)
+	}
+
+	total, opted, complete, remind := aggregateTeams(subtreeTeams)
+	person := dto.SurveyCompletionPersonDTO{
+		ID:      n.person.UserID,
+		Name:    n.person.Name,
+		Email:   n.person.Email,
+		LevelID: n.person.LevelID,
+		Level:   n.person.LevelName,
+	}
+	directTeams := n.directTeams
+	if directTeams == nil {
+		// A leader whose teams are all under their own children has no
+		// direct teams of their own — serialize [] rather than the nil
+		// zero value, which encoding/json would otherwise send as `null`.
+		directTeams = []dto.SurveyCompletionTeamDTO{}
+	}
+
+	return dto.SurveyCompletionGroupDTO{
+		Type:              "person",
+		Person:            &person,
+		TotalTeams:        total,
+		OptedInTeams:      opted,
+		CompletionPercent: percent(complete, opted),
+		RemindCount:       remind,
+		DirectTeams:       directTeams,
+		Children:          childDTOs,
+	}, subtreeTeams
+}
+
+// findCycleMembers returns the set of nodes that lie on a cycle in the
+// child -> parent map. Each node is visited once (three-state walk), so the
+// cost is O(N) regardless of hierarchy depth.
+func findCycleMembers(parentOf map[string]string) map[string]bool {
+	const (
+		unvisited = iota
+		visiting
+		done
+	)
+	state := make(map[string]int, len(parentOf))
+	members := make(map[string]bool)
+
+	for start := range parentOf {
+		if state[start] != unvisited {
+			continue
+		}
+		var path []string
+		cur := start
+		for cur != "" && state[cur] == unvisited {
+			state[cur] = visiting
+			path = append(path, cur)
+			cur = parentOf[cur]
+		}
+		if cur != "" && state[cur] == visiting {
+			// Walked back into this path: everything from cur around is a cycle.
+			for n := cur; ; n = parentOf[n] {
+				members[n] = true
+				if parentOf[n] == cur {
+					break
+				}
+			}
+		}
+		for _, n := range path {
+			state[n] = done
+		}
+	}
+	return members
+}
+
+func buildSurveyCompletionResponse(overview *queries.SurveyCompletionOverview) dto.SurveyCompletionResponse {
+	nodeBuilders := make(map[string]*nodeBuilder, len(overview.Persons))
+	for _, p := range overview.Persons {
+		person := p
+		nodeBuilders[p.UserID] = &nodeBuilder{person: person}
+	}
+
+	// parentOf mirrors overview.Persons' ParentID links, used below to detect
+	// a circular manager chain (e.g. A -> B -> A) before attaching a node as
+	// a child. Attaching blindly would leave every member of the cycle
+	// unreachable from rootOrder -- never a root (each has a parent) and
+	// never actually linked into a tree reachable from one (the cycle has no
+	// top) -- so their teams would still be counted in the totals above but
+	// silently missing from the rendered Groups.
+	parentOf := make(map[string]string, len(overview.Persons))
+	for _, p := range overview.Persons {
+		parentOf[p.UserID] = p.ParentID
+	}
+
+	// inCycle holds every user whose parent chain leads back to itself, i.e.
+	// whose attachment under its parent would create (or be part of) a cycle.
+	// It is computed once in O(N) so each person is not re-walked per request.
+	inCycle := findCycleMembers(parentOf)
+
+	var rootOrder []string
+	for _, p := range overview.Persons {
+		if p.ParentID != "" {
+			if parent, ok := nodeBuilders[p.ParentID]; ok && !inCycle[p.UserID] {
+				parent.children = append(parent.children, nodeBuilders[p.UserID])
+				continue
+			}
+		}
+		// Either a genuine root, an orphan (parent missing from this
+		// overview), or a member of a cycle: in every case the node must
+		// still be rendered, so it becomes its own root instead of being
+		// dropped.
+		rootOrder = append(rootOrder, p.UserID)
+	}
+
+	var otherTeams []dto.SurveyCompletionTeamDTO
+	var totalTeams, optedIn, fullyComplete, inProgress, notStarted, optedOut int
+
+	// Every team is keyed and deduplicated by its canonical database id
+	// (TeamID) here, never by name -- two different teams that happen to
+	// share a display name (e.g. an imperfect sync producing "Aurora"
+	// twice under two different ids) are two distinct entries and both
+	// render, separately, each under its own correct owner. This guards
+	// against a team id ever being assigned to more than one display
+	// bucket (a leader's directTeams, or Other): the response is built
+	// completely first, and seenTeamIDs is the validation that each id
+	// lands in exactly one place -- see
+	// TestBuildSurveyCompletionResponseNoDuplicateTeamIDs.
+	seenTeamIDs := make(map[string]bool, len(overview.Teams))
+
+	for _, t := range overview.Teams {
+		if seenTeamIDs[t.TeamID] {
+			continue
+		}
+		seenTeamIDs[t.TeamID] = true
+
+		totalTeams++
+		status := deriveSurveyCompletionStatus(t)
+
+		switch status {
+		case "opted_out":
+			optedOut++
+		case "complete":
+			optedIn++
+			fullyComplete++
+		case "in_progress":
+			optedIn++
+			inProgress++
+		default: // not_started
+			optedIn++
+			notStarted++
+		}
+
+		var postWorkshop *bool
+		if status != "opted_out" {
+			pw := t.PostWorkshopCompleted
+			postWorkshop = &pw
+		}
+
+		teamDTO := dto.SurveyCompletionTeamDTO{
+			TeamID:                t.TeamID,
+			TeamName:              t.TeamName,
+			Completed:             t.Completed,
+			Total:                 t.Total,
+			PostWorkshopCompleted: postWorkshop,
+			Status:                status,
+		}
+		// TeamLeadID/Name is always populated (not just for "Other") — the
+		// reminder-target tree needs every pod's team lead name to render
+		// its leaf label, and the team lead is always a reminder target
+		// alongside whichever leader owns the pod.
+		if t.TeamLeadID != "" {
+			id, name := t.TeamLeadID, t.TeamLeadName
+			teamDTO.TeamLeadID = &id
+			teamDTO.TeamLeadName = &name
+		}
+
+		if node, ok := nodeBuilders[t.OwnerUserID]; t.OwnerUserID != "" && ok {
+			node.directTeams = append(node.directTeams, teamDTO)
+		} else {
+			otherTeams = append(otherTeams, teamDTO)
+		}
+	}
+
+	groups := make([]dto.SurveyCompletionGroupDTO, 0, len(rootOrder)+1)
+	for _, id := range rootOrder {
+		groupDTO, _ := nodeBuilders[id].toDTO()
+		groups = append(groups, groupDTO)
+	}
+	if len(otherTeams) > 0 {
+		total, opted, complete, remind := aggregateTeams(otherTeams)
+		groups = append(groups, dto.SurveyCompletionGroupDTO{
+			Type:              "other",
+			Label:             "Other",
+			TotalTeams:        total,
+			OptedInTeams:      opted,
+			CompletionPercent: percent(complete, opted),
+			RemindCount:       remind,
+			Teams:             otherTeams,
+		})
+	}
+
+	timeSeries := make([]dto.SurveyCompletionTrendPointDTO, len(overview.TimeSeries))
+	for i, p := range overview.TimeSeries {
+		timeSeries[i] = dto.SurveyCompletionTrendPointDTO{Label: p.Label, Completion: p.Completion}
+	}
+
+	return dto.SurveyCompletionResponse{
+		AssessmentPeriod:  overview.AssessmentPeriod,
+		OverallCompletion: percent(fullyComplete, optedIn),
+		TotalTeams:        totalTeams,
+		OptedIn:           optedIn,
+		FullyComplete:     fullyComplete,
+		InProgress:        inProgress,
+		NotStarted:        notStarted,
+		OptedOut:          optedOut,
+		Groups:            groups,
+		TimeSeries:        timeSeries,
+	}
+}
+
+// aggregateTeams computes the same rollup numbers the dashboard's group
+// header rows have always shown: total teams, opted-in teams, fully-complete
+// teams, and how many are remindable (in progress or not started).
+func aggregateTeams(teams []dto.SurveyCompletionTeamDTO) (total, optedIn, complete, remind int) {
+	total = len(teams)
+	for _, t := range teams {
+		if t.Status == "opted_out" {
+			continue
+		}
+		optedIn++
+		switch t.Status {
+		case "complete":
+			complete++
+		case "in_progress", "not_started":
+			remind++
+		}
+	}
+	return total, optedIn, complete, remind
+}
+
+// deriveSurveyCompletionStatus classifies a team from its counts, its
+// post-workshop session, and its health_check_enabled flag.
+//
+// "complete" requires BOTH every eligible member's individual survey done
+// (Completed >= Total) AND the team's post-workshop session completed --
+// per the original survey-completion-dashboard spec (issue #143), the
+// individual surveys alone only capture each member's private input; the
+// post-workshop session is where the team reviews those results together,
+// and a team isn't done until that has happened too. A team whose members
+// have all finished their individual surveys but hasn't yet held its
+// post-workshop session is "in_progress", never "complete" -- exactly the
+// same bucket a team with only some members done falls into, since from a
+// completion standpoint neither team is finished.
+func deriveSurveyCompletionStatus(t queries.SurveyCompletionTeam) string {
+	if !t.HealthCheckEnabled {
+		return "opted_out"
+	}
+	if t.Total == 0 || t.Completed == 0 {
+		return "not_started"
+	}
+	if t.Completed >= t.Total && t.PostWorkshopCompleted {
+		return "complete"
+	}
+	return "in_progress"
+}
+
+func percent(part, total int) int {
+	if total == 0 {
+		return 0
+	}
+	return int((float64(part)/float64(total))*100 + 0.5)
+}

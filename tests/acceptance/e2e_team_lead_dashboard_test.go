@@ -321,8 +321,8 @@ var _ = Describe("E2E: Team Lead Dashboard", func() {
 				// Insert historical data for trend visualization
 				_, err := db.Exec(`
 					INSERT INTO health_check_sessions (id, team_id, user_id, date, assessment_period, completed) VALUES
-					('e2e_trend_h1', $1, 'e2e_member1', '2024-01-15', '2023 - 2nd Half', true),
-					('e2e_trend_h2', $1, 'e2e_member1', '2024-07-15', '2024 - 1st Half', true)
+					('e2e_trend_h1', $1, 'e2e_member1', '2023-01-15', '2022 - 2nd Half', true),
+					('e2e_trend_h2', $1, 'e2e_member1', '2022-07-15', '2022 - 1st Half', true)
 					ON CONFLICT (id) DO NOTHING
 				`, testTeamID)
 				Expect(err).NotTo(HaveOccurred(), "Failed to insert trend sessions")

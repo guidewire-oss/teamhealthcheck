@@ -19,6 +19,8 @@ var _ = Describe("E2E: Survey Submission Flow", func() {
 	Describe("Complete survey submission workflow", Ordered, func() {
 		// Note: Using Ordered container to ensure tests run in sequence and share state
 		BeforeAll(func() {
+			// Once for the whole Ordered container: its specs share the submission the first one makes.
+			clearRuntimeSubmissions(testUserID)
 			// Reset user's team assignment to e2e_team1 (may have been changed by other tests)
 			_, err := db.Exec("DELETE FROM team_members WHERE user_id = $1", testUserID)
 			Expect(err).NotTo(HaveOccurred())
@@ -99,7 +101,7 @@ var _ = Describe("E2E: Survey Submission Flow", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Wait for redirect to survey page
-				err = page.WaitForURL("**/survey", playwright.PageWaitForURLOptions{
+				err = page.WaitForURL("**/survey**", playwright.PageWaitForURLOptions{
 					Timeout: playwright.Float(5000),
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -204,13 +206,13 @@ var _ = Describe("E2E: Survey Submission Flow", func() {
 			Expect(err).NotTo(HaveOccurred())
 			err = submitButton.Click()
 			Expect(err).NotTo(HaveOccurred())
-
-			By("Waiting for redirect to home page after successful submission")
-			// The survey page auto-redirects to /home after successful submission
-			err = page.WaitForURL("**/home", playwright.PageWaitForURLOptions{
-				Timeout: playwright.Float(10000),
-			})
+			By("Confirming the submission in the confirmation modal")
+			err = page.Locator("[data-testid='submit-confirm-accept']").Click()
 			Expect(err).NotTo(HaveOccurred())
+
+			By("Going home after a successful submission")
+			// The survey shows a Thank You page and does not redirect; its button leads home
+			continueFromThankYou(page, "**/home")
 			dismissOnboardingIfVisible(page)
 
 			By("Verifying we're on the home page")
@@ -367,7 +369,7 @@ var _ = Describe("E2E: Survey Submission Flow", func() {
 				err = surveyBtn.Click()
 				Expect(err).NotTo(HaveOccurred())
 
-				err = page.WaitForURL("**/survey", playwright.PageWaitForURLOptions{
+				err = page.WaitForURL("**/survey**", playwright.PageWaitForURLOptions{
 					Timeout: playwright.Float(5000),
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -495,7 +497,7 @@ var _ = Describe("E2E: Survey Submission Flow", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Wait for redirect to survey page
-				err = page.WaitForURL("**/survey", playwright.PageWaitForURLOptions{
+				err = page.WaitForURL("**/survey**", playwright.PageWaitForURLOptions{
 					Timeout: playwright.Float(5000),
 				})
 				Expect(err).NotTo(HaveOccurred())

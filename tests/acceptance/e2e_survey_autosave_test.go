@@ -85,7 +85,7 @@ var _ = Describe("E2E: Survey Autosave", Label("e2e"), func() {
 		_, err = page.Goto(frontendURL + "/survey")
 		Expect(err).NotTo(HaveOccurred())
 
-		err = page.WaitForURL("**/survey", playwright.PageWaitForURLOptions{
+		err = page.WaitForURL("**/survey**", playwright.PageWaitForURLOptions{
 			Timeout: playwright.Float(5000),
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -98,7 +98,10 @@ var _ = Describe("E2E: Survey Autosave", Label("e2e"), func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 
-	fillDimension := func(dimensionID string, score int, trend string) {
+	// Trend is not part of the Team Lead's individual survey (it matches the Team
+	// Member survey: score + comment only). The trend param is kept so callers can
+	// still describe/track the trend they'd expect in a post-workshop survey.
+	fillDimension := func(dimensionID string, score int, _ string) {
 		scoreSelector := fmt.Sprintf("[data-dimension='%s'][data-score='%d']", dimensionID, score)
 		err := page.Locator(scoreSelector).WaitFor(playwright.LocatorWaitForOptions{
 			State:   playwright.WaitForSelectorStateVisible,
@@ -106,15 +109,6 @@ var _ = Describe("E2E: Survey Autosave", Label("e2e"), func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 		err = page.Locator(scoreSelector).Click()
-		Expect(err).NotTo(HaveOccurred())
-
-		trendSelector := fmt.Sprintf("[data-dimension='%s'][data-trend='%s']", dimensionID, trend)
-		err = page.Locator(trendSelector).WaitFor(playwright.LocatorWaitForOptions{
-			State:   playwright.WaitForSelectorStateVisible,
-			Timeout: playwright.Float(5000),
-		})
-		Expect(err).NotTo(HaveOccurred())
-		err = page.Locator(trendSelector).Click()
 		Expect(err).NotTo(HaveOccurred())
 	}
 
@@ -174,12 +168,6 @@ var _ = Describe("E2E: Survey Autosave", Label("e2e"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(className).To(ContainSubstring("border-yellow-500"))
 
-			By("Verifying the trend selection is preserved (Stable)")
-			stableSelected := page.Locator("[data-dimension='value'][data-trend='stable']")
-			stableClass, err := stableSelected.GetAttribute("class")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(stableClass).To(ContainSubstring("border-blue-500"))
-
 			By("Dismissing the draft banner")
 			dismissBtn := banner.Locator("button[aria-label='Dismiss']")
 			err = dismissBtn.Click()
@@ -219,12 +207,6 @@ var _ = Describe("E2E: Survey Autosave", Label("e2e"), func() {
 			commentValue, err := commentBox.InputValue()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(commentValue).To(Equal("This is my important comment"))
-
-			By("Verifying trend is still set to improving")
-			trendBtn := page.Locator("[data-dimension='mission'][data-trend='improving']")
-			trendClass, err := trendBtn.GetAttribute("class")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(trendClass).To(ContainSubstring("border-green-500"))
 		})
 	})
 
@@ -303,28 +285,19 @@ var _ = Describe("E2E: Survey Autosave", Label("e2e"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			err = submitButton.Click()
 			Expect(err).NotTo(HaveOccurred())
+			By("Confirming the submission in the confirmation modal")
+			err = page.Locator("[data-testid='submit-confirm-accept']").Click()
+			Expect(err).NotTo(HaveOccurred())
 
-			By("Waiting for redirect to home page")
-			err = page.WaitForURL("**/home", playwright.PageWaitForURLOptions{
-				Timeout: playwright.Float(10000),
-			})
+			waitForThankYouPage(page)
+
+			// The home page's Take Survey button is blocked once this period has been submitted
+			// (one submission per period), so reopen the survey page directly: what matters here
+			// is that the saved draft was cleared by the submission.
+			By("Reopening the survey page directly")
+			_, err = page.Goto(frontendURL + "/survey")
 			Expect(err).NotTo(HaveOccurred())
 			dismissOnboardingIfVisible(page)
-
-			By("Navigating back to survey")
-			surveyBtn := page.Locator("[data-testid='take-survey-btn']")
-			err = surveyBtn.WaitFor(playwright.LocatorWaitForOptions{
-				State:   playwright.WaitForSelectorStateVisible,
-				Timeout: playwright.Float(5000),
-			})
-			Expect(err).NotTo(HaveOccurred())
-			err = surveyBtn.Click()
-			Expect(err).NotTo(HaveOccurred())
-
-			err = page.WaitForURL("**/survey", playwright.PageWaitForURLOptions{
-				Timeout: playwright.Float(5000),
-			})
-			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying survey starts fresh (no draft banner)")
 			err = page.Locator("text=Mission").WaitFor(playwright.LocatorWaitForOptions{

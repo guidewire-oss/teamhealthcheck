@@ -2,15 +2,28 @@ package team
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// Team status filters accepted by FindWithDetailsByStatus.
+const (
+	StatusAll      = ""
+	StatusActive   = "active"
+	StatusInactive = "inactive"
+)
+
+// ErrDuplicateTeam means a team with the same ID already exists. A
+// soft-deactivated team keeps its ID, so it counts: only a provider sync can
+// reactivate it.
+var ErrDuplicateTeam = errors.New("a team with this ID already exists")
 
 // Team represents a team in the organization
 // This is an aggregate root in DDD terms
 type Team struct {
 	ID                    string           `json:"id"`
 	Name                  string           `json:"name"`
-	Cadence               string           `json:"cadence"` // monthly, quarterly, half-yearly, yearly
+	Cadence               string           `json:"cadence"` // monthly, half-yearly, yearly
 	NextCheckDate         string           `json:"nextCheckDate"`
 	TeamLeadID            *string          `json:"teamLeadId,omitempty"`
 	TeamLeadName          *string          `json:"teamLeadName,omitempty"`
@@ -18,11 +31,21 @@ type Team struct {
 	MemberCount           int              `json:"memberCount"`
 	SupervisorChain       []SupervisorLink `json:"supervisorChain"`
 	DistributionListEmail *string          `json:"distributionListEmail,omitempty"`
-	Department            string           `json:"department,omitempty"`
-	Division              string           `json:"division,omitempty"`
-	Tags                  []string         `json:"tags,omitempty"`
-	CreatedAt             time.Time        `json:"createdAt,omitempty"`
-	UpdatedAt             time.Time        `json:"updatedAt,omitempty"`
+	// HealthCheckEnabled reports whether the team participates in health checks.
+	// An external organization snapshot may set it; see docs/organization-snapshot-contract.md.
+	HealthCheckEnabled bool      `json:"healthCheckEnabled"`
+	Department         string    `json:"department,omitempty"`
+	Division           string    `json:"division,omitempty"`
+	Tags               []string  `json:"tags,omitempty"`
+	CreatedAt          time.Time `json:"createdAt,omitempty"`
+	UpdatedAt          time.Time `json:"updatedAt,omitempty"`
+
+	// IsActive is false for a soft-deactivated team. A team is never deleted:
+	// its surveys, responses and action items keep pointing at it. It becomes
+	// inactive only when it is removed from a complete provider snapshot or an
+	// admin deactivates it -- never because its members or lead changed.
+	IsActive      bool       `json:"isActive"`
+	DeactivatedAt *time.Time `json:"deactivatedAt,omitempty"`
 }
 
 // TeamMember represents a member of a team
@@ -45,6 +68,37 @@ type Member struct {
 	Role   string `json:"role,omitempty"` // lead, member
 }
 
+// SurveyCompletionRow is a lightweight per-team projection for the admin
+// survey-completion dashboard (hierarchy owner and the opt-in flag). Kept
+// separate from Team, rather than adding fields to it, because it depends
+// on a column (health_check_enabled) that is not present on every database
+// yet — see FindSurveyCompletionTeams.
+//
+// There is deliberately no member-count field here: "how many members"
+// depends on WHICH members are eligible for the individual survey (Level 4
+// Team Lead + Level 5 Team Member only — see FindEligibleMemberIDs), so
+// that count is derived by the caller from FindEligibleMemberIDs' result,
+// never from a raw, unfiltered team_members count.
+//
+// SupervisorID is this team's own closest supervisor as recorded in
+// team_supervisors (the row with the lowest `position`, i.e. "1 = closest
+// supervisor" per that column's own definition) — "" when the team has no
+// supervisor recorded at all. The caller
+// (GetSurveyCompletionOverviewHandler) resolves this person's own
+// ancestors, arbitrarily deep, purely via users.reports_to — team_supervisors
+// is only ever consulted for the single closest supervisor, never for the
+// rest of the chain. TeamLead* is the Level-4 escalation target, always
+// populated when the team has a team lead.
+type SurveyCompletionRow struct {
+	ID                 string
+	Name               string
+	SupervisorID       string
+	TeamLeadID         string
+	TeamLeadName       string
+	TeamLeadEmail      string
+	HealthCheckEnabled bool
+}
+
 // Repository defines the interface for team data access
 type Repository interface {
 	FindByID(ctx context.Context, id string) (*Team, error)
@@ -55,7 +109,10 @@ type Repository interface {
 	FindSupervisorChain(ctx context.Context, teamID string) ([]*SupervisorLink, error)
 	Save(ctx context.Context, team *Team) error
 	Update(ctx context.Context, team *Team) error
-	Delete(ctx context.Context, id string) error
+	// Deactivate soft-deactivates a team: it is marked inactive and its
+	// memberships end, but the team row and everything referencing it stay.
+	// Deactivating an already inactive team is a no-op.
+	Deactivate(ctx context.Context, id string) error
 	AddMember(ctx context.Context, teamID, userID string) error
 	RemoveMember(ctx context.Context, teamID, userID string) error
 	UpdateSupervisorChain(ctx context.Context, teamID string, chain []*SupervisorLink) error
@@ -63,4 +120,27 @@ type Repository interface {
 	FindTeamMembers(ctx context.Context, teamID string) ([]TeamMember, error)
 	CountTeamMembers(ctx context.Context, teamID string) (int, error)
 	FindAllWithDetails(ctx context.Context) ([]Team, error)
+	// FindWithDetailsByStatus is FindAllWithDetails limited in the query itself
+	// to active or inactive teams, so a filtered list never loads the rest.
+	// status is StatusActive, StatusInactive or StatusAll.
+	FindWithDetailsByStatus(ctx context.Context, status string) ([]Team, error)
+	// FindSurveyCompletionTeams returns the admin survey-completion projection
+	// for every ACTIVE team (inactive teams are excluded). Requires the health_check_enabled column on teams,
+	// added by migration 000021_add_health_check_enabled. Other team
+	// queries in the Postgres repository (FindByID, FindAll, ...) select
+	// that column too, so the migration must be applied before any of
+	// them will run.
+	FindSurveyCompletionTeams(ctx context.Context) ([]SurveyCompletionRow, error)
+	// FindEligibleMemberIDs returns, for every team, the ids of its members
+	// who are eligible to take the individual survey -- authoritatively
+	// defined as hierarchy_levels.position exactly 4 (Team Lead) or exactly
+	// 5 (Team Member), joined dynamically through users.hierarchy_level_id
+	// and hierarchy_levels.position -- never a hard-coded level id/name.
+	// Managers, Senior Managers, Directors, VPs, and any other position are
+	// excluded. This is the single authoritative eligible population every
+	// survey-completion status, filter, and aggregate (Individual Survey
+	// Completed, Not Started, Fully Completed, Opted Out, Opted In, Total
+	// Teams) must be calculated from -- see
+	// GetSurveyCompletionOverviewHandler.Handle.
+	FindEligibleMemberIDs(ctx context.Context) (map[string][]string, error)
 }

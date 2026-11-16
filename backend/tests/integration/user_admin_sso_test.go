@@ -42,7 +42,8 @@ var _ = Describe("Integration: User Admin SSO", func() {
 		orgRepo := postgres.NewOrganizationRepository(db)
 		userRepo := postgres.NewUserRepository(db)
 		teamRepo := postgres.NewTeamRepository(db)
-		v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, jwtService)
+		healthCheckRepo := postgres.NewHealthCheckRepository(db)
+		v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, healthCheckRepo, jwtService)
 		v1.SetupAuthRoutes(router, userRepo, orgRepo, jwtService)
 	})
 

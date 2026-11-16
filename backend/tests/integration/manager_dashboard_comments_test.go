@@ -253,5 +253,51 @@ var _ = Describe("Integration: Manager Dashboard Final Post-Workshop Comments AP
 			Expect(comments).NotTo(HaveKey("int_pwc_team_other"))
 			Expect(comments).To(BeEmpty())
 		})
+
+		It("should keep only each member's latest session so resubmissions replace stale comments", func() {
+			setupBaseFixtures()
+
+			_, err := db.Exec(`
+				INSERT INTO users (id, username, email, full_name, hierarchy_level_id)
+				VALUES ('int_pwc_member2', 'int_pwc_member2', 'int_pwc_member2@test.com', 'Member Two', 'level-5')
+			`)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = db.Exec(`
+				INSERT INTO health_check_sessions (id, team_id, user_id, date, assessment_period, survey_type, completed)
+				VALUES
+					('int_pwc_resub_old', 'int_pwc_team', 'int_pwc_mgr', '2024-07-10', '2024 - 1st Half', 'post_workshop', true),
+					('int_pwc_resub_new', 'int_pwc_team', 'int_pwc_mgr', '2024-07-20', '2024 - 1st Half', 'post_workshop', true),
+					('int_pwc_other_member', 'int_pwc_team', 'int_pwc_member2', '2024-07-12', '2024 - 1st Half', 'post_workshop', true)
+			`)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = db.Exec(`
+				INSERT INTO health_check_responses (session_id, dimension_id, score, trend, comment)
+				VALUES
+					('int_pwc_resub_old', 'mission', 2, 'stable', 'Superseded comment'),
+					('int_pwc_resub_new', 'mission', 3, 'improving', 'Resubmitted comment'),
+					('int_pwc_other_member', 'mission', 3, 'stable', 'Other member comment')
+			`)
+			Expect(err).NotTo(HaveOccurred())
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/managers/int_pwc_mgr/dashboard/final-post-workshop-comments", nil)
+			req.Header.Set("Authorization", "Bearer "+managerToken)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			Expect(w.Code).To(Equal(http.StatusOK))
+
+			var response map[string]interface{}
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+
+			comments := response["comments"].(map[string]interface{})
+			teamComments := comments["int_pwc_team"].([]interface{})
+			texts := []string{}
+			for _, c := range teamComments {
+				texts = append(texts, c.(map[string]interface{})["comment"].(string))
+			}
+			Expect(texts).To(ConsistOf("Resubmitted comment", "Other member comment"))
+		})
 	})
 })

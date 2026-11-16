@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/user"
@@ -28,10 +29,11 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, e
 	var email, hierarchyLevelID, reportsTo sql.NullString
 	var createdAt, updatedAt sql.NullTime
 	var passwordHash, authType sql.NullString
+	var deactivatedAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
 		FROM users
 		WHERE id = $1
 	`, id).Scan(
@@ -45,6 +47,8 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, e
 		&authType,
 		&createdAt,
 		&updatedAt,
+		&u.IsActive,
+		&deactivatedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -80,6 +84,11 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, e
 		u.UpdatedAt = updatedAt.Time
 	}
 
+	if deactivatedAt.Valid {
+		t := deactivatedAt.Time
+		u.DeactivatedAt = &t
+	}
+
 	// Fetch team IDs
 	teamIDs, err := r.fetchTeamIDs(ctx, id)
 	if err != nil {
@@ -99,12 +108,13 @@ func (r *UserRepository) FindByUsername(ctx context.Context, username string) (*
 	var email, hierarchyLevelID, reportsTo sql.NullString
 	var createdAt, updatedAt sql.NullTime
 	var passwordHash, authType sql.NullString
+	var deactivatedAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
 		FROM users
-		WHERE username = $1
+		WHERE username = $1 AND is_active
 	`, username).Scan(
 		&u.ID,
 		&u.Username,
@@ -116,6 +126,8 @@ func (r *UserRepository) FindByUsername(ctx context.Context, username string) (*
 		&authType,
 		&createdAt,
 		&updatedAt,
+		&u.IsActive,
+		&deactivatedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -151,6 +163,8 @@ func (r *UserRepository) FindByUsername(ctx context.Context, username string) (*
 		u.UpdatedAt = updatedAt.Time
 	}
 
+	applyDeactivation(&u, deactivatedAt)
+
 	// Fetch team IDs
 	teamIDs, err := r.fetchTeamIDs(ctx, u.ID)
 	if err != nil {
@@ -170,12 +184,13 @@ func (r *UserRepository) FindByEmail(ctx context.Context, emailParam string) (*u
 	var emailVal, hierarchyLevelID, reportsTo sql.NullString
 	var createdAt, updatedAt sql.NullTime
 	var passwordHash, authType sql.NullString
+	var deactivatedAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
 		FROM users
-		WHERE email = $1
+		WHERE email = $1 AND is_active
 	`, emailParam).Scan(
 		&u.ID,
 		&u.Username,
@@ -187,6 +202,8 @@ func (r *UserRepository) FindByEmail(ctx context.Context, emailParam string) (*u
 		&authType,
 		&createdAt,
 		&updatedAt,
+		&u.IsActive,
+		&deactivatedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -222,6 +239,8 @@ func (r *UserRepository) FindByEmail(ctx context.Context, emailParam string) (*u
 		u.UpdatedAt = updatedAt.Time
 	}
 
+	applyDeactivation(&u, deactivatedAt)
+
 	// Fetch team IDs
 	teamIDs, err := r.fetchTeamIDs(ctx, u.ID)
 	if err != nil {
@@ -239,7 +258,7 @@ func (r *UserRepository) FindByEmail(ctx context.Context, emailParam string) (*u
 func (r *UserRepository) FindAll(ctx context.Context) ([]*user.User, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
 		FROM users
 		ORDER BY username
 	`)
@@ -255,6 +274,7 @@ func (r *UserRepository) FindAll(ctx context.Context) ([]*user.User, error) {
 		var email, hierarchyLevelID, reportsTo sql.NullString
 		var createdAt, updatedAt sql.NullTime
 		var passwordHash, authType sql.NullString
+		var deactivatedAt sql.NullTime
 
 		err := rows.Scan(
 			&u.ID,
@@ -267,6 +287,8 @@ func (r *UserRepository) FindAll(ctx context.Context) ([]*user.User, error) {
 			&authType,
 			&createdAt,
 			&updatedAt,
+			&u.IsActive,
+			&deactivatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user: %w", err)
@@ -298,12 +320,7 @@ func (r *UserRepository) FindAll(ctx context.Context) ([]*user.User, error) {
 			u.UpdatedAt = updatedAt.Time
 		}
 
-		// Fetch team IDs
-		teamIDs, err := r.fetchTeamIDs(ctx, u.ID)
-		if err != nil {
-			return nil, err
-		}
-		u.TeamIDs = teamIDs
+		applyDeactivation(&u, deactivatedAt)
 
 		// Check if user is admin
 		u.IsAdmin = u.Username == "admin"
@@ -315,77 +332,215 @@ func (r *UserRepository) FindAll(ctx context.Context) ([]*user.User, error) {
 		return nil, fmt.Errorf("rows error: %w", err)
 	}
 
+	// Batch-load every user's team memberships in one query instead of one
+	// round trip per user — with thousands of users, a per-user loop here
+	// turns a sub-second query into several seconds.
+	if len(users) > 0 {
+		userIDs := make([]string, len(users))
+		userMap := make(map[string]*user.User, len(users))
+		for i, u := range users {
+			userIDs[i] = u.ID
+			userMap[u.ID] = u
+			u.TeamIDs = []string{}
+		}
+
+		teamRows, err := r.db.QueryContext(ctx, `
+			SELECT user_id, team_id
+			FROM team_members
+			WHERE user_id = ANY($1) AND is_active
+			ORDER BY user_id, team_id
+		`, pq.Array(userIDs))
+		if err != nil {
+			return nil, fmt.Errorf("failed to batch-load team memberships: %w", err)
+		}
+		defer teamRows.Close()
+
+		for teamRows.Next() {
+			var userID, teamID string
+			if err := teamRows.Scan(&userID, &teamID); err != nil {
+				return nil, fmt.Errorf("failed to scan team membership: %w", err)
+			}
+			if u, ok := userMap[userID]; ok {
+				u.TeamIDs = append(u.TeamIDs, teamID)
+			}
+		}
+		if err := teamRows.Err(); err != nil {
+			return nil, fmt.Errorf("team rows error: %w", err)
+		}
+	}
+
 	return users, nil
 }
 
-// FindByHierarchyLevel retrieves all users at a specific hierarchy level
-func (r *UserRepository) FindByHierarchyLevel(ctx context.Context, levelID string) ([]*user.User, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
-		FROM users
-		WHERE hierarchy_level_id = $1
-		ORDER BY username
-	`, levelID)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to query users by hierarchy level: %w", err)
+// pageOffset returns the zero-based row offset for a 1-based page, or false
+// when the product (page-1)*pageSize cannot be represented as an int. A page
+// below 1 is treated as the first page; a non-positive pageSize has no valid
+// offset.
+func pageOffset(page, pageSize int) (int, bool) {
+	if pageSize < 1 {
+		return 0, false
 	}
-	defer rows.Close()
-
-	return r.scanUsers(ctx, rows)
+	if page < 1 {
+		page = 1
+	}
+	if page-1 > math.MaxInt/pageSize {
+		return 0, false
+	}
+	return (page - 1) * pageSize, true
 }
 
-// FindSubordinates recursively finds all users reporting to a given user.
-// Includes cycle protection (visited array) and depth limit to prevent
-// infinite recursion from bad data in reports_to.
-// Team memberships are batch-loaded in a single query to avoid N+1.
-func (r *UserRepository) FindSubordinates(ctx context.Context, supervisorID string) ([]*user.User, error) {
-	// Use recursive CTE with cycle protection and depth limit
-	rows, err := r.db.QueryContext(ctx, `
-		WITH RECURSIVE subordinates AS (
-			-- Base case: direct reports
-			SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-			       password_hash, auth_type, created_at, updated_at,
-			       1 AS depth, ARRAY[$1::text, id::text] AS visited
-			FROM users
-			WHERE reports_to = $1
+// FindPage retrieves one page of users matching filter, ordered deterministically
+// by username, along with the total count of users matching filter.
+// Filtering and limiting both happen at the SQL level to avoid loading the
+// full user table into memory.
+func (r *UserRepository) FindPage(ctx context.Context, filter user.ListFilter, page, pageSize int) ([]*user.User, int, error) {
+	// page comes straight from the query string, so (page-1)*pageSize can
+	// overflow int and wrap negative, which PostgreSQL rejects as a negative
+	// OFFSET (a 500). pageOffset reports overflow instead of wrapping.
+	offset, offsetOK := pageOffset(page, pageSize)
 
-			UNION ALL
-
-			-- Recursive case: reports of reports
-			-- Stops on cycle (visited array) or max depth (20 levels)
-			SELECT u.id, u.username, u.full_name, u.email, u.hierarchy_level_id, u.reports_to,
-			       u.password_hash, u.auth_type, u.created_at, u.updated_at,
-			       s.depth + 1, s.visited || u.id::text
-			FROM users u
-			INNER JOIN subordinates s ON u.reports_to = s.id
-			WHERE s.depth < 20
-			  AND NOT (u.id::text = ANY(s.visited))
-		)
-		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
-		FROM subordinates
-		ORDER BY username
-	`, supervisorID)
-
+	var total int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM users
+		WHERE ($1 = '' OR hierarchy_level_id = $1)
+		  AND ($2 = '' OR username ILIKE '%' || $2 || '%'
+		            OR full_name ILIKE '%' || $2 || '%'
+		            OR email ILIKE '%' || $2 || '%')
+		  AND ($3 = '' OR ($3 = 'active' AND is_active) OR ($3 = 'inactive' AND NOT is_active))
+	`, filter.HierarchyLevel, filter.Search, filter.Status).Scan(&total)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query subordinates: %w", err)
+		return nil, 0, fmt.Errorf("failed to count users: %w", err)
+	}
+
+	// A page whose offset is not representable is necessarily past the end of
+	// any real result set: answer with the normal empty page (and the true
+	// total) instead of issuing a query with a bogus offset.
+	if !offsetOK {
+		return []*user.User{}, total, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
+		FROM users
+		WHERE ($1 = '' OR hierarchy_level_id = $1)
+		  AND ($2 = '' OR username ILIKE '%' || $2 || '%'
+		            OR full_name ILIKE '%' || $2 || '%'
+		            OR email ILIKE '%' || $2 || '%')
+		  AND ($5 = '' OR ($5 = 'active' AND is_active) OR ($5 = 'inactive' AND NOT is_active))
+		ORDER BY username
+		LIMIT $3 OFFSET $4
+	`, filter.HierarchyLevel, filter.Search, pageSize, offset, filter.Status)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to query users page: %w", err)
 	}
 	defer rows.Close()
 
-	// Scan users without per-user team queries
+	users, err := r.scanUsersWithoutTeamIDs(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Batch-load team memberships for just this page's users in a single
+	// query to avoid an N+1 (one fetchTeamIDs call per row).
+	if len(users) > 0 {
+		userIDs := make([]string, len(users))
+		userMap := make(map[string]*user.User, len(users))
+		for i, u := range users {
+			userIDs[i] = u.ID
+			userMap[u.ID] = u
+			u.TeamIDs = []string{}
+		}
+
+		teamRows, err := r.db.QueryContext(ctx, `
+			SELECT user_id, team_id
+			FROM team_members
+			WHERE user_id = ANY($1) AND is_active
+			ORDER BY user_id, team_id
+		`, pq.Array(userIDs))
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to batch-load team memberships: %w", err)
+		}
+		defer teamRows.Close()
+
+		for teamRows.Next() {
+			var userID, teamID string
+			if err := teamRows.Scan(&userID, &teamID); err != nil {
+				return nil, 0, fmt.Errorf("failed to scan team membership: %w", err)
+			}
+			if u, ok := userMap[userID]; ok {
+				u.TeamIDs = append(u.TeamIDs, teamID)
+			}
+		}
+		if err := teamRows.Err(); err != nil {
+			return nil, 0, fmt.Errorf("team rows error: %w", err)
+		}
+	}
+
+	return users, total, nil
+}
+
+// FindAllLite retrieves minimal fields (no team IDs, no password hash use) for
+// every user. Intended for dropdowns/pickers that need the full user set
+// without the cost of the team-membership joins used by the full listing.
+func (r *UserRepository) FindAllLite(ctx context.Context) ([]*user.User, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, username, full_name, hierarchy_level_id
+		FROM users
+		ORDER BY username
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query users (lite): %w", err)
+	}
+	defer rows.Close()
+
 	var users []*user.User
+	for rows.Next() {
+		var u user.User
+		var hierarchyLevelID sql.NullString
+		if err := rows.Scan(&u.ID, &u.Username, &u.Name, &hierarchyLevelID); err != nil {
+			return nil, fmt.Errorf("failed to scan user (lite): %w", err)
+		}
+		if hierarchyLevelID.Valid {
+			u.HierarchyLevelID = hierarchyLevelID.String
+		}
+		u.IsAdmin = u.Username == "admin"
+		u.TeamIDs = []string{}
+		users = append(users, &u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return users, nil
+}
+
+// scanUsersWithoutTeamIDs scans query results into users without fetching
+// team IDs per row (caller is responsible for batch-loading TeamIDs).
+func (r *UserRepository) scanUsersWithoutTeamIDs(rows *sql.Rows) ([]*user.User, error) {
+	var users []*user.User
+
 	for rows.Next() {
 		var u user.User
 		var email, hierarchyLevelID, reportsTo sql.NullString
 		var createdAt, updatedAt sql.NullTime
 		var passwordHash, authType sql.NullString
+		var deactivatedAt sql.NullTime
 
 		err := rows.Scan(
-			&u.ID, &u.Username, &u.Name, &email,
-			&hierarchyLevelID, &reportsTo, &passwordHash,
-			&authType, &createdAt, &updatedAt,
+			&u.ID,
+			&u.Username,
+			&u.Name,
+			&email,
+			&hierarchyLevelID,
+			&reportsTo,
+			&passwordHash,
+			&authType,
+			&createdAt,
+			&updatedAt,
+			&u.IsActive,
+			&deactivatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user: %w", err)
@@ -415,6 +570,126 @@ func (r *UserRepository) FindSubordinates(ctx context.Context, supervisorID stri
 		if updatedAt.Valid {
 			u.UpdatedAt = updatedAt.Time
 		}
+
+		if deactivatedAt.Valid {
+			t := deactivatedAt.Time
+			u.DeactivatedAt = &t
+		}
+
+		u.IsAdmin = u.Username == "admin"
+
+		users = append(users, &u)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return users, nil
+}
+
+// FindByHierarchyLevel retrieves all users at a specific hierarchy level
+func (r *UserRepository) FindByHierarchyLevel(ctx context.Context, levelID string) ([]*user.User, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
+		FROM users
+		WHERE hierarchy_level_id = $1
+		ORDER BY username
+	`, levelID)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to query users by hierarchy level: %w", err)
+	}
+	defer rows.Close()
+
+	return r.scanUsers(ctx, rows)
+}
+
+// FindSubordinates recursively finds all users reporting to a given user.
+// Includes cycle protection (visited array) and depth limit to prevent
+// infinite recursion from bad data in reports_to.
+// Team memberships are batch-loaded in a single query to avoid N+1.
+func (r *UserRepository) FindSubordinates(ctx context.Context, supervisorID string) ([]*user.User, error) {
+	// Use recursive CTE with cycle protection and depth limit
+	rows, err := r.db.QueryContext(ctx, `
+		WITH RECURSIVE subordinates AS (
+			-- Base case: direct reports
+			SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
+			       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at,
+			       1 AS depth, ARRAY[$1::text, id::text] AS visited
+			FROM users
+			WHERE reports_to = $1
+
+			UNION ALL
+
+			-- Recursive case: reports of reports
+			-- Stops on cycle (visited array) or max depth (20 levels)
+			SELECT u.id, u.username, u.full_name, u.email, u.hierarchy_level_id, u.reports_to,
+			       u.password_hash, u.auth_type, u.created_at, u.updated_at, u.is_active, u.deactivated_at,
+			       s.depth + 1, s.visited || u.id::text
+			FROM users u
+			INNER JOIN subordinates s ON u.reports_to = s.id
+			WHERE s.depth < 20
+			  AND NOT (u.id::text = ANY(s.visited))
+		)
+		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
+		FROM subordinates
+		ORDER BY username
+	`, supervisorID)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to query subordinates: %w", err)
+	}
+	defer rows.Close()
+
+	// Scan users without per-user team queries
+	var users []*user.User
+	for rows.Next() {
+		var u user.User
+		var email, hierarchyLevelID, reportsTo sql.NullString
+		var createdAt, updatedAt sql.NullTime
+		var passwordHash, authType sql.NullString
+		var deactivatedAt sql.NullTime
+
+		err := rows.Scan(
+			&u.ID, &u.Username, &u.Name, &email,
+			&hierarchyLevelID, &reportsTo, &passwordHash,
+			&authType, &createdAt, &updatedAt,
+			&u.IsActive,
+			&deactivatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan user: %w", err)
+		}
+
+		if email.Valid {
+			u.Email = email.String
+		}
+		if hierarchyLevelID.Valid {
+			u.HierarchyLevelID = hierarchyLevelID.String
+		}
+		if reportsTo.Valid {
+			u.ReportsTo = &reportsTo.String
+		}
+		if passwordHash.Valid {
+			u.PasswordHash = passwordHash.String
+		}
+		if authType.Valid {
+			u.AuthType = user.AuthType(authType.String)
+		}
+		if u.AuthType == "" {
+			u.AuthType = user.AuthTypeLocal
+		}
+		if createdAt.Valid {
+			u.CreatedAt = createdAt.Time
+		}
+		if updatedAt.Valid {
+			u.UpdatedAt = updatedAt.Time
+		}
+
+		applyDeactivation(&u, deactivatedAt)
 		u.IsAdmin = u.Username == "admin"
 		u.TeamIDs = []string{} // populated below in batch
 
@@ -436,7 +711,7 @@ func (r *UserRepository) FindSubordinates(ctx context.Context, supervisorID stri
 		teamRows, err := r.db.QueryContext(ctx, `
 			SELECT user_id, team_id
 			FROM team_members
-			WHERE user_id = ANY($1)
+			WHERE user_id = ANY($1) AND is_active
 			ORDER BY user_id, team_id
 		`, pq.Array(userIDs))
 		if err != nil {
@@ -468,7 +743,7 @@ func (r *UserRepository) FindSupervisorChainUp(ctx context.Context, userID strin
 		WITH RECURSIVE supervisors AS (
 			-- Base case: direct supervisor of the given user
 			SELECT u.id, u.username, u.full_name, u.email, u.hierarchy_level_id, u.reports_to,
-			       u.password_hash, u.auth_type, u.created_at, u.updated_at,
+			       u.password_hash, u.auth_type, u.created_at, u.updated_at, u.is_active, u.deactivated_at,
 			       1 AS depth, ARRAY[$1::text, u.id::text] AS visited
 			FROM users u
 			WHERE u.id = (SELECT reports_to FROM users WHERE id = $1)
@@ -478,14 +753,14 @@ func (r *UserRepository) FindSupervisorChainUp(ctx context.Context, userID strin
 			-- Recursive case: supervisor's supervisor
 			-- Stops on cycle (visited array) or max depth (20 levels)
 			SELECT u.id, u.username, u.full_name, u.email, u.hierarchy_level_id, u.reports_to,
-			       u.password_hash, u.auth_type, u.created_at, u.updated_at,
+			       u.password_hash, u.auth_type, u.created_at, u.updated_at, u.is_active, u.deactivated_at,
 			       s.depth + 1, s.visited || u.id::text
 			FROM users u
 			INNER JOIN supervisors s ON u.id = s.reports_to
 			WHERE s.depth < 20 AND NOT (u.id::text = ANY(s.visited))
 		)
 		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at
+		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
 		FROM supervisors
 		ORDER BY depth
 	`, userID)
@@ -669,16 +944,25 @@ func (r *UserRepository) Update(ctx context.Context, u *user.User) error {
 
 	// Update team memberships
 	// Delete existing memberships
-	_, err = tx.ExecContext(ctx, "DELETE FROM team_members WHERE user_id = $1", u.ID)
-	if err != nil {
-		return fmt.Errorf("failed to delete team memberships: %w", err)
+	// Reconcile memberships without destroying history: a team the person was
+	// taken out of becomes an inactive membership (kept), and a team they are
+	// put back into is reactivated. Rewriting the whole set (delete, re-insert)
+	// would erase inactive history and could resurrect an old membership.
+	if _, err = tx.ExecContext(ctx, `
+		UPDATE team_members
+		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
+		WHERE user_id = $1 AND is_active AND team_id <> ALL($2)
+	`, u.ID, pq.Array(u.TeamIDs)); err != nil {
+		return fmt.Errorf("failed to end team memberships: %w", err)
 	}
 
-	// Insert new memberships
 	for _, teamID := range u.TeamIDs {
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO team_members (team_id, user_id)
 			VALUES ($1, $2)
+			ON CONFLICT (team_id, user_id) DO UPDATE
+				SET is_active = true, deactivated_at = NULL
+				WHERE team_members.is_active = false
 		`, teamID, u.ID)
 		if err != nil {
 			return fmt.Errorf("failed to save team membership: %w", err)
@@ -696,6 +980,46 @@ func (r *UserRepository) Update(ctx context.Context, u *user.User) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	return nil
+}
+
+// Deactivate soft-deactivates a person. The users row is kept, so surveys,
+// responses and action items keep resolving to them; their memberships are ended
+// (kept as inactive history) so they stop receiving surveys. Both writes happen
+// in one transaction. deactivated_at keeps its original value if the person was
+// already inactive, which makes repeating the call harmless.
+func (r *UserRepository) Deactivate(ctx context.Context, id string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE users
+		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+	`, id)
+	if err != nil {
+		return fmt.Errorf("failed to deactivate user: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("failed to confirm user deactivation: %w", err)
+	} else if n == 0 {
+		return fmt.Errorf("user not found with provided ID")
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE team_members
+		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
+		WHERE user_id = $1 AND is_active
+	`, id); err != nil {
+		return fmt.Errorf("failed to end memberships of deactivated user: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit user deactivation: %w", err)
+	}
 	return nil
 }
 
@@ -734,6 +1058,42 @@ func (r *UserRepository) Delete(ctx context.Context, id string) error {
 // FindTeamIDsForUser retrieves all team IDs for a user
 func (r *UserRepository) FindTeamIDsForUser(ctx context.Context, userID string) ([]string, error) {
 	return r.fetchTeamIDs(ctx, userID)
+}
+
+// FindTeamIDsForUsers batch-loads team memberships for every given user in a
+// single query — the same "avoid N+1" pattern already used by
+// FindSubordinates, applied here for callers (like the admin users list)
+// that otherwise called FindTeamIDsForUser once per user. Users with no
+// memberships are simply absent from the returned map.
+func (r *UserRepository) FindTeamIDsForUsers(ctx context.Context, userIDs []string) (map[string][]string, error) {
+	result := make(map[string][]string, len(userIDs))
+	if len(userIDs) == 0 {
+		return result, nil
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT user_id, team_id
+		FROM team_members
+		WHERE user_id = ANY($1) AND is_active
+		ORDER BY user_id, team_id
+	`, pq.Array(userIDs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to batch-load team memberships: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var userID, teamID string
+		if err := rows.Scan(&userID, &teamID); err != nil {
+			return nil, fmt.Errorf("failed to scan team membership: %w", err)
+		}
+		result[userID] = append(result[userID], teamID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return result, nil
 }
 
 // FindTeamsWhereUserIsLead retrieves all team IDs where the user is a team lead
@@ -776,7 +1136,7 @@ func (r *UserRepository) fetchTeamIDs(ctx context.Context, userID string) ([]str
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT team_id
 		FROM team_members
-		WHERE user_id = $1
+		WHERE user_id = $1 AND is_active
 		ORDER BY team_id
 	`, userID)
 
@@ -815,6 +1175,7 @@ func (r *UserRepository) scanUsers(ctx context.Context, rows *sql.Rows) ([]*user
 		var email, hierarchyLevelID, reportsTo sql.NullString
 		var createdAt, updatedAt sql.NullTime
 		var passwordHash, authType sql.NullString
+		var deactivatedAt sql.NullTime
 
 		err := rows.Scan(
 			&u.ID,
@@ -827,6 +1188,8 @@ func (r *UserRepository) scanUsers(ctx context.Context, rows *sql.Rows) ([]*user
 			&authType,
 			&createdAt,
 			&updatedAt,
+			&u.IsActive,
+			&deactivatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user: %w", err)
@@ -857,6 +1220,8 @@ func (r *UserRepository) scanUsers(ctx context.Context, rows *sql.Rows) ([]*user
 		if updatedAt.Valid {
 			u.UpdatedAt = updatedAt.Time
 		}
+
+		applyDeactivation(&u, deactivatedAt)
 
 		// Fetch team IDs
 		teamIDs, err := r.fetchTeamIDs(ctx, u.ID)
@@ -916,4 +1281,12 @@ func (r *UserRepository) VerifyPassword(ctx context.Context, username, password 
 	}
 
 	return u, nil
+}
+
+// applyDeactivation records when a soft-deactivated user was deactivated.
+func applyDeactivation(u *user.User, deactivatedAt sql.NullTime) {
+	if deactivatedAt.Valid {
+		t := deactivatedAt.Time
+		u.DeactivatedAt = &t
+	}
 }

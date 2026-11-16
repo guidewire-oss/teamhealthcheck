@@ -44,7 +44,8 @@ var _ = Describe("Integration: Supervisor Chain API", func() {
 		orgRepo := postgres.NewOrganizationRepository(db)
 		userRepo := postgres.NewUserRepository(db)
 		teamRepo := postgres.NewTeamRepository(db)
-		v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, jwtService)
+		healthCheckRepo := postgres.NewHealthCheckRepository(db)
+		v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, healthCheckRepo, jwtService)
 
 		// Insert test users needed for supervisor chain tests
 		_, err = db.Exec(`

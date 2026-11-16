@@ -7,6 +7,7 @@ import { setAuthData, LoginResponse } from '@/lib/auth';
 import { startSSOFlow, OAuthConfig } from '@/lib/sso';
 import { API_BASE_URL } from '@/lib/api/client';
 import { Lock, User, AlertCircle, Users, LogIn } from 'lucide-react';
+import BrandMark from '@/components/BrandMark';
 
 export default function LoginPage() {
   return (
@@ -30,6 +31,8 @@ function LoginPageContent() {
   const [ssoLoading, setSSOLoading] = useState(false);
   const [ssoConfig, setSsoConfig] = useState<OAuthConfig | null>(null);
   const [isDemoMode, setIsDemoMode] = useState(false);
+  const [brandingName, setBrandingName] = useState('');
+  const [brandingLogo, setBrandingLogo] = useState<string | null>(null);
   const config = getOrgConfig();
 
   useEffect(() => {
@@ -38,6 +41,8 @@ function LoginPageContent() {
       .then(data => {
         if (data.appEnv === 'demo') setIsDemoMode(true);
         if (data.sso) setSsoConfig(data.sso as OAuthConfig);
+        if (data.companyName) setBrandingName(data.companyName);
+        if (data.logoURL) setBrandingLogo(data.logoURL);
       })
       .catch(() => {});
   }, []);
@@ -107,6 +112,12 @@ function LoginPageContent() {
           <div className={`grid ${isDemoMode ? 'md:grid-cols-2' : ''}`}>
             {/* Login Form */}
             <div className="p-8">
+              <BrandMark
+                logoUrl={brandingLogo}
+                companyName={brandingName}
+                size="login"
+                className="mb-6"
+              />
               <div className="text-center mb-8">
                 <div className="inline-flex items-center justify-center w-16 h-16 bg-indigo-100 rounded-full mb-4">
                   <Lock className="w-8 h-8 text-indigo-600" />
@@ -183,7 +194,7 @@ function LoginPageContent() {
                 <>
                   <div className="flex items-center gap-3 mt-6">
                     <div className="flex-1 h-px bg-gray-200" />
-                    <span className="text-sm text-gray-400">or</span>
+                    <span className="text-sm text-gray-900">or</span>
                     <div className="flex-1 h-px bg-gray-200" />
                   </div>
                   <button

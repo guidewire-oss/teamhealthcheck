@@ -46,4 +46,4 @@ func RespondMessage(c *gin.Context, status int, message string) {
 // MessageResponse represents a simple message response
 type MessageResponse struct {
 	Message string `json:"message"`
-}
+} //@name MessageResponse

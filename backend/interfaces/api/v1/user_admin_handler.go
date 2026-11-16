@@ -3,6 +3,7 @@ package v1
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/team"
@@ -11,6 +12,11 @@ import (
 	"github.com/agopalakrishnan/teams360/backend/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
+)
+
+const (
+	defaultUsersPageSize = 25
+	maxUsersPageSize     = 100
 )
 
 // UserAdminHandler handles user-related admin HTTP requests
@@ -25,8 +31,47 @@ func NewUserAdminHandler(userRepo user.Repository, teamRepo team.Repository) *Us
 }
 
 // ListUsers handles GET /api/v1/admin/users
+// Supports pagination (page, pageSize) and filtering (search, role) applied
+// at the database level.
+//
+// @Summary List users
+// @Description Returns a page of users, including their profile, hierarchy level, reports-to, team IDs, auth type, and timestamps. Supports pagination and filtering by search text and hierarchy level. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Users
+// @Produce json
+// @Param page query int false "Page number, starting at 1" default(1)
+// @Param pageSize query int false "Users per page (max 100)" default(25) maximum(100)
+// @Param search query string false "Case-insensitive substring match on username, full name or email"
+// @Param role query string false "Exact hierarchy level id, for example level-5"
+// @Param status query string false "Limit to active or inactive people; omit or use all for everyone" Enums(active, inactive, all)
+// @Success 200 {object} dto.UsersResponse
+// @Failure 400 {object} dto.ErrorResponse "Invalid status filter"
+// @Failure 500 {object} dto.ErrorResponse "Failed to query users"
+// @Security BearerAuth
+// @Router /admin/users [get]
 func (h *UserAdminHandler) ListUsers(c *gin.Context) {
-	users, err := h.userRepo.FindAll(c.Request.Context())
+	page := parsePositiveIntParam(c, "page", 1)
+	pageSize := min(parsePositiveIntParam(c, "pageSize", defaultUsersPageSize), maxUsersPageSize)
+
+	status := strings.ToLower(strings.TrimSpace(c.Query("status")))
+	switch status {
+	case "", "all":
+		status = "" // everyone, inactive people included
+	case user.StatusActive, user.StatusInactive:
+	default:
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse{
+			Error:   "Invalid status filter",
+			Message: "status must be one of: active, inactive, all",
+		})
+		return
+	}
+
+	filter := user.ListFilter{
+		Search:         strings.TrimSpace(c.Query("search")),
+		HierarchyLevel: strings.TrimSpace(c.Query("role")),
+		Status:         status,
+	}
+
+	users, total, err := h.userRepo.FindPage(c.Request.Context(), filter, page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
 			Error:   "Failed to query users",
@@ -35,11 +80,10 @@ func (h *UserAdminHandler) ListUsers(c *gin.Context) {
 		return
 	}
 
-	// Convert to DTOs
+	// Convert to DTOs (team IDs already batch-loaded by FindPage)
 	userDTOs := make([]dto.AdminUserDTO, len(users))
 	for i, usr := range users {
-		// Fetch team IDs
-		teamIds, _ := h.userRepo.FindTeamIDsForUser(c.Request.Context(), usr.ID)
+		teamIds := usr.TeamIDs
 		if teamIds == nil {
 			teamIds = []string{}
 		}
@@ -55,16 +99,82 @@ func (h *UserAdminHandler) ListUsers(c *gin.Context) {
 			AuthType:       string(usr.AuthType),
 			CreatedAt:      usr.CreatedAt,
 			UpdatedAt:      usr.UpdatedAt,
+			IsActive:       usr.IsActive,
+			DeactivatedAt:  usr.DeactivatedAt,
 		}
+	}
+
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
 	}
 
 	c.JSON(http.StatusOK, dto.UsersResponse{
 		Users: userDTOs,
-		Total: len(userDTOs),
+		Pagination: dto.PaginationDTO{
+			Page:            page,
+			PageSize:        pageSize,
+			TotalItems:      total,
+			TotalPages:      totalPages,
+			HasNextPage:     page < totalPages,
+			HasPreviousPage: page > 1,
+		},
 	})
 }
 
+// ListUsersLite handles GET /api/v1/admin/users/lite
+// Returns minimal user data for the full user set, for dropdowns/pickers
+// that need every user without the cost of the full paginated listing.
+func (h *UserAdminHandler) ListUsersLite(c *gin.Context) {
+	users, err := h.userRepo.FindAllLite(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Error:   "Failed to query users",
+			Message: err.Error(),
+		})
+		return
+	}
+
+	userDTOs := make([]dto.UserLiteDTO, len(users))
+	for i, usr := range users {
+		userDTOs[i] = dto.UserLiteDTO{
+			ID:             usr.ID,
+			Username:       usr.Username,
+			FullName:       usr.Name,
+			HierarchyLevel: usr.HierarchyLevelID,
+		}
+	}
+
+	c.JSON(http.StatusOK, dto.UsersLiteResponse{Users: userDTOs})
+}
+
+// parsePositiveIntParam reads an integer query param, returning def if it is
+// absent, non-numeric, or not positive.
+func parsePositiveIntParam(c *gin.Context, name string, def int) int {
+	raw := c.Query(name)
+	if raw == "" {
+		return def
+	}
+	val, err := strconv.Atoi(raw)
+	if err != nil || val < 1 {
+		return def
+	}
+	return val
+}
+
 // CreateUser handles POST /api/v1/admin/users
+//
+// @Summary Create a user
+// @Description Creates a new user with a username, email, full name, hierarchy level, and optional reports-to supervisor. AuthType defaults to "local" when omitted; local users must supply a password of at least 4 characters, which is bcrypt-hashed before storage, while SSO users get no password hash. The user ID is auto-generated from the username when the caller does not supply one. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Users
+// @Accept json
+// @Produce json
+// @Param body body dto.CreateUserRequest true "User to create"
+// @Success 201 {object} dto.AdminUserDTO
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body or missing/short password for local user"
+// @Failure 500 {object} dto.ErrorResponse "Failed to hash password or create user"
+// @Security BearerAuth
+// @Router /admin/users [post]
 func (h *UserAdminHandler) CreateUser(c *gin.Context) {
 	var req dto.CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -134,12 +244,27 @@ func (h *UserAdminHandler) CreateUser(c *gin.Context) {
 		AuthType:       string(usr.AuthType),
 		CreatedAt:      usr.CreatedAt,
 		UpdatedAt:      usr.UpdatedAt,
+		IsActive:       true, // a newly created person is always active
 	}
 
 	c.JSON(http.StatusCreated, responseDTO)
 }
 
 // UpdateUser handles PUT /api/v1/admin/users/:id
+//
+// @Summary Update a user
+// @Description Partially updates the user identified by the path ID; only the fields present in the request body are changed. AuthType, if provided, must be "local" or "sso"; switching an SSO user to local requires a new password in the same request, and a password cannot be set while the account remains SSO. When reportsTo or hierarchy level actually changes, the supervisor chains of every team this user leads or supervises are re-derived. Returns a 404 if no user exists with that ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Users
+// @Accept json
+// @Produce json
+// @Param id path string true "User ID"
+// @Param body body dto.UpdateUserRequest true "Fields to update"
+// @Success 200 {object} dto.AdminUserDTO
+// @Failure 400 {object} dto.ErrorResponse "Invalid request body, invalid authType, cannot set password for SSO user, or password required when switching to local auth"
+// @Failure 404 {object} dto.ErrorResponse "User not found"
+// @Failure 500 {object} dto.ErrorResponse "Failed to hash password, update user, or update password"
+// @Security BearerAuth
+// @Router /admin/users/{id} [put]
 func (h *UserAdminHandler) UpdateUser(c *gin.Context) {
 	id := c.Param("id")
 	var req dto.UpdateUserRequest
@@ -256,24 +381,49 @@ func (h *UserAdminHandler) UpdateUser(c *gin.Context) {
 		AuthType:       string(usr.AuthType),
 		CreatedAt:      usr.CreatedAt,
 		UpdatedAt:      usr.UpdatedAt,
+		IsActive:       usr.IsActive,
+		DeactivatedAt:  usr.DeactivatedAt,
 	}
 
 	c.JSON(http.StatusOK, responseDTO)
 }
 
 // DeleteUser handles DELETE /api/v1/admin/users/:id
+//
+// The route keeps its name for existing callers, but people are never
+// hard-deleted: this soft-deactivates the person. They stay in the system and
+// in every historical record, their memberships end, and they stop receiving
+// surveys. A later provider sync that reports them again reactivates them.
+//
+// @Summary Deactivate a user
+// @Description Soft-deactivates the user identified by the path ID. The person is never deleted: they stay listed and searchable as Inactive, their surveys, responses and action items are kept, and their team memberships end. Repeating the call for an already inactive user changes nothing. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.
+// @Tags Admin Users
+// @Produce json
+// @Param id path string true "User ID"
+// @Success 200 {object} dto.MessageResponse
+// @Failure 404 {object} dto.ErrorResponse "User not found"
+// @Failure 500 {object} dto.ErrorResponse "Failed to deactivate user"
+// @Security BearerAuth
+// @Router /admin/users/{id} [delete]
 func (h *UserAdminHandler) DeleteUser(c *gin.Context) {
 	id := c.Param("id")
 
-	if err := h.userRepo.Delete(c.Request.Context(), id); err != nil {
+	if err := h.userRepo.Deactivate(c.Request.Context(), id); err != nil {
+		if strings.Contains(err.Error(), "user not found") {
+			c.JSON(http.StatusNotFound, dto.ErrorResponse{
+				Error:   "User not found",
+				Message: err.Error(),
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
-			Error:   "Failed to delete user",
+			Error:   "Failed to deactivate user",
 			Message: err.Error(),
 		})
 		return
 	}
 
-	dto.RespondMessage(c, http.StatusOK, "User deleted successfully")
+	dto.RespondMessage(c, http.StatusOK, "User deactivated successfully")
 }
 
 // generateUserIDFromUsername creates a URL-safe ID from a username

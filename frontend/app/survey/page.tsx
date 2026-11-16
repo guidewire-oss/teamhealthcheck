@@ -3,22 +3,58 @@
 import { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getCurrentUser, logout } from '@/lib/auth';
-import { HEALTH_DIMENSIONS } from '@/lib/data';
-import { HealthCheckResponse } from '@/lib/types';
-import { getAssessmentPeriod, toCadence } from '@/lib/assessment-period';
-import { submitHealthCheck, formatDateForAPI, HealthCheckAPIError } from '@/lib/api/health-checks';
+import { HealthCheckResponse, HealthDimension } from '@/lib/types';
+import { getAssessmentPeriod, parseAssessmentPeriod, toCadence, formatPeriodLabel } from '@/lib/assessment-period';
+import { submitHealthCheck, getHealthDimensions, formatDateForAPI, HealthCheckAPIError } from '@/lib/api/health-checks';
 import { getTeamInfoCached, TeamInfo, TeamsAPIError } from '@/lib/api/teams';
+import { API_BASE_URL } from '@/lib/api/client';
 import { TrendingUp, TrendingDown, Minus, ChevronLeft, ChevronRight, Save, LogOut, CheckCircle, BarChart3, Loader2, AlertCircle, Info, X } from 'lucide-react';
+import BrandMark from '@/components/BrandMark';
 
 interface SurveyDraft {
   responses: HealthCheckResponse[];
   currentDimension: number;
+  /** Auto-detected period at save time; used only to invalidate stale drafts. */
   assessmentPeriod: string;
+  /** User's selected period at save time (may differ from assessmentPeriod if overridden). */
+  selectedAssessmentPeriod?: string;
   savedAt: string;
 }
 
 function getDraftKey(userId: string, teamId: string): string {
   return `surveyDraft:${userId}:${teamId}`;
+}
+
+/**
+ * The saved draft for this user and team, if it belongs to the period about to be shown;
+ * otherwise null (including when the saved draft is corrupt).
+ *
+ * - A draft saved under a manually selected period belongs to that period: it is resumed
+ *   whenever the same period is shown again, even after today's auto-detected period has moved
+ *   on (a Team Member working on last half-year's survey must not lose it at midnight on July 1).
+ * - A draft saved under the auto-detected period belongs to that period only, so it goes stale
+ *   once the auto-detected period changes.
+ *
+ * @param autoPeriod - Today's auto-detected period for the team
+ * @param shownPeriod - The period the survey is about to open for
+ */
+function loadApplicableDraft(userId: string, teamId: string, autoPeriod: string, shownPeriod: string): SurveyDraft | null {
+  try {
+    const draftJson = localStorage.getItem(getDraftKey(userId, teamId));
+    if (!draftJson) return null;
+    const draft: SurveyDraft = JSON.parse(draftJson);
+    if (!draft.responses || draft.responses.length === 0) return null;
+
+    const draftPeriod = draft.selectedAssessmentPeriod || draft.assessmentPeriod;
+    if (draftPeriod !== shownPeriod) return null;
+
+    const savedUnderManualSelection = draftPeriod !== draft.assessmentPeriod;
+    if (!savedUnderManualSelection && draft.assessmentPeriod !== autoPeriod) return null;
+
+    return draft;
+  } catch {
+    return null; // Ignore corrupt draft
+  }
 }
 
 export default function SurveyPage() {
@@ -42,10 +78,14 @@ function SurveyPageContent() {
   const surveyType = searchParams.get('type') === 'post_workshop' ? 'post_workshop' : 'individual';
   const isPostWorkshop = surveyType === 'post_workshop';
   const preferredTeamId = searchParams.get('team');
+  const preferredPeriod = searchParams.get('period');
   const [user, setUser] = useState<any>(null);
   const [team, setTeam] = useState<TeamInfo | null>(null);
   const [teamLoading, setTeamLoading] = useState(true);
   const [teamError, setTeamError] = useState<string | null>(null);
+  const [dimensions, setDimensions] = useState<HealthDimension[]>([]);
+  const [dimensionsLoading, setDimensionsLoading] = useState(true);
+  const [dimensionsError, setDimensionsError] = useState<string | null>(null);
   const [currentDimension, setCurrentDimension] = useState(0); // Start at first health dimension
   const [responses, setResponses] = useState<HealthCheckResponse[]>([]);
   const [submitted, setSubmitted] = useState(false);
@@ -56,9 +96,27 @@ function SurveyPageContent() {
   const [draftRestored, setDraftRestored] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const draftInitialized = useRef(false);
+  // Guards the actual API call against being fired more than once (e.g. a double click on
+  // "Confirm and submit" before the `submitting` state re-render disables the button).
+  const submitInFlightRef = useRef(false);
   const [teamOptions, setTeamOptions] = useState<{id: string, name: string}[]>([]);
+  const [assessmentPeriod, setAssessmentPeriod] = useState<string>('');
+  const [autoAssessmentPeriod, setAutoAssessmentPeriod] = useState<string>('');
+  const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
   const [showHelpPanel, setShowHelpPanel] = useState(false);
   const helpAutoShown = useRef(false);
+  const [brandingName, setBrandingName] = useState('');
+  const [brandingLogo, setBrandingLogo] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/v1/config`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.companyName) setBrandingName(data.companyName);
+        if (data.logoURL) setBrandingLogo(data.logoURL);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const currentUser = getCurrentUser();
@@ -75,20 +133,19 @@ function SurveyPageContent() {
         getTeamInfoCached(teamId)
           .then((teamInfo) => {
             setTeam(teamInfo);
-            // Restore draft after team info loaded
-            try {
-              const draftJson = localStorage.getItem(getDraftKey(currentUser.id, teamId));
-              if (draftJson) {
-                const draft: SurveyDraft = JSON.parse(draftJson);
-                const currentPeriod = getAssessmentPeriod(new Date(), toCadence(teamInfo.cadence));
-                if (draft.assessmentPeriod === currentPeriod && draft.responses.length > 0) {
-                  setResponses(draft.responses);
-                  setCurrentDimension(draft.currentDimension);
-                  setDraftRestored(true);
-                }
-              }
-            } catch {
-              // Ignore corrupt draft
+            const currentPeriod = getAssessmentPeriod(new Date(), toCadence(teamInfo.cadence));
+            setAutoAssessmentPeriod(currentPeriod);
+            // A period selected on the Member Home page (e.g. a previous period like H1 2026)
+            // arrives via the "period" query param and takes precedence over today's auto-detection.
+            const initialPeriod = preferredPeriod && parseAssessmentPeriod(preferredPeriod) ? preferredPeriod : currentPeriod;
+            setAssessmentPeriod(initialPeriod);
+            // Restore the draft only if it belongs to the period being shown: it must never
+            // overwrite the period the user just chose on Member Home (see loadApplicableDraft).
+            const draft = loadApplicableDraft(currentUser.id, teamId, currentPeriod, initialPeriod);
+            if (draft) {
+              setResponses(draft.responses);
+              setCurrentDimension(draft.currentDimension);
+              setDraftRestored(true);
             }
             draftInitialized.current = true;
             setTeamLoading(false);
@@ -111,7 +168,34 @@ function SurveyPageContent() {
         setTeamError('No team assigned to this user');
       }
     }
-  }, [router, preferredTeamId]);
+  }, [router, preferredTeamId, preferredPeriod]);
+
+  useEffect(() => {
+    getHealthDimensions()
+      .then((dims) => {
+        setDimensions(dims);
+        if (dims.length === 0) {
+          setDimensionsError('No active health dimensions are configured. Please contact your administrator.');
+        }
+
+        // A restored draft may reference dimensions that have since been
+        // deactivated, or a currentDimension index past the newly loaded
+        // (possibly shorter) list. Reconcile both against the active set.
+        const activeIds = new Set(dims.map((d) => d.id));
+        setResponses((prev) => prev.filter((r) => activeIds.has(r.dimensionId)));
+        setCurrentDimension((prev) => {
+          if (dims.length === 0) return 0;
+          return Math.min(prev, dims.length - 1);
+        });
+
+        setDimensionsLoading(false);
+      })
+      .catch((err) => {
+        console.error('Failed to fetch health dimensions:', err);
+        setDimensionsError(err instanceof HealthCheckAPIError ? err.message : 'Failed to load health dimensions');
+        setDimensionsLoading(false);
+      });
+  }, []);
 
   const handleTeamSwitch = (newTeamId: string) => {
     if (!user || !team) return;
@@ -126,6 +210,7 @@ function SurveyPageContent() {
         responses,
         currentDimension,
         assessmentPeriod: getAssessmentPeriod(new Date(), toCadence(team.cadence)),
+        selectedAssessmentPeriod: assessmentPeriod,
         savedAt: new Date().toISOString(),
       };
       localStorage.setItem(getDraftKey(user.id, team.id), JSON.stringify(draft));
@@ -143,20 +228,20 @@ function SurveyPageContent() {
     getTeamInfoCached(newTeamId)
       .then((teamInfo) => {
         setTeam(teamInfo);
-        // Restore draft for the new team
-        try {
-          const draftJson = localStorage.getItem(getDraftKey(user.id, newTeamId));
-          if (draftJson) {
-            const draft: SurveyDraft = JSON.parse(draftJson);
-            const currentPeriod = getAssessmentPeriod(new Date(), toCadence(teamInfo.cadence));
-            if (draft.assessmentPeriod === currentPeriod && draft.responses.length > 0) {
-              setResponses(draft.responses);
-              setCurrentDimension(draft.currentDimension);
-              setDraftRestored(true);
-            }
-          }
-        } catch {
-          // Ignore corrupt draft
+        const currentPeriod = getAssessmentPeriod(new Date(), toCadence(teamInfo.cadence));
+        setAutoAssessmentPeriod(currentPeriod);
+        // Keep the period the user deliberately chose (for example on Member Home): switching
+        // teams must not silently move the submission to a different period. Only when they
+        // were on the auto-detected period does the new team's own current period apply.
+        const choseOtherPeriod =
+          assessmentPeriod !== '' && assessmentPeriod !== autoAssessmentPeriod && !!parseAssessmentPeriod(assessmentPeriod);
+        const shownPeriod = choseOtherPeriod ? assessmentPeriod : currentPeriod;
+        setAssessmentPeriod(shownPeriod);
+        const draft = loadApplicableDraft(user.id, newTeamId, currentPeriod, shownPeriod);
+        if (draft) {
+          setResponses(draft.responses);
+          setCurrentDimension(draft.currentDimension);
+          setDraftRestored(true);
         }
         draftInitialized.current = true;
         setTeamLoading(false);
@@ -179,6 +264,7 @@ function SurveyPageContent() {
         responses,
         currentDimension,
         assessmentPeriod: getAssessmentPeriod(new Date(), toCadence(team.cadence)),
+        selectedAssessmentPeriod: assessmentPeriod,
         savedAt: new Date().toISOString(),
       };
       localStorage.setItem(getDraftKey(user.id, team.id), JSON.stringify(draft));
@@ -187,7 +273,7 @@ function SurveyPageContent() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [responses, currentDimension, user, team, submitted]);
+  }, [responses, currentDimension, user, team, submitted, assessmentPeriod]);
 
   // beforeunload warning when survey has unsaved responses
   useEffect(() => {
@@ -225,7 +311,7 @@ function SurveyPageContent() {
   }, [user, currentDimension]);
 
   const handleScoreSelect = (score: 1 | 2 | 3) => {
-    const dimension = HEALTH_DIMENSIONS[currentDimension];
+    const dimension = dimensions[currentDimension];
     const existingIndex = responses.findIndex(r => r.dimensionId === dimension.id);
 
     if (existingIndex >= 0) {
@@ -246,7 +332,7 @@ function SurveyPageContent() {
   };
 
   const handleTrendSelect = (trend: 'improving' | 'stable' | 'declining') => {
-    const dimension = HEALTH_DIMENSIONS[currentDimension];
+    const dimension = dimensions[currentDimension];
     const existingIndex = responses.findIndex(r => r.dimensionId === dimension.id);
 
     if (existingIndex >= 0) {
@@ -260,7 +346,7 @@ function SurveyPageContent() {
   };
 
   const handleCommentChange = (comment: string) => {
-    const dimension = HEALTH_DIMENSIONS[currentDimension];
+    const dimension = dimensions[currentDimension];
     const existingIndex = responses.findIndex(r => r.dimensionId === dimension.id);
     
     if (existingIndex >= 0) {
@@ -271,7 +357,7 @@ function SurveyPageContent() {
   };
 
   const getCurrentResponse = () => {
-    const dimension = HEALTH_DIMENSIONS[currentDimension];
+    const dimension = dimensions[currentDimension];
     return responses.find(r => r.dimensionId === dimension.id);
   };
 
@@ -284,14 +370,14 @@ function SurveyPageContent() {
       return;
     }
 
-    if ((!isTeamMember || isPostWorkshop) && !currentResponse?.trend) {
+    if (isPostWorkshop && !currentResponse?.trend) {
       setValidationError('Please select a trend (Improving, Stable, or Declining) before continuing.');
       return;
     }
 
     // Clear validation error and proceed
     setValidationError(null);
-    if (currentDimension < HEALTH_DIMENSIONS.length - 1) {
+    if (currentDimension < dimensions.length - 1) {
       setCurrentDimension(currentDimension + 1);
     }
   };
@@ -304,33 +390,54 @@ function SurveyPageContent() {
     }
   };
 
-  const handleSubmit = async () => {
+  // Validates the survey and, if everything is in order, opens the submit-confirmation
+  // modal instead of submitting immediately. The modal's own copy differs depending on
+  // whether the period was overridden, so the actual API call happens in performSubmit.
+  const handleSubmitClick = () => {
     if (!user || !team || submitting) return;
 
+    // Validate the assessment period (auto-detected or manually overridden) is present and well-formed
+    if (!assessmentPeriod || !parseAssessmentPeriod(assessmentPeriod)) {
+      setValidationError('Please select a valid assessment period before submitting.');
+      return;
+    }
+
     // Validate all responses are complete
-    if (responses.length !== HEALTH_DIMENSIONS.length) {
+    if (responses.length !== dimensions.length) {
       setValidationError('Please fill out all health check dimensions before submitting.');
       return;
     }
 
-    // Validate each response has both score and trend (trend only required for non-team-members)
-    const incompleteResponses = responses.filter(r => !r.score || ((!isTeamMember || isPostWorkshop) && !r.trend));
+    // Validate each response has both score and trend (trend only required for post-workshop surveys)
+    const incompleteResponses = responses.filter(r => !r.score || (isPostWorkshop && !r.trend));
     if (incompleteResponses.length > 0) {
-      setValidationError((!isTeamMember || isPostWorkshop)
+      setValidationError(isPostWorkshop
         ? 'Please select both a score and trend for all dimensions before submitting.'
         : 'Please select a score for all dimensions before submitting.'
       );
       return;
     }
 
+    setValidationError(null);
+    setShowSubmitConfirm(true);
+  };
+
+  // Called only from the "Confirm and submit" button in the submit-confirmation modal.
+  // Guarded by submitInFlightRef (checked synchronously, unlike the `submitting` state which
+  // only takes effect on the next render) so the API call fires exactly once even if this
+  // handler is invoked more than once before the button can be disabled.
+  const performSubmit = async () => {
+    if (!user || !team || submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
+
+    setShowSubmitConfirm(false);
     setSubmitting(true);
     setError(null);
     setValidationError(null);
 
     try {
-      // Automatically determine assessment period based on submission date
+      // Submit the final selected period (auto-detected by default, or the user's manual override)
       const submissionDate = new Date();
-      const assessmentPeriod = getAssessmentPeriod(submissionDate, toCadence(team.cadence));
 
       // Submit to backend API using team from API response
       const session = await submitHealthCheck({
@@ -351,12 +458,11 @@ function SurveyPageContent() {
       // Clear draft on successful submit
       localStorage.removeItem(getDraftKey(user.id, team.id));
 
-      // Store session ID and redirect
+      // Show the Thank You page and stay there -- the user leaves only by clicking the
+      // explicit navigation button below, never via an automatic redirect.
       setSessionId(session.id);
       setSubmitted(true);
-
-      // Post-workshop redirects to dashboard, individual to home
-      router.push(isPostWorkshop ? '/dashboard' : '/home');
+      setSubmitting(false);
     } catch (err) {
       console.error('Failed to submit health check:', err);
 
@@ -365,7 +471,8 @@ function SurveyPageContent() {
       } else {
         setError('An unexpected error occurred. Please check your connection and try again.');
       }
-    } finally {
+      // Allow retrying after a failed submission.
+      submitInFlightRef.current = false;
       setSubmitting(false);
     }
   };
@@ -377,8 +484,8 @@ function SurveyPageContent() {
 
   if (!user) return null;
 
-  // Show loading state while fetching team info
-  if (teamLoading) {
+  // Show loading state while fetching team info and health dimensions
+  if (teamLoading || dimensionsLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-xl p-12 max-w-md w-full text-center">
@@ -390,14 +497,21 @@ function SurveyPageContent() {
     );
   }
 
-  // Show error state if team fetch failed
-  if (teamError || !team) {
+  // Show error state if team or health dimensions fetch failed
+  if (teamError || !team || dimensionsError || dimensions.length === 0) {
+    const isTeamIssue = Boolean(teamError || !team);
+    const heading = isTeamIssue ? 'Unable to Load Team' : 'Unable to Load Health Dimensions';
+    const detail = teamError
+      || dimensionsError
+      || (isTeamIssue
+        ? 'No team assigned to your account. Please contact your administrator.'
+        : 'No active health dimensions are configured. Please contact your administrator.');
     return (
       <div className="min-h-screen bg-gradient-to-br from-red-50 to-orange-100 flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-xl p-12 max-w-md w-full text-center">
           <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-6" />
-          <h1 className="text-2xl font-bold text-gray-900 mb-4">Unable to Load Team</h1>
-          <p className="text-gray-600 mb-6">{teamError || 'No team assigned to your account. Please contact your administrator.'}</p>
+          <h1 className="text-2xl font-bold text-gray-900 mb-4">{heading}</h1>
+          <p className="text-gray-600 mb-6">{detail}</p>
           <button
             onClick={handleLogout}
             className="bg-gray-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-gray-700 transition-colors"
@@ -410,8 +524,12 @@ function SurveyPageContent() {
   }
 
   if (submitted) {
+    const isTeamLeadUser = user.hierarchyLevelId === 'level-4';
     return (
-      <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100 flex items-center justify-center p-4">
+      <div
+        data-testid="thank-you-page"
+        className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100 flex items-center justify-center p-4"
+      >
         <div className="bg-white rounded-2xl shadow-xl p-12 max-w-md w-full text-center">
           <CheckCircle className="w-20 h-20 text-green-500 mx-auto mb-6" />
           <h1 className="text-3xl font-bold text-gray-900 mb-4">Thank You!</h1>
@@ -420,30 +538,30 @@ function SurveyPageContent() {
             <p className="text-sm text-gray-500 mb-8 font-mono">Session ID: {sessionId}</p>
           )}
           <button
-            onClick={() => router.push('/home')}
+            data-testid="thank-you-nav-button"
+            onClick={() => router.push(isTeamLeadUser ? '/dashboard' : '/home')}
             className="bg-indigo-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors"
           >
-            Back to Home
+            {isTeamLeadUser ? 'Return to Dashboard' : 'Back to Home'}
           </button>
         </div>
       </div>
     );
   }
 
-  const totalQuestions = HEALTH_DIMENSIONS.length; // Total health dimensions
+  const totalQuestions = dimensions.length; // Total health dimensions
   const currentQuestionNumber = currentDimension + 1; // +1 for display (1-indexed)
   const progress = (currentQuestionNumber / totalQuestions) * 100;
-  const isLastDimension = currentDimension === HEALTH_DIMENSIONS.length - 1;
-  const canSubmit = responses.length === HEALTH_DIMENSIONS.length;
+  const isLastDimension = currentDimension === dimensions.length - 1;
+  const canSubmit = responses.length === dimensions.length;
 
-  const dimension = HEALTH_DIMENSIONS[currentDimension];
+  const dimension = dimensions[currentDimension];
   const currentResponse = getCurrentResponse();
 
   const isTeamLead = user.hierarchyLevelId === 'level-4';
   const isTeamMember = user.hierarchyLevelId === 'level-5';
 
-  // Compute display period from team cadence
-  const surveyPeriod = team ? getAssessmentPeriod(new Date(), toCadence(team.cadence)) : '';
+  const isPeriodOverridden = !!assessmentPeriod && assessmentPeriod !== autoAssessmentPeriod;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
@@ -455,6 +573,7 @@ function SurveyPageContent() {
                 Record your team&apos;s consensus from the workshop discussion
               </div>
             )}
+            <BrandMark logoUrl={brandingLogo} companyName={brandingName} size="header" className="mb-3 [&_span]:text-white" />
             <div className="flex justify-between items-center mb-4">
               <div>
                 <h1 className="text-2xl font-bold">{isPostWorkshop ? 'Post-Workshop Survey' : 'Squad Health Check'}</h1>
@@ -473,8 +592,13 @@ function SurveyPageContent() {
                   ) : (team?.name || 'Unknown Team')}
                 </p>
                 <p className={`${isPostWorkshop ? 'text-amber-100' : 'text-indigo-100'} text-sm mt-1`}>
-                  Period: {surveyPeriod}
+                  Period: <span data-testid="selected-period" className="font-semibold">{formatPeriodLabel(assessmentPeriod)}</span>
                   {team?.cadence && ` • ${team.cadence.charAt(0).toUpperCase() + team.cadence.slice(1)} Check`}
+                  {isPeriodOverridden && (
+                    <span data-testid="period-overridden-label" className="ml-1 italic">
+                      Overridden — auto-detected period: {formatPeriodLabel(autoAssessmentPeriod)}
+                    </span>
+                  )}
                 </p>
               </div>
               <div className="text-right">
@@ -626,7 +750,7 @@ function SurveyPageContent() {
 
             {currentResponse?.score && (
               <div className="mb-8 p-6 bg-gray-50 rounded-xl">
-                {(!isTeamMember || isPostWorkshop) && (
+                {isPostWorkshop && (
                   <>
                     <h3 className="font-semibold text-gray-900 mb-4">Trend</h3>
                     <div className="flex gap-4">
@@ -673,7 +797,7 @@ function SurveyPageContent() {
                   </>
                 )}
 
-                <div className={!isTeamMember ? 'mt-4' : ''}>
+                <div className={isPostWorkshop ? 'mt-4' : ''}>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Comments (optional)
                   </label>
@@ -690,7 +814,7 @@ function SurveyPageContent() {
                     rows={3}
                     placeholder="Add any additional context..."
                   />
-                  <p className={`text-xs mt-1 text-right ${(currentResponse?.comment?.length || 0) >= 950 ? 'text-red-500' : 'text-gray-400'}`}>
+                  <p className={`text-xs mt-1 text-right ${(currentResponse?.comment?.length || 0) >= 950 ? 'text-red-500' : 'text-gray-900'}`}>
                     {currentResponse?.comment?.length || 0}/1000
                   </p>
                 </div>
@@ -733,7 +857,7 @@ function SurveyPageContent() {
 
               {isLastDimension ? (
                 <button
-                  onClick={handleSubmit}
+                  onClick={handleSubmitClick}
                   disabled={submitting}
                   type="submit"
                   className={`flex items-center gap-2 px-6 py-3 rounded-lg font-semibold transition-colors ${
@@ -772,6 +896,53 @@ function SurveyPageContent() {
           </div>
         </div>
       </div>
+
+      {showSubmitConfirm && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          data-testid="submit-confirm-modal"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="submit-confirm-title"
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="submit-confirm-title" data-testid="submit-confirm-title" className="text-lg font-semibold text-gray-900 mb-3">
+              {isPeriodOverridden ? 'Confirm assessment period' : 'Confirm health check submission'}
+            </h2>
+            <p data-testid="submit-confirm-message" className="text-sm text-gray-600 mb-6">
+              {isPeriodOverridden
+                ? `You selected ${formatPeriodLabel(assessmentPeriod)} instead of the automatically detected period ${formatPeriodLabel(autoAssessmentPeriod)}. ` +
+                  `After submission, this health check will be recorded for ${formatPeriodLabel(assessmentPeriod)}. ` +
+                  `Please confirm that this is the correct assessment period.`
+                : `Your health check will be submitted for ${formatPeriodLabel(assessmentPeriod)}. Please verify the assessment period before continuing.`}
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowSubmitConfirm(false)}
+                data-testid="submit-confirm-cancel"
+                className="px-4 py-2 text-sm font-semibold rounded-lg text-gray-700 bg-gray-100 hover:bg-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={performSubmit}
+                disabled={submitting}
+                data-testid="submit-confirm-accept"
+                className={`px-4 py-2 text-sm font-semibold rounded-lg text-white transition-colors ${
+                  submitting ? 'bg-gray-300 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'
+                }`}
+              >
+                Confirm and submit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

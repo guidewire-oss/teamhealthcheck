@@ -75,9 +75,10 @@ var _ = Describe("Admin API", func() {
 		orgRepo := postgres.NewOrganizationRepository(db)
 		userRepo := postgres.NewUserRepository(db)
 		teamRepo := postgres.NewTeamRepository(db)
+		healthCheckRepo := postgres.NewHealthCheckRepository(db)
 
 		router = gin.New()
-		v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, jwtService)
+		v1.SetupAdminRoutes(router, orgRepo, userRepo, teamRepo, healthCheckRepo, jwtService)
 	})
 
 	AfterEach(func() {
@@ -144,19 +145,226 @@ var _ = Describe("Admin API", func() {
 	})
 
 	Describe("GET /api/v1/admin/users", func() {
-		It("should return all users with total count", func() {
-			req := httptest.NewRequest("GET", "/api/v1/admin/users", nil)
+		doListUsersRequest := func(query string) *httptest.ResponseRecorder {
+			req := httptest.NewRequest("GET", "/api/v1/admin/users"+query, nil)
+			req.Header.Set("Authorization", "Bearer "+adminToken)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			return w
+		}
+
+		It("should apply default pagination values when no query params are given", func() {
+			w := doListUsersRequest("")
+			Expect(w.Code).To(Equal(http.StatusOK))
+
+			var response dto.UsersResponse
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.Users).NotTo(BeEmpty())
+			Expect(response.Pagination.Page).To(Equal(1))
+			Expect(response.Pagination.PageSize).To(Equal(25))
+			Expect(len(response.Users)).To(BeNumerically("<=", 25))
+		})
+
+		It("should validate and clamp invalid page/pageSize values", func() {
+			// Negative/zero page falls back to page 1
+			w := doListUsersRequest("?page=0")
+			var response dto.UsersResponse
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.Pagination.Page).To(Equal(1))
+
+			// Non-numeric page falls back to default
+			w = doListUsersRequest("?page=abc")
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.Pagination.Page).To(Equal(1))
+
+			// pageSize above the max is clamped to 100
+			w = doListUsersRequest("?pageSize=500")
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.Pagination.PageSize).To(Equal(100))
+
+			// Negative pageSize falls back to default
+			w = doListUsersRequest("?pageSize=-5")
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.Pagination.PageSize).To(Equal(25))
+		})
+
+		It("should paginate at the database level with deterministic ordering and correct metadata", func() {
+			// Seed 3 known test users (alphabetically ordered usernames) isolated via search
+			for i, uname := range []string{"pagealice", "pagebob", "pagecarl"} {
+				_, err := db.Exec(`
+					INSERT INTO users (id, username, email, full_name, hierarchy_level_id, password_hash)
+					VALUES ($1, $2, $3, $4, 'level-5', 'x')
+				`, "test-page-user-"+uname, uname, uname+"@test.com", "Page User "+string(rune('A'+i)))
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Page 1 of 2 (pageSize=2) within the isolated search scope
+			w := doListUsersRequest("?search=page&page=1&pageSize=2")
+			var response dto.UsersResponse
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.Users).To(HaveLen(2))
+			Expect(response.Users[0].Username).To(Equal("pagealice"))
+			Expect(response.Users[1].Username).To(Equal("pagebob"))
+			Expect(response.Pagination.TotalItems).To(Equal(3))
+			Expect(response.Pagination.TotalPages).To(Equal(2))
+			Expect(response.Pagination.HasNextPage).To(BeTrue())
+			Expect(response.Pagination.HasPreviousPage).To(BeFalse())
+
+			// Page 2 of 2
+			w = doListUsersRequest("?search=page&page=2&pageSize=2")
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.Users).To(HaveLen(1))
+			Expect(response.Users[0].Username).To(Equal("pagecarl"))
+			Expect(response.Pagination.HasNextPage).To(BeFalse())
+			Expect(response.Pagination.HasPreviousPage).To(BeTrue())
+		})
+
+		Describe("search", func() {
+			// Three users, each carrying a search token in exactly ONE searchable
+			// field, plus a decoy matching none. A search only counts as covering
+			// a field if it finds the user holding the token there and excludes
+			// everyone else -- so a regression that dropped the full-name or email
+			// branch of the SQL (leaving only username) cannot pass.
+			BeforeEach(func() {
+				seed := func(id, username, email, fullName string) {
+					_, err := db.Exec(`
+						INSERT INTO users (id, username, email, full_name, hierarchy_level_id, password_hash)
+						VALUES ($1, $2, $3, $4, 'level-5', 'x')
+					`, id, username, email, fullName)
+					Expect(err).NotTo(HaveOccurred())
+				}
+				seed("test-srch-username", "zqusernameonly", "plain.one@test.com", "Plain One")
+				seed("test-srch-fullname", "plaintwo", "plain.two@test.com", "Zqfullnameonly Two")
+				seed("test-srch-email", "plainthree", "zqemailonly@test.com", "Plain Three")
+				seed("test-srch-decoy", "plainfour", "plain.four@test.com", "Plain Four")
+			})
+
+			usernamesFor := func(query string) ([]string, int) {
+				w := doListUsersRequest(query)
+				Expect(w.Code).To(Equal(http.StatusOK))
+				var response dto.UsersResponse
+				Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+				names := make([]string, len(response.Users))
+				for i, u := range response.Users {
+					names[i] = u.Username
+				}
+				return names, response.Pagination.TotalItems
+			}
+
+			It("matches a term found only in the username", func() {
+				names, total := usernamesFor("?search=zqusernameonly")
+				Expect(names).To(ConsistOf("zqusernameonly"))
+				Expect(total).To(Equal(1))
+			})
+
+			It("matches a term found only in the full name", func() {
+				names, total := usernamesFor("?search=zqfullnameonly")
+				Expect(names).To(ConsistOf("plaintwo"))
+				Expect(names).NotTo(ContainElements("zqusernameonly", "plainthree", "plainfour"))
+				Expect(total).To(Equal(1))
+			})
+
+			It("matches a term found only in the email", func() {
+				names, total := usernamesFor("?search=zqemailonly")
+				Expect(names).To(ConsistOf("plainthree"))
+				Expect(names).NotTo(ContainElements("zqusernameonly", "plaintwo", "plainfour"))
+				Expect(total).To(Equal(1))
+			})
+
+			It("is case-insensitive in every field", func() {
+				names, _ := usernamesFor("?search=ZQUSERNAMEONLY")
+				Expect(names).To(ConsistOf("zqusernameonly"))
+				names, _ = usernamesFor("?search=ZqFullNameOnly")
+				Expect(names).To(ConsistOf("plaintwo"))
+				names, _ = usernamesFor("?search=ZQEMAILONLY")
+				Expect(names).To(ConsistOf("plainthree"))
+			})
+
+			It("returns nothing, with a zero total, for a term in no field", func() {
+				names, total := usernamesFor("?search=zqnomatchanywhere")
+				Expect(names).To(BeEmpty())
+				Expect(total).To(Equal(0))
+			})
+
+			It("keeps pagination working on the filtered set", func() {
+				// 'plain' appears in all four seeded users' fields; page them by 3.
+				w := doListUsersRequest("?search=plain&pageSize=3&page=2")
+				var response dto.UsersResponse
+				Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+				Expect(response.Pagination.TotalItems).To(BeNumerically(">=", 4))
+				Expect(response.Pagination.Page).To(Equal(2))
+				Expect(response.Pagination.HasPreviousPage).To(BeTrue())
+			})
+		})
+
+		It("should filter by role (hierarchy level)", func() {
+			_, err := db.Exec(`
+				INSERT INTO users (id, username, email, full_name, hierarchy_level_id, password_hash)
+				VALUES ('test-role-user-1', 'roleuser1', 'roleuser1@test.com', 'Role User', 'level-1', 'x')
+			`)
+			Expect(err).NotTo(HaveOccurred())
+
+			w := doListUsersRequest("?search=roleuser1&role=level-1")
+			var response dto.UsersResponse
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.Users).To(HaveLen(1))
+
+			w = doListUsersRequest("?search=roleuser1&role=level-2")
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+			Expect(response.Users).To(BeEmpty())
+		})
+	})
+
+	Describe("GET /api/v1/admin/users/lite", func() {
+		It("should return minimal fields for every user without team data", func() {
+			_, err := db.Exec(`
+				INSERT INTO users (id, username, email, full_name, hierarchy_level_id, password_hash)
+				VALUES ('test-lite-user-1', 'liteuser1', 'liteuser1@test.com', 'Lite User', 'level-5', 'x')
+			`)
+			Expect(err).NotTo(HaveOccurred())
+
+			req := httptest.NewRequest("GET", "/api/v1/admin/users/lite", nil)
 			req.Header.Set("Authorization", "Bearer "+adminToken)
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, req)
 
 			Expect(w.Code).To(Equal(http.StatusOK))
 
-			var response dto.UsersResponse
-			err := json.Unmarshal(w.Body.Bytes(), &response)
-			Expect(err).NotTo(HaveOccurred())
+			// Decode as raw JSON first: unmarshalling straight into
+			// UsersLiteResponse would silently drop any extra keys, so it cannot
+			// prove the endpoint returns ONLY the lite shape. Key order in the
+			// payload is irrelevant to these assertions.
+			var raw map[string]json.RawMessage
+			Expect(json.Unmarshal(w.Body.Bytes(), &raw)).To(Succeed())
+			Expect(raw).To(HaveLen(1), "the only top-level key is users")
+			Expect(raw).To(HaveKey("users"))
+
+			var rawUsers []map[string]json.RawMessage
+			Expect(json.Unmarshal(raw["users"], &rawUsers)).To(Succeed())
+			Expect(rawUsers).NotTo(BeEmpty())
+			for _, u := range rawUsers {
+				keys := make([]string, 0, len(u))
+				for k := range u {
+					keys = append(keys, k)
+				}
+				// Exactly these four; email, teamIds, reportsTo, authType, timestamps,
+				// or anything else added later would fail here.
+				Expect(keys).To(ConsistOf("id", "username", "fullName", "hierarchyLevel"))
+			}
+
+			var response dto.UsersLiteResponse
+			Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
 			Expect(response.Users).NotTo(BeEmpty())
-			Expect(response.Total).To(Equal(len(response.Users)))
+
+			found := false
+			for _, u := range response.Users {
+				if u.Username == "liteuser1" {
+					found = true
+					Expect(u.FullName).To(Equal("Lite User"))
+					Expect(u.HierarchyLevel).To(Equal("level-5"))
+				}
+			}
+			Expect(found).To(BeTrue())
 		})
 	})
 

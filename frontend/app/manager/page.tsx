@@ -1,15 +1,18 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { getCurrentUser, logout, authenticatedFetch, User } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { API_BASE_URL } from '@/lib/api/client';
 import { getAssessmentPeriods, getManagerFinalPostWorkshopComments, getManagerMemberOverview } from '@/lib/api/health-checks';
 import type { PostWorkshopComment } from '@/lib/api-types';
+import { formatScore } from '@/lib/format';
+import { formatPeriodLabel, describePeriodOptions } from '@/lib/assessment-period';
 import { LogOut, Users, ChevronDown, AlertCircle, Activity, LineChart as LineChartIcon, CheckCircle, Clock, ClipboardList, TrendingUp, TrendingDown, Minus, LayoutGrid, Download, ListTodo } from 'lucide-react';
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import OnboardingModal from '@/components/OnboardingModal';
+import BrandMark from '@/components/BrandMark';
 import { listManagerTeamsActionSummary, TeamActionSummary } from '@/lib/api/action-items';
 import * as XLSX from 'xlsx';
 import DocsLink from '@/components/DocsLink';
@@ -46,6 +49,8 @@ interface RadarData {
 
 interface TrendData {
   period: string;
+  /** User-facing H1/H2 label for `period`; never a quarter label. */
+  label: string;
   [key: string]: string | number;
 }
 
@@ -141,6 +146,11 @@ export default function ManagerPage() {
   const [subordinates, setSubordinates] = useState<Subordinate[]>([]);
 
   // Pre-group subordinates by parent and teams by ID for O(1) lookups in hierarchy tree
+  // Labels for the period filter. Historical quarter labels fold into half-years, so "2026 Q1"
+  // and "2026 Q2" would both read "H1 2026" while each still filters on its own raw period;
+  // describePeriodOptions keeps them apart.
+  const periodLabels = useMemo(() => describePeriodOptions(assessmentPeriodOptions), [assessmentPeriodOptions]);
+
   const childrenByParent = useMemo(() => {
     const map = new Map<string, Subordinate[]>();
     for (const sub of subordinates) {
@@ -174,6 +184,10 @@ export default function ManagerPage() {
   const [memberOverviewTeams, setMemberOverviewTeams] = useState<TeamHealthSummary[]>([]);
   const [memberOverviewLoading, setMemberOverviewLoading] = useState(false);
   const [memberOverviewError, setMemberOverviewError] = useState<string | null>(null);
+  // Monotonic request ids: only the most recent request may update state, so a slow
+  // earlier response (e.g. for a previous assessment period) cannot overwrite newer data.
+  const commentsRequestId = useRef(0);
+  const memberOverviewRequestId = useRef(0);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [actionSummary, setActionSummary] = useState<TeamActionSummary[]>([]);
   const [actionSummaryLoading, setActionSummaryLoading] = useState(false);
@@ -234,16 +248,21 @@ export default function ManagerPage() {
   };
 
   const fetchFinalPostWorkshopComments = async (managerId: string, assessmentPeriod: string) => {
+    const requestId = ++commentsRequestId.current;
     setPostWorkshopCommentsLoading(true);
     setPostWorkshopCommentsError(null);
     try {
       const data = await getManagerFinalPostWorkshopComments(managerId, assessmentPeriod || undefined);
+      if (requestId !== commentsRequestId.current) return;
       setPostWorkshopComments(data.comments || {});
     } catch (err) {
+      if (requestId !== commentsRequestId.current) return;
       setPostWorkshopCommentsError('Unable to load final post-workshop comments.');
       console.error('Error fetching final post-workshop comments:', err);
     } finally {
-      setPostWorkshopCommentsLoading(false);
+      if (requestId === commentsRequestId.current) {
+        setPostWorkshopCommentsLoading(false);
+      }
     }
   };
 
@@ -322,7 +341,7 @@ export default function ManagerPage() {
         // Frontend: [{ period, mission: 2.5, value: 3.0, ... }]
         if (data.periods && Array.isArray(data.periods) && data.dimensions) {
           const transformed = data.periods.map((period: string, idx: number) => {
-            const row: TrendData = { period };
+            const row: TrendData = { period, label: formatPeriodLabel(period) };
             (data.dimensions || []).forEach((dim: { dimensionId: string; scores: number[] }) => {
               row[dim.dimensionId] = dim.scores[idx] || 0;
             });
@@ -342,17 +361,22 @@ export default function ManagerPage() {
   };
 
   const fetchMemberOverview = async (managerId: string, teamId: string, assessmentPeriod: string) => {
+    const requestId = ++memberOverviewRequestId.current;
     setMemberOverviewLoading(true);
     setMemberOverviewError(null);
     try {
       const data = await getManagerMemberOverview(managerId, teamId || undefined, assessmentPeriod || undefined);
+      if (requestId !== memberOverviewRequestId.current) return;
       setMemberOverviewTeams(data.teams || []);
     } catch (err) {
+      if (requestId !== memberOverviewRequestId.current) return;
       setMemberOverviewError('Unable to load member survey overview.');
       console.error('Error fetching member overview:', err);
       setMemberOverviewTeams([]);
     } finally {
-      setMemberOverviewLoading(false);
+      if (requestId === memberOverviewRequestId.current) {
+        setMemberOverviewLoading(false);
+      }
     }
   };
 
@@ -386,6 +410,10 @@ export default function ManagerPage() {
       setPostWorkshopCommentsError(null);
       if (expandedTeam) {
         fetchFinalPostWorkshopComments(user.id, period);
+      } else {
+        // No refetch follows: discard any in-flight response for the previous period.
+        commentsRequestId.current++;
+        setPostWorkshopCommentsLoading(false);
       }
     }
   };
@@ -404,7 +432,7 @@ export default function ManagerPage() {
   };
 
   const formatHealthScore = (score: number) => {
-    return score.toFixed(1);
+    return formatScore(score);
   };
 
   const getAvgBadgeStyle = (avg: number): { backgroundColor: string; color: string } =>
@@ -423,7 +451,7 @@ export default function ManagerPage() {
 
   const handleExportToExcel = async () => {
     if (!dashboardData) return;
-    const periodLabel = selectedPeriod || 'All Periods';
+    const periodLabel = selectedPeriod ? formatPeriodLabel(selectedPeriod) : 'All Periods';
 
     // Sheet 1: Team summary
     const teamRows = dashboardData.teams.map(t => ({
@@ -481,6 +509,7 @@ export default function ManagerPage() {
   const dimSparklines = HEALTH_DIMENSIONS.map((dim) => {
     const data = trendsData.map((t) => ({
       period: t.period as string,
+      label: t.label as string,
       value: (t[dim.id] as number) || 0,
     }));
     const validData = data.filter((p) => p.value > 0);
@@ -500,20 +529,14 @@ export default function ManagerPage() {
       {/* Header */}
       <div className="bg-white shadow-sm border-b">
         <div className="container mx-auto px-4 py-4">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-4">
-              {brandingLogo ? (
-                <img src={brandingLogo} alt="Company logo" className="w-8 h-8 object-contain rounded" />
-              ) : (
-                <Users className="w-8 h-8 text-indigo-600" />
-              )}
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900">{roleLabel} Dashboard</h1>
-                <p className="text-gray-500">{brandingName ? `${brandingName} Health Overview` : 'Team Health Overview'}</p>
-              </div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-start">
+            <div className="min-w-0">
+              <BrandMark logoUrl={brandingLogo} companyName={brandingName} size="header" className="mb-2" />
+              <h1 className="text-2xl font-bold text-gray-900">{roleLabel} Dashboard</h1>
+              <p className="text-gray-500 mt-1">Team Health Overview</p>
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 flex-wrap">
               <div className="text-right">
                 <p className="text-sm font-semibold text-gray-900">{user.name}</p>
                 <p className="text-xs text-gray-500">{roleLabel}</p>
@@ -560,7 +583,7 @@ export default function ManagerPage() {
             >
               <option value="">All Periods</option>
               {assessmentPeriodOptions.map((period) => (
-                <option key={period} value={period}>{period}</option>
+                <option key={period} value={period}>{periodLabels[period] ?? formatPeriodLabel(period)}</option>
               ))}
             </select>
             {dashboardData && dashboardData.teams.length > 0 && (
@@ -728,7 +751,6 @@ export default function ManagerPage() {
                   <RadarChart data={radarData}>
                     <PolarGrid />
                     <PolarAngleAxis dataKey="dimension" />
-                    <PolarRadiusAxis domain={[0, 3]} />
                     <Radar
                       name="Health Score"
                       dataKey="averageScore"
@@ -736,7 +758,11 @@ export default function ManagerPage() {
                       fill="#6366f1"
                       fillOpacity={0.6}
                     />
-                    <Tooltip />
+                    <PolarRadiusAxis domain={[0, 3]} tick={{ fill: '#334155', fontSize: 12, fontWeight: 600 }} />
+                    <Tooltip
+                      formatter={(value: number, name: string) => [formatScore(Number(value)), name]}
+                      itemStyle={{ color: '#000000' }}
+                    />
                     <Legend />
                   </RadarChart>
                 </ResponsiveContainer>
@@ -893,7 +919,7 @@ export default function ManagerPage() {
                                 data={data}
                                 margin={{ top: 4, right: 4, left: 4, bottom: 4 }}
                               >
-                                <XAxis dataKey="period" hide />
+                                <XAxis dataKey="label" hide />
                                 <YAxis domain={[1, 3]} hide />
                                 <Line
                                   type="monotone"
@@ -929,7 +955,7 @@ export default function ManagerPage() {
                           {/* Latest period label */}
                           {data.length > 0 && (
                             <p className="text-xs text-gray-400 truncate text-right">
-                              {data[data.length - 1].period}
+                              {data[data.length - 1].label}
                             </p>
                           )}
                         </div>
@@ -942,7 +968,7 @@ export default function ManagerPage() {
                     <ResponsiveContainer width="100%" height={500}>
                       <LineChart data={trendsData}>
                         <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="period" />
+                        <XAxis dataKey="label" />
                         <YAxis domain={[0, 3]} />
                         <Tooltip />
                         <Legend />
@@ -1338,7 +1364,7 @@ export default function ManagerPage() {
             {dashboardData.assessmentPeriod && (
               <div className="mt-3 pt-3 border-t border-indigo-200">
                 <span className="text-indigo-700 font-medium">Filtered by:</span>{' '}
-                <span className="text-indigo-900 font-bold">{dashboardData.assessmentPeriod}</span>
+                <span className="text-indigo-900 font-bold">{formatPeriodLabel(dashboardData.assessmentPeriod)}</span>
               </div>
             )}
           </div>

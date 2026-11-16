@@ -80,7 +80,7 @@ var _ = Describe("E2E: VP Dashboard Visualizations", Label("e2e"), func() {
 					INSERT INTO health_check_sessions (id, team_id, user_id, date, assessment_period, completed)
 					VALUES
 						('e2e_vp_sess1', 'e2e_vp_team1', 'e2e_vp_radar', $1, '2024 - 2nd Half', true),
-						('e2e_vp_sess2', 'e2e_vp_team2', 'e2e_vp_radar', $1, '2024 - 2nd Half', true)
+						('e2e_vp_sess2', 'e2e_vp_team2', 'e2e_vp_radar2', $1, '2024 - 2nd Half', true)
 				`, currentDate)
 				Expect(err).NotTo(HaveOccurred())
 

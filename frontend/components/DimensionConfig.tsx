@@ -4,7 +4,6 @@ import { useState, useEffect } from "react";
 import {
   Plus,
   Edit2,
-  Trash2,
   Save,
   X,
   AlertCircle,
@@ -15,7 +14,6 @@ import {
   getDimensions,
   createDimension,
   updateDimension,
-  deleteDimension,
   HealthDimension,
   CreateDimensionRequest,
   UpdateDimensionRequest,
@@ -42,10 +40,6 @@ export default function DimensionConfig() {
   });
   const [formError, setFormError] = useState<string | null>(null);
   const [formSubmitting, setFormSubmitting] = useState(false);
-
-  // Delete confirmation
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Toggle state
   const [togglingId, setTogglingId] = useState<string | null>(null);
@@ -206,23 +200,6 @@ export default function DimensionConfig() {
     }
   };
 
-  const handleDelete = async () => {
-    if (!deleteConfirmId) return;
-
-    setDeletingId(deleteConfirmId);
-    try {
-      await deleteDimension(deleteConfirmId);
-      clearAdminCache();
-      await loadDimensions();
-      setDeleteConfirmId(null);
-    } catch (err: any) {
-      console.error("Failed to delete dimension:", err);
-      setError(err.message || "Failed to delete dimension");
-    } finally {
-      setDeletingId(null);
-    }
-  };
-
   if (loading) {
     return (
       <div className="text-center py-8">
@@ -317,18 +294,6 @@ export default function DimensionConfig() {
                 className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
               >
                 <Edit2 className="w-4 h-4" />
-              </button>
-              <button
-                data-testid="delete-dimension-btn"
-                onClick={() => setDeleteConfirmId(dimension.id)}
-                disabled={deletingId === dimension.id}
-                className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
-              >
-                {deletingId === dimension.id ? (
-                  <div className="w-4 h-4 animate-spin rounded-full border-2 border-red-600 border-t-transparent" />
-                ) : (
-                  <Trash2 className="w-4 h-4" />
-                )}
               </button>
             </div>
           </div>
@@ -581,43 +546,25 @@ export default function DimensionConfig() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Weight
-                  </label>
-                  <input
-                    type="number"
-                    data-testid="dimension-weight-input"
-                    value={formData.weight}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        weight: parseFloat(e.target.value) || 1.0,
-                      })
-                    }
-                    min="0"
-                    max="10"
-                    step="0.1"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                  />
-                </div>
-
-                <div className="flex items-center">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.isActive}
-                      onChange={(e) =>
-                        setFormData({ ...formData, isActive: e.target.checked })
-                      }
-                      className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
-                    />
-                    <span className="text-sm font-medium text-gray-700">
-                      Active
-                    </span>
-                  </label>
-                </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Weight
+                </label>
+                <input
+                  type="number"
+                  data-testid="dimension-weight-input"
+                  value={formData.weight}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      weight: parseFloat(e.target.value) || 1.0,
+                    })
+                  }
+                  min="0"
+                  max="10"
+                  step="0.1"
+                  className="w-full sm:max-w-[160px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                />
               </div>
             </div>
 
@@ -643,42 +590,6 @@ export default function DimensionConfig() {
         </div>
       )}
 
-      {/* Delete Confirmation Modal */}
-      {deleteConfirmId && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              Deactivate Dimension
-            </h3>
-            <p className="text-gray-600 mb-4">
-              Are you sure you want to deactivate the dimension{" "}
-              <strong>
-                {dimensions.find((d) => d.id === deleteConfirmId)?.name}
-              </strong>
-              ?
-            </p>
-            <p className="text-sm text-gray-500 mb-6">
-              The dimension will be hidden from new surveys but historical data will be preserved. You can reactivate it later using the toggle button.
-            </p>
-            <div className="flex gap-4 justify-end">
-              <button
-                onClick={() => setDeleteConfirmId(null)}
-                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                data-testid="confirm-delete-btn"
-                onClick={handleDelete}
-                disabled={deletingId !== null}
-                className="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors disabled:opacity-50"
-              >
-                {deletingId ? "Deactivating..." : "Deactivate"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

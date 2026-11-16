@@ -38,7 +38,7 @@ export interface User {
 export interface Team {
   id: string;
   name: string;
-  cadence: 'monthly' | 'quarterly' | 'half-yearly' | 'yearly';
+  cadence: 'monthly' | 'half-yearly' | 'yearly';
   nextCheckDate: string;
   members: string[];
   supervisorChain: { // Chain of supervisors at different levels

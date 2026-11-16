@@ -5,9 +5,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -20,6 +23,7 @@ import (
 	_ "github.com/lib/pq"
 
 	"github.com/agopalakrishnan/teams360/backend/application/services"
+	"github.com/agopalakrishnan/teams360/backend/domain/healthcheck"
 	"github.com/agopalakrishnan/teams360/backend/infrastructure/persistence/postgres"
 	"github.com/agopalakrishnan/teams360/backend/interfaces/api/v1"
 )
@@ -91,7 +95,7 @@ var _ = Describe("Health Check API", func() {
 					"teamId":           "team1",
 					"userId":           "user123",
 					"date":             time.Now().Format(time.RFC3339),
-					"assessmentPeriod": "2024 - 2nd Half",
+					"assessmentPeriod": currentPeriod(),
 					"responses": []map[string]interface{}{
 						{
 							"dimensionId": "mission",
@@ -154,9 +158,10 @@ var _ = Describe("Health Check API", func() {
 			It("should auto-generate session ID if not provided", func() {
 				// Given: Submission without ID
 				submission := map[string]interface{}{
-					"teamId": "team1",
-					"userId": "user123",
-					"date":   time.Now().Format(time.RFC3339),
+					"teamId":           "team1",
+					"userId":           "user123",
+					"date":             time.Now().Format(time.RFC3339),
+					"assessmentPeriod": currentPeriod(),
 					"responses": []map[string]interface{}{
 						{
 							"dimensionId": "mission",
@@ -344,9 +349,10 @@ var _ = Describe("Health Check API", func() {
 			It("should return the session with all responses", func() {
 				// Given: An existing session
 				submission := map[string]interface{}{
-					"teamId": "team1",
-					"userId": "user123",
-					"date":   time.Now().Format(time.RFC3339),
+					"teamId":           "team1",
+					"userId":           "user123",
+					"date":             time.Now().Format(time.RFC3339),
+					"assessmentPeriod": currentPeriod(),
 					"responses": []map[string]interface{}{
 						{"dimensionId": "mission", "score": 3, "trend": "improving", "comment": "Great"},
 					},
@@ -405,9 +411,10 @@ var _ = Describe("Health Check API", func() {
 				// Given: Multiple sessions for team1
 				for i := 0; i < 3; i++ {
 					submission := map[string]interface{}{
-						"teamId": "team1",
-						"userId": "user" + string(rune(i+1)),
-						"date":   time.Now().Format(time.RFC3339),
+						"teamId":           "team1",
+						"userId":           "user" + string(rune(i+1)),
+						"date":             time.Now().Format(time.RFC3339),
+						"assessmentPeriod": currentPeriod(),
 						"responses": []map[string]interface{}{
 							{"dimensionId": "mission", "score": 3, "trend": "improving"},
 						},
@@ -441,37 +448,17 @@ var _ = Describe("Health Check API", func() {
 
 		Context("when filtering by assessment period", func() {
 			It("should return only sessions from that period", func() {
-				// Given: Sessions from different periods
-				submission1 := map[string]interface{}{
-					"teamId":           "team1",
-					"userId":           "user1",
-					"date":             "2024-01-15T10:00:00Z",
-					"assessmentPeriod": "2023 - 2nd Half",
-					"responses": []map[string]interface{}{
-						{"dimensionId": "mission", "score": 3, "trend": "improving"},
-					},
-					"completed": true,
-				}
-
-				submission2 := map[string]interface{}{
-					"teamId":           "team1",
-					"userId":           "user2",
-					"date":             "2024-07-15T10:00:00Z",
-					"assessmentPeriod": "2024 - 1st Half",
-					"responses": []map[string]interface{}{
-						{"dimensionId": "value", "score": 2, "trend": "stable"},
-					},
-					"completed": true,
-				}
-
-				// Post both submissions
-				for _, sub := range []map[string]interface{}{submission1, submission2} {
-					body, _ := json.Marshal(sub)
-					req := httptest.NewRequest(http.MethodPost, "/api/v1/health-checks", bytes.NewBuffer(body))
-					req.Header.Set("Content-Type", "application/json")
-					req.Header.Set("Authorization", "Bearer "+userToken)
-					w := httptest.NewRecorder()
-					router.ServeHTTP(w, req)
+				// Given: Sessions from different periods. They are seeded directly because the API
+				// only accepts a currently open period, and this test needs two older ones.
+				for _, row := range []struct{ id, user, date, period string }{
+					{"filter-session-1", "user1", "2024-01-15", "2023 - 2nd Half"},
+					{"filter-session-2", "user2", "2024-07-15", "2024 - 1st Half"},
+				} {
+					_, err := db.Exec(`
+						INSERT INTO health_check_sessions (id, team_id, user_id, date, assessment_period, survey_type, completed)
+						VALUES ($1, 'team1', $2, $3, $4, 'individual', true)
+					`, row.id, row.user, row.date, row.period)
+					Expect(err).NotTo(HaveOccurred())
 				}
 
 				// When: Filtering by period
@@ -492,4 +479,334 @@ var _ = Describe("Health Check API", func() {
 			})
 		})
 	})
+
+	Describe("POST /api/v1/health-checks - one submission per (scope, survey type, year, half-year)", func() {
+		submitPayload := func(payload map[string]interface{}) *httptest.ResponseRecorder {
+			body, _ := json.Marshal(payload)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/health-checks", bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+userToken)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			return w
+		}
+
+		individualSubmission := func(userID, teamID, period string) map[string]interface{} {
+			return individualSubmissionPayload(userID, teamID, period)
+		}
+
+		postWorkshopSubmission := func(userID, teamID, period string) map[string]interface{} {
+			s := individualSubmission(userID, teamID, period)
+			s["surveyType"] = "post_workshop"
+			return s
+		}
+
+		Context("individual survey", func() {
+			It("rejects a second submission by the same user for the same period with 409 Conflict", func() {
+				period := currentPeriod()
+				w1 := submitPayload(individualSubmission("dup-user-1", "team1", period))
+				Expect(w1.Code).To(Equal(http.StatusCreated))
+
+				w2 := submitPayload(individualSubmission("dup-user-1", "team1", period))
+				Expect(w2.Code).To(Equal(http.StatusConflict))
+
+				var response map[string]interface{}
+				Expect(json.Unmarshal(w2.Body.Bytes(), &response)).To(Succeed())
+				Expect(response["submittedPeriod"]).To(Equal(healthcheck.FormatPeriodForDisplay(period)))
+				Expect(response["nextEligiblePeriod"]).To(Equal(healthcheck.NextEligiblePeriod([]string{period})))
+				Expect(response["message"]).To(ContainSubstring("Individual Survey"))
+				Expect(response["message"]).NotTo(MatchRegexp(`Q[1-4]`))
+			})
+
+			It("allows a second submission by a different user for the same period", func() {
+				period := currentPeriod()
+				w1 := submitPayload(individualSubmission("dup-user-2", "team1", period))
+				Expect(w1.Code).To(Equal(http.StatusCreated))
+
+				w2 := submitPayload(individualSubmission("dup-user-3", "team1", period))
+				Expect(w2.Code).To(Equal(http.StatusCreated))
+			})
+
+			It("rejects a submission for a future period with 400 Bad Request", func() {
+				w := submitPayload(individualSubmission("dup-user-future", "team1", futurePeriodRelativeToNow()))
+				Expect(w.Code).To(Equal(http.StatusBadRequest))
+			})
+
+			It("rejects a submission for a period from a previous year with 400 Bad Request", func() {
+				w := submitPayload(individualSubmission("dup-user-past", "team1", pastPeriodRelativeToNow()))
+				Expect(w.Code).To(Equal(http.StatusBadRequest))
+			})
+
+			It("reports a previous-year period that was already submitted as a 409 duplicate with the next period, not a bare 400", func() {
+				past := pastPeriodRelativeToNow()
+				_, err := db.Exec(`
+					INSERT INTO health_check_sessions (id, team_id, user_id, date, assessment_period, survey_type, completed)
+					VALUES ('stale-dup-session', 'team1', 'dup-user-stale', '2020-01-15', $1, 'individual', true)
+				`, past)
+				Expect(err).NotTo(HaveOccurred())
+
+				w := submitPayload(individualSubmission("dup-user-stale", "team1", past))
+
+				Expect(w.Code).To(Equal(http.StatusConflict))
+				var response map[string]interface{}
+				Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+				Expect(response["code"]).To(Equal("duplicate"))
+				Expect(response["nextEligiblePeriod"]).To(Equal(healthcheck.NextEligiblePeriod([]string{past})))
+			})
+
+			It("rejects a completed submission with no supported assessment period with 400 Bad Request", func() {
+				payload := individualSubmissionPayload("dup-user-noperiod", "team1", "")
+				w := submitPayload(payload)
+				Expect(w.Code).To(Equal(http.StatusBadRequest))
+			})
+		})
+
+		Context("post-workshop survey", func() {
+			It("rejects a second submission for the same team and period with 409 Conflict, even from a different Team Lead", func() {
+				period := currentPeriod()
+				w1 := submitPayload(postWorkshopSubmission("lead-1", "dup-team-1", period))
+				Expect(w1.Code).To(Equal(http.StatusCreated))
+
+				w2 := submitPayload(postWorkshopSubmission("lead-2", "dup-team-1", period))
+				Expect(w2.Code).To(Equal(http.StatusConflict))
+
+				var response map[string]interface{}
+				Expect(json.Unmarshal(w2.Body.Bytes(), &response)).To(Succeed())
+				Expect(response["submittedPeriod"]).To(Equal(healthcheck.FormatPeriodForDisplay(period)))
+				Expect(response["message"]).To(ContainSubstring("Post-Workshop Survey"))
+			})
+
+			It("allows a different team to submit the same period", func() {
+				period := currentPeriod()
+				w1 := submitPayload(postWorkshopSubmission("lead-1", "dup-team-2", period))
+				Expect(w1.Code).To(Equal(http.StatusCreated))
+
+				w2 := submitPayload(postWorkshopSubmission("lead-1", "dup-team-3", period))
+				Expect(w2.Code).To(Equal(http.StatusCreated))
+			})
+		})
+
+		Context("separation between survey types", func() {
+			It("does not let a post-workshop submission block an individual submission for the same user/team/period, or vice versa", func() {
+				period := currentPeriod()
+				w1 := submitPayload(individualSubmission("dup-user-5", "dup-team-4", period))
+				Expect(w1.Code).To(Equal(http.StatusCreated))
+
+				w2 := submitPayload(postWorkshopSubmission("dup-user-5", "dup-team-4", period))
+				Expect(w2.Code).To(Equal(http.StatusCreated))
+			})
+		})
+
+		Context("concurrent submission attempts", func() {
+			It("allows exactly one of several concurrent submissions for the same user and period to succeed", func() {
+				const attempts = 5
+				codes := make(chan int, attempts)
+				period := currentPeriod()
+
+				var wg sync.WaitGroup
+				for i := 0; i < attempts; i++ {
+					wg.Add(1)
+					go func() {
+						defer GinkgoRecover()
+						defer wg.Done()
+						w := submitPayload(individualSubmission("dup-user-concurrent", "team1", period))
+						codes <- w.Code
+					}()
+				}
+				wg.Wait()
+				close(codes)
+
+				created, conflict := 0, 0
+				for code := range codes {
+					switch code {
+					case http.StatusCreated:
+						created++
+					case http.StatusConflict:
+						conflict++
+					}
+				}
+				Expect(created).To(Equal(1), "exactly one concurrent submission should be accepted")
+				Expect(conflict).To(Equal(attempts-1), "every other concurrent submission for the same period should be rejected as a duplicate")
+			})
+		})
+	})
+
+	Describe("GET /api/v1/health-checks/eligibility", func() {
+		// The endpoint only answers about the caller's own submissions, or a team they belong to
+		// or lead (admins: anything), so each lookup needs a token for the scope it asks about.
+		tokenFor := func(userID, level string, teamIDs ...string) string {
+			pair, err := jwtService.GenerateTokenPair(context.Background(), userID, userID, userID+"@test.com", level, teamIDs)
+			Expect(err).NotTo(HaveOccurred())
+			return pair.AccessToken
+		}
+
+		Context("individual survey", func() {
+			It("reports eligible when no prior submission exists", func() {
+				req := httptest.NewRequest(http.MethodGet,
+					"/api/v1/health-checks/eligibility?surveyType=individual&userId=elig-user-1&assessmentPeriod="+url.QueryEscape(currentPeriod()), nil)
+				req.Header.Set("Authorization", "Bearer "+tokenFor("elig-user-1", "level-5"))
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+
+				Expect(w.Code).To(Equal(http.StatusOK))
+				var response map[string]interface{}
+				Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+				Expect(response["eligible"]).To(BeTrue())
+			})
+
+			It("reports ineligible as a duplicate, with the submitted period and next-eligible period, after a submission for that period", func() {
+				period := currentPeriod()
+				body, _ := json.Marshal(individualSubmissionPayload("elig-user-2", "team1", period))
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/health-checks", bytes.NewBuffer(body))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer "+userToken)
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				Expect(w.Code).To(Equal(http.StatusCreated))
+
+				req2 := httptest.NewRequest(http.MethodGet,
+					"/api/v1/health-checks/eligibility?surveyType=individual&userId=elig-user-2&assessmentPeriod="+url.QueryEscape(period), nil)
+				req2.Header.Set("Authorization", "Bearer "+tokenFor("elig-user-2", "level-5"))
+				w2 := httptest.NewRecorder()
+				router.ServeHTTP(w2, req2)
+
+				Expect(w2.Code).To(Equal(http.StatusOK))
+				var response map[string]interface{}
+				Expect(json.Unmarshal(w2.Body.Bytes(), &response)).To(Succeed())
+				Expect(response["eligible"]).To(BeFalse())
+				Expect(response["reason"]).To(Equal("duplicate"))
+				Expect(response["submittedPeriod"]).To(Equal(healthcheck.FormatPeriodForDisplay(period)))
+				Expect(response["nextEligiblePeriod"]).To(Equal(healthcheck.NextEligiblePeriod([]string{period})))
+			})
+
+			It("reports ineligible as a future period without touching persisted records", func() {
+				req := httptest.NewRequest(http.MethodGet,
+					"/api/v1/health-checks/eligibility?surveyType=individual&userId=elig-user-future&assessmentPeriod="+url.QueryEscape(futurePeriodRelativeToNow()), nil)
+				req.Header.Set("Authorization", "Bearer "+tokenFor("elig-user-future", "level-5"))
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+
+				Expect(w.Code).To(Equal(http.StatusOK))
+				var response map[string]interface{}
+				Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+				Expect(response["eligible"]).To(BeFalse())
+				Expect(response["reason"]).To(Equal("future_period"))
+			})
+
+			It("reports ineligible as a past period for a period from a previous year", func() {
+				req := httptest.NewRequest(http.MethodGet,
+					"/api/v1/health-checks/eligibility?surveyType=individual&userId=elig-user-past&assessmentPeriod="+url.QueryEscape(pastPeriodRelativeToNow()), nil)
+				req.Header.Set("Authorization", "Bearer "+tokenFor("elig-user-past", "level-5"))
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+
+				Expect(w.Code).To(Equal(http.StatusOK))
+				var response map[string]interface{}
+				Expect(json.Unmarshal(w.Body.Bytes(), &response)).To(Succeed())
+				Expect(response["eligible"]).To(BeFalse())
+				Expect(response["reason"]).To(Equal("past_period"))
+			})
+		})
+
+		Context("who may ask", func() {
+			get := func(token, query string) *httptest.ResponseRecorder {
+				req := httptest.NewRequest(http.MethodGet, "/api/v1/health-checks/eligibility?"+query, nil)
+				req.Header.Set("Authorization", "Bearer "+token)
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				return w
+			}
+			period := url.QueryEscape(currentPeriod())
+
+			It("refuses to reveal another user's submissions", func() {
+				w := get(tokenFor("someone-else", "level-5"), "surveyType=individual&userId=elig-user-1&assessmentPeriod="+period)
+				Expect(w.Code).To(Equal(http.StatusForbidden))
+			})
+
+			It("refuses a team the caller does not belong to or lead", func() {
+				w := get(tokenFor("elig-member", "level-5", "team-a"), "surveyType=post_workshop&teamId=team-b&assessmentPeriod="+period)
+				Expect(w.Code).To(Equal(http.StatusForbidden))
+			})
+
+			It("answers for a team the caller belongs to or leads", func() {
+				w := get(tokenFor("elig-member", "level-5", "team-a"), "surveyType=post_workshop&teamId=team-a&assessmentPeriod="+period)
+				Expect(w.Code).To(Equal(http.StatusOK))
+			})
+
+			It("lets an admin ask about any user or team", func() {
+				admin := tokenFor("an-admin", "level-admin")
+				Expect(get(admin, "surveyType=individual&userId=elig-user-1&assessmentPeriod="+period).Code).To(Equal(http.StatusOK))
+				Expect(get(admin, "surveyType=post_workshop&teamId=team-b&assessmentPeriod="+period).Code).To(Equal(http.StatusOK))
+			})
+		})
+
+		Context("missing or invalid parameters", func() {
+			It("returns 400 when assessmentPeriod is missing", func() {
+				req := httptest.NewRequest(http.MethodGet,
+					"/api/v1/health-checks/eligibility?surveyType=individual&userId=elig-user-3", nil)
+				req.Header.Set("Authorization", "Bearer "+tokenFor("elig-user-3", "level-5"))
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				Expect(w.Code).To(Equal(http.StatusBadRequest))
+			})
+
+			It("returns 400 when teamId is missing for a post_workshop check", func() {
+				req := httptest.NewRequest(http.MethodGet,
+					"/api/v1/health-checks/eligibility?surveyType=post_workshop&assessmentPeriod="+url.QueryEscape(currentPeriod()), nil)
+				req.Header.Set("Authorization", "Bearer "+userToken)
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				Expect(w.Code).To(Equal(http.StatusBadRequest))
+			})
+
+			It("returns 400 when userId is missing for an individual check", func() {
+				req := httptest.NewRequest(http.MethodGet,
+					"/api/v1/health-checks/eligibility?surveyType=individual&assessmentPeriod="+url.QueryEscape(currentPeriod()), nil)
+				req.Header.Set("Authorization", "Bearer "+userToken)
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, req)
+				Expect(w.Code).To(Equal(http.StatusBadRequest))
+			})
+		})
+	})
 })
+
+// currentPeriod returns the assessment-period string (storage format "YYYY H1"/"YYYY H2")
+// for the half-year "now" actually falls in, so tests never hardcode a period that could
+// become stale or future depending on which real-world day the suite runs.
+func currentPeriod() string {
+	half, year := healthcheck.HalfYearOf(time.Now())
+	return fmt.Sprintf("%d H%d", year, half)
+}
+
+// futurePeriodRelativeToNow returns a period that is always in the future relative to now,
+// regardless of which half "now" currently falls in: H2 of the same year during H1, or H1 of
+// the following year during H2.
+func futurePeriodRelativeToNow() string {
+	half, year := healthcheck.HalfYearOf(time.Now())
+	if half == 1 {
+		return fmt.Sprintf("%d H2", year)
+	}
+	return fmt.Sprintf("%d H1", year+1)
+}
+
+// pastPeriodRelativeToNow returns a period from an earlier year than now, which is never open
+// for a new submission even though it was never itself submitted.
+func pastPeriodRelativeToNow() string {
+	_, year := healthcheck.HalfYearOf(time.Now())
+	return fmt.Sprintf("%d H2", year-1)
+}
+
+func individualSubmissionPayload(userID, teamID, assessmentPeriod string) map[string]interface{} {
+	return map[string]interface{}{
+		"teamId":           teamID,
+		"userId":           userID,
+		"date":             time.Now().Format(time.RFC3339),
+		"assessmentPeriod": assessmentPeriod,
+		"surveyType":       "individual",
+		"responses": []map[string]interface{}{
+			{"dimensionId": "mission", "score": 3, "trend": "improving"},
+		},
+		"completed": true,
+	}
+}

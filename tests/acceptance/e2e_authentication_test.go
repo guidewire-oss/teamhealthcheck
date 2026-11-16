@@ -22,9 +22,17 @@ var _ = Describe("E2E: Authentication", Label("e2e"), func() {
 		page, err = ctx.NewPage()
 		Expect(err).NotTo(HaveOccurred())
 
-		// Clean up test data before each test
+		// Clean up test data before each test.
+		//
+		// The underscores in this prefix must be escaped: in a SQL LIKE
+		// pattern, '_' is a wildcard for any single character, not a literal
+		// underscore. An unescaped 'e2e_test_%' happens to also match
+		// 'e2e_testmanager1' -- a completely unrelated, permanently seeded
+		// fixture from suite_test.go -- because "e2e" + (any char) + "test" +
+		// (any char) + (anything) is satisfied by that name's exact spelling.
+		// That silently deleted a shared fixture other specs depend on.
 		_, err = db.Exec(`
-			DELETE FROM users WHERE id LIKE 'e2e_test_%';
+			DELETE FROM users WHERE id LIKE 'e2e\_test\_%' ESCAPE '\';
 		`)
 		Expect(err).NotTo(HaveOccurred())
 	})
@@ -36,6 +44,35 @@ var _ = Describe("E2E: Authentication", Label("e2e"), func() {
 		if ctx != nil {
 			ctx.Close()
 		}
+	})
+
+	Describe("Cleanup query pattern", func() {
+		// This is a read-only proof of the LIKE pattern's matching semantics
+		// against two literal strings -- it never touches the users table, so
+		// it can't collide with 'e2e_testmanager1' (a real, permanently seeded
+		// fixture from suite_test.go) or with the 'e2e_test_mgr1' row a sibling
+		// spec above may have already inserted. It exists to pin the escaping
+		// itself as a regression guard: if someone "simplifies" the BeforeEach
+		// query back to an unescaped 'e2e_test_%', this fails immediately
+		// instead of silently reintroducing the cross-fixture deletion bug.
+		matches := func(candidateID string) bool {
+			var matched bool
+			err := db.QueryRow(
+				`SELECT $1::text LIKE 'e2e\_test\_%' ESCAPE '\'`, candidateID,
+			).Scan(&matched)
+			Expect(err).NotTo(HaveOccurred())
+			return matched
+		}
+
+		It("matches this file's own fixture prefix", func() {
+			Expect(matches("e2e_test_mgr1")).To(BeTrue(),
+				"the cleanup query must still delete this file's own fixture")
+		})
+
+		It("does not match the unrelated shared fixture e2e_testmanager1", func() {
+			Expect(matches("e2e_testmanager1")).To(BeFalse(),
+				"the cleanup query must never match suite_test.go's shared e2e_testmanager1 fixture")
+		})
 	})
 
 	Describe("Basic authentication flow", func() {
