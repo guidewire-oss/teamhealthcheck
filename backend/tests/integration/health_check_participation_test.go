@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -45,8 +46,15 @@ var _ = Describe("Integration: health check participation gate (PIT-199)", func(
 		return w
 	}
 
+	// The API takes the storage format ("2026 H2"); ActiveHalfYearPeriod returns the display
+	// format ("H2 2026"), which the endpoints reject.
+	activePeriod := func() string {
+		half, year := healthcheck.HalfYearOf(time.Now())
+		return fmt.Sprintf("%d H%d", year, half)
+	}
+
 	submitBody := func(teamID, surveyType string) string {
-		period := healthcheck.ActiveHalfYearPeriod(time.Now())
+		period := activePeriod()
 		return fmt.Sprintf(`{"teamId":%q,"userId":"pit199_member","date":%q,"assessmentPeriod":%q,"surveyType":%q,"completed":true,
 			"responses":[{"dimensionId":"mission","score":3,"trend":"stable"}]}`,
 			teamID, time.Now().Format("2006-01-02T15:04:05Z07:00"), period, surveyType)
@@ -112,7 +120,7 @@ var _ = Describe("Integration: health check participation gate (PIT-199)", func(
 		Expect(n).To(Equal(1))
 
 		q := fmt.Sprintf("/api/v1/health-checks/eligibility?surveyType=individual&userId=pit199_member&teamId=pit199_on&assessmentPeriod=%s",
-			healthcheck.ActiveHalfYearPeriod(time.Now()))
+			url.QueryEscape(activePeriod()))
 		w = call(http.MethodGet, q, memberTok, "")
 		Expect(w.Code).To(Equal(http.StatusOK), w.Body.String())
 		var elig dto.SurveyEligibilityResponse
