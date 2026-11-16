@@ -84,11 +84,11 @@ func (e ValidationError) Error() string {
 // all validation errors found.
 func (s Snapshot) Validate() ValidationErrors {
 	var errs ValidationErrors
-	if s.ContractVersion != ContractVersion {
+	if !SupportedContractVersion(s.ContractVersion) {
 		errs = append(errs, ValidationError{
 			Entity:  EntitySnapshot,
 			Field:   "contractVersion",
-			Message: fmt.Sprintf("unsupported contract version %q; expected %q", s.ContractVersion, ContractVersion),
+			Message: fmt.Sprintf("unsupported contract version %q; expected %q or %q", s.ContractVersion, ContractVersion, ContractVersionV11),
 		})
 	}
 	if s.GeneratedAt.IsZero() {
@@ -187,6 +187,25 @@ func (s Snapshot) Validate() ValidationErrors {
 				Field:      "hierarchyLevelId",
 				Message:    "hierarchyLevelId is required and must not exceed 50 characters",
 			})
+		}
+		if u.PodIQRole != nil {
+			switch {
+			case s.ContractVersion != ContractVersionV11:
+				errs = append(errs, ValidationError{
+					Entity:     EntityUser,
+					Identifier: identifier,
+					Field:      "podiqRole",
+					Message:    fmt.Sprintf("podiqRole requires contractVersion %q", ContractVersionV11),
+				})
+			case !ValidPodIQRole(*u.PodIQRole):
+				errs = append(errs, ValidationError{
+					Entity:     EntityUser,
+					Identifier: identifier,
+					Field:      "podiqRole",
+					Message: fmt.Sprintf("podiqRole must be %q, %q or %q when present",
+						PodIQRoleL2, PodIQRoleL1, PodIQRoleDeveloper),
+				})
+			}
 		}
 		if !emailPattern.MatchString(u.Email) || charCount(u.Email) > maxEmailChars {
 			errs = append(errs, ValidationError{

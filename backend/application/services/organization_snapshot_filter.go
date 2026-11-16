@@ -30,6 +30,15 @@ type SnapshotFilterResult struct {
 	ClearedTeamLeads     int
 }
 
+// hasPodIQRole reports whether the user carries a podiqRole at all. Such a user
+// is never skipped for an unknown provider level (say, level-6 from grade 9): a
+// valid role stores them at the level it names, and an invalid one must reach
+// orgsnapshot.Validate so the snapshot is rejected rather than the user being
+// dropped silently.
+func hasPodIQRole(u orgsnapshot.User) bool {
+	return u.PodIQRole != nil
+}
+
 // FilterSnapshot removes records this deployment cannot import and repairs the
 // references that removal leaves dangling.
 //
@@ -80,6 +89,13 @@ func FilterSnapshot(in *orgsnapshot.Snapshot, knownLevels map[string]bool) (Snap
 			// is and orgsnapshot.Validate rejects the whole snapshot with a
 			// field-specific error.
 			users = append(users, u)
+		case u.HierarchyLevelID == "" && hasPodIQRole(u):
+			// A user with no level is normally skipped, but one carrying a
+			// podiqRole must reach validation: skipping it would let an invalid
+			// role, or a role whose level this deployment lacks, go unreported.
+			// The record is kept and orgsnapshot.Validate rejects the whole
+			// snapshot with a field-specific error.
+			users = append(users, u)
 		case u.HierarchyLevelID == "":
 			result.SkippedUsers = append(result.SkippedUsers, orgprovider.SkippedUser{
 				UserID:   u.ID,
@@ -87,7 +103,7 @@ func FilterSnapshot(in *orgsnapshot.Snapshot, knownLevels map[string]bool) (Snap
 				Reason:   orgprovider.SkipReasonMissingLevel,
 			})
 			result.PreservedMemberUserIDs = append(result.PreservedMemberUserIDs, u.ID)
-		case !knownLevels[u.HierarchyLevelID]:
+		case !knownLevels[u.HierarchyLevelID] && !hasPodIQRole(u):
 			result.SkippedUsers = append(result.SkippedUsers, orgprovider.SkippedUser{
 				UserID:           u.ID,
 				Username:         u.Username,
