@@ -678,7 +678,16 @@ func TestSubmitHealthCheck_ParticipationEnabledOrUnknownTeamProceeds(t *testing.
 func TestSubmitHealthCheck_ParticipationLookupErrorFailsClosed(t *testing.T) {
 	clock := &testClock{now: time.Date(2026, time.January, 15, 10, 0, 0, 0, time.UTC)}
 	repo := &participationRepo{fakeHealthCheckRepository: &fakeHealthCheckRepository{}, err: errors.New("db down")}
-	if _, err := NewSubmitHealthCheckHandlerWithClock(repo, clock.Now).Handle(baseCommand(nil)); err == nil {
+	_, err := NewSubmitHealthCheckHandlerWithClock(repo, clock.Now).Handle(baseCommand(nil))
+	if err == nil {
 		t.Fatal("a failed participation lookup must reject the submission, not allow it")
+	}
+	// A typed error lets the HTTP layer report this as a server fault, not a bad request.
+	var lookupErr *healthcheck.ParticipationLookupError
+	if !errors.As(err, &lookupErr) {
+		t.Fatalf("expected a ParticipationLookupError, got %T: %v", err, err)
+	}
+	if lookupErr.Unwrap() == nil {
+		t.Fatal("the underlying cause must be preserved for logging")
 	}
 }

@@ -76,7 +76,7 @@ func (h *SubmitHealthCheckHandler) Handle(cmd SubmitHealthCheckCommand) (*health
 	if h.participation != nil {
 		enabled, found, err := h.participation.IsTeamHealthCheckEnabled(context.Background(), cmd.TeamID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to check team participation: %w", err)
+			return nil, &healthcheck.ParticipationLookupError{TeamID: cmd.TeamID, Err: err}
 		}
 		if found && !enabled {
 			return nil, &healthcheck.ParticipationDisabledError{TeamID: cmd.TeamID}

@@ -1,6 +1,9 @@
 package dto
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ============================================================================
 // Hierarchy Levels DTOs
@@ -160,7 +163,12 @@ type UpdateTeamRequest struct {
 	// HealthCheckEnabled is never applied: enrollment is owned by PodIQ and written only by
 	// the organization sync. The field exists so a client that sends it gets an explicit
 	// rejection (CodeParticipationManagedByPodIQ) instead of a silent no-op.
-	HealthCheckEnabled *bool `json:"healthCheckEnabled,omitempty" swaggerignore:"true"`
+	//
+	// It is a json.RawMessage rather than a *bool so that presence is what counts, not the
+	// value: an explicit "healthCheckEnabled": null decodes to a non-empty RawMessage ("null"),
+	// whereas a *bool would decode it to nil and be indistinguishable from an omitted field.
+	// The value is never parsed; any value, including null, is rejected.
+	HealthCheckEnabled json.RawMessage `json:"healthCheckEnabled,omitempty" swaggerignore:"true"`
 } //@name UpdateTeamRequest
 
 // CodeParticipationManagedByPodIQ is the ErrorResponse.Code returned when a local edit tries

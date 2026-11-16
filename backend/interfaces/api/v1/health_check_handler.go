@@ -184,6 +184,18 @@ func (h *HealthCheckHandler) SubmitHealthCheck(c *gin.Context) {
 			return
 		}
 
+		// The enrollment lookup failed: a server-side fault, not a bad request. The cause is
+		// logged but not returned, so database detail never reaches the client.
+		var lookupErr *healthcheck.ParticipationLookupError
+		if errors.As(err, &lookupErr) {
+			log.WithError(err).WithField("team_id", req.TeamID).Error("could not verify team enrollment for a health check submission")
+			c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+				Error:   "Failed to verify team enrollment",
+				Message: "Team enrollment could not be confirmed right now. Please try again.",
+			})
+			return
+		}
+
 		var notOpenErr *healthcheck.PeriodNotOpenError
 		if errors.As(err, &notOpenErr) {
 			log.WithField("team_id", req.TeamID).WithField("survey_type", notOpenErr.SurveyType).

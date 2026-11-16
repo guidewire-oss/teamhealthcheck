@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +35,7 @@ var _ = Describe("Integration: health check participation gate (PIT-199)", func(
 		router     *gin.Engine
 		adminToken string
 		memberTok  string
+		hcRepo     healthcheck.Repository
 	)
 
 	call := func(method, path, token, body string) *httptest.ResponseRecorder {
@@ -82,7 +84,7 @@ var _ = Describe("Integration: health check participation gate (PIT-199)", func(
 
 		router = gin.New()
 		orgRepo := postgres.NewOrganizationRepository(db)
-		hcRepo := postgres.NewHealthCheckRepository(db)
+		hcRepo = postgres.NewHealthCheckRepository(db)
 		v1.SetupHealthCheckRoutes(router, hcRepo, orgRepo, jwtService, nil)
 		v1.SetupAdminRoutes(router, orgRepo, postgres.NewUserRepository(db), postgres.NewTeamRepository(db), hcRepo, jwtService)
 	})
@@ -107,6 +109,27 @@ var _ = Describe("Integration: health check participation gate (PIT-199)", func(
 		Expect(w.Code).To(Equal(http.StatusCreated), w.Body.String())
 		w = call(http.MethodPost, "/api/v1/health-checks", memberTok, submitBody("pit199_on", "individual"))
 		Expect(w.Code).To(Equal(http.StatusConflict), w.Body.String())
+	})
+
+	It("rejects the save itself for a disabled team, even if the command's earlier check passed", func() {
+		// Simulates the window between the command's participation read and the insert: the
+		// repository is handed a session directly, so only its own in-transaction check can stop it.
+		err := hcRepo.Save(context.Background(), &healthcheck.HealthCheckSession{
+			ID:               "pit199_race_session",
+			TeamID:           "pit199_off",
+			UserID:           "pit199_member",
+			Date:             time.Now().Format("2006-01-02T15:04:05Z07:00"),
+			AssessmentPeriod: activePeriod(),
+			SurveyType:       healthcheck.SurveyTypeIndividual,
+			Completed:        true,
+			Responses:        []healthcheck.HealthCheckResponse{{DimensionID: "mission", Score: 3, Trend: "stable"}},
+		})
+		var disabled *healthcheck.ParticipationDisabledError
+		Expect(errors.As(err, &disabled)).To(BeTrue(), "expected ParticipationDisabledError, got %v", err)
+
+		var n int
+		Expect(db.QueryRow(`SELECT COUNT(*) FROM health_check_sessions WHERE id='pit199_race_session'`).Scan(&n)).To(Succeed())
+		Expect(n).To(Equal(0))
 	})
 
 	It("keeps history after opt-out and reports the team ineligible", func() {

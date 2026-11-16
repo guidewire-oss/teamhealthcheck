@@ -154,6 +154,20 @@ func (e *ParticipationDisabledError) Error() string {
 	return "Health checks are not enabled for this team. Enrollment is managed in PodIQ."
 }
 
+// ParticipationLookupError means a team's enrollment could not be read, so a submission can
+// neither be accepted nor rejected as opted out. It is an infrastructure failure, not a problem
+// with the request, and is reported to the client as a server error.
+type ParticipationLookupError struct {
+	TeamID string
+	Err    error
+}
+
+func (e *ParticipationLookupError) Error() string {
+	return fmt.Sprintf("could not verify health check enrollment for team %q: %v", e.TeamID, e.Err)
+}
+
+func (e *ParticipationLookupError) Unwrap() error { return e.Err }
+
 // ParticipationChecker reports whether a team currently participates in health checks.
 // found is false when the team does not exist; callers keep their existing behavior then.
 type ParticipationChecker interface {
