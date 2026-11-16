@@ -193,12 +193,16 @@ var _ = Describe("E2E: Admin Modal Forms & Search/Filter", Label("e2e", "admin",
 				By("Typing a search query to filter users")
 				err := searchInput.Fill("admin")
 				Expect(err).NotTo(HaveOccurred())
-				time.Sleep(500 * time.Millisecond)
 
+				// Search is server-side and debounced (300ms) before the request is sent,
+				// so poll for the filtered list instead of sleeping a fixed time.
 				By("Verifying filtered results")
 				filteredRows := page.Locator("[data-testid='user-row']")
-				filteredCount, _ := filteredRows.Count()
-				Expect(filteredCount).To(BeNumerically("<", initialCount), "Filtered list should have fewer users")
+				var filteredCount int
+				Eventually(func() int {
+					filteredCount, _ = filteredRows.Count()
+					return filteredCount
+				}, 10*time.Second, 200*time.Millisecond).Should(BeNumerically("<", initialCount), "Filtered list should have fewer users")
 				Expect(filteredCount).To(BeNumerically(">", 0), "Should still show matching users")
 
 				GinkgoWriter.Printf("✅ User search filters results: %d → %d\n", initialCount, filteredCount)
@@ -206,11 +210,12 @@ var _ = Describe("E2E: Admin Modal Forms & Search/Filter", Label("e2e", "admin",
 				By("Clearing search should restore full list")
 				err = searchInput.Fill("")
 				Expect(err).NotTo(HaveOccurred())
-				time.Sleep(500 * time.Millisecond)
 
 				restoredRows := page.Locator("[data-testid='user-row']")
-				restoredCount, _ := restoredRows.Count()
-				Expect(restoredCount).To(Equal(initialCount))
+				Eventually(func() int {
+					restoredCount, _ := restoredRows.Count()
+					return restoredCount
+				}, 10*time.Second, 200*time.Millisecond).Should(Equal(initialCount))
 
 				GinkgoWriter.Printf("✅ Clearing search restores full user list\n")
 			})
