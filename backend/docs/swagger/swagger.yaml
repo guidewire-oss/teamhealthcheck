@@ -317,6 +317,11 @@ definitions:
             responseCount:
                 example: 5
                 type: integer
+            trend:
+                description: |-
+                    Trend is the trend value ("improving", "stable", "declining") from the
+                    final completed post-workshop response for this team+dimension, if any.
+                type: string
         type: object
     DimensionTrend:
         properties:
