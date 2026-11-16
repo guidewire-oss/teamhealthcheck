@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
+	"github.com/agopalakrishnan/teams360/backend/pkg/orgsnapshot"
 )
 
 func TestIsProtectedUser(t *testing.T) {
@@ -185,5 +186,28 @@ func TestMassDeletionReportMatchesConfirmed(t *testing.T) {
 		if report.MatchesConfirmed(&confirmed) {
 			t.Errorf("%s: a confirmation that no longer matches the fresh report must be refused", c.name)
 		}
+	}
+}
+
+func TestPodIQRoleLevelIDs_MatchesRoleMapping(t *testing.T) {
+	roles := []string{orgsnapshot.PodIQRoleL2, orgsnapshot.PodIQRoleL1, orgsnapshot.PodIQRoleDeveloper}
+	listed := make(map[string]bool)
+	for _, id := range orgprovider.PodIQRoleLevelIDs() {
+		listed[id] = true
+	}
+	for _, role := range roles {
+		level, ok := orgprovider.PodIQRoleLevelID(role)
+		if !ok {
+			t.Fatalf("role %q has no level", role)
+		}
+		if !listed[level] {
+			t.Errorf("level %q for role %q is missing from PodIQRoleLevelIDs", level, role)
+		}
+	}
+	if len(listed) != len(roles) {
+		t.Errorf("PodIQRoleLevelIDs lists %d levels, want %d", len(listed), len(roles))
+	}
+	if _, ok := orgprovider.PodIQRoleLevelID("Manager"); ok {
+		t.Error("an unknown role must not map to a level")
 	}
 }
