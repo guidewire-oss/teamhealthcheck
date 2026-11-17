@@ -132,13 +132,16 @@ type Run struct {
 
 	InsertedUsers      int
 	UpdatedUsers       int
-	UnchangedUsers     int
 	InsertedTeams      int
 	UpdatedTeams       int
-	UnchangedTeams     int
 	MembershipChanges  int
 	DeactivatedRecords int
 	RetryCount         int
+
+	// UnchangedUsers and UnchangedTeams are nil when the run never recorded them
+	// (it did not succeed, or it predates the column): unknown is not zero.
+	UnchangedUsers *int
+	UnchangedTeams *int
 
 	// HealthChecksDisabled and HealthChecksEnabled count teams whose health
 	// checks this run switched off or on. MassDeletionOverridden is true when the
@@ -246,4 +249,40 @@ type HoldStore interface {
 	SaveHold(ctx context.Context, h Hold) error
 	// ClearHold removes the hold and reports whether there was one.
 	ClearHold(ctx context.Context) (bool, error)
+}
+
+// HistoryFilter selects a page of run history. Zero-valued filter fields match
+// everything. Limit must be positive; the caller enforces the maximum.
+type HistoryFilter struct {
+	Status       Status
+	Trigger      Trigger
+	SnapshotType orgprovider.SnapshotType
+	Limit        int
+	Offset       int
+}
+
+// HistoryReader lists runs newest first (created_at DESC, id DESC as a stable
+// tiebreaker) together with the total number of runs matching the filter. It is
+// separate from Store so read-only history needs nothing from the write path.
+type HistoryReader interface {
+	List(ctx context.Context, f HistoryFilter) (runs []Run, total int, err error)
+}
+
+// ValidStatus, ValidTrigger and ValidSnapshotType report whether a filter value
+// is one the schema's CHECK constraints allow.
+func ValidStatus(s string) bool {
+	for _, v := range allStatuses {
+		if string(v) == s {
+			return true
+		}
+	}
+	return false
+}
+
+func ValidTrigger(s string) bool {
+	return s == string(TriggerManual) || s == string(TriggerScheduled)
+}
+
+func ValidSnapshotType(s string) bool {
+	return s == string(orgprovider.SnapshotComplete) || s == string(orgprovider.SnapshotPartial)
 }

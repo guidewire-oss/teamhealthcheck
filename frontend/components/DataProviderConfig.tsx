@@ -14,6 +14,7 @@ import {
 } from "@/lib/api/admin";
 import { useSyncRun } from "@/lib/useSyncRun";
 import { isActive } from "@/lib/sync-progress";
+import { formatCount } from "@/lib/sync-history";
 import SyncProgressBar from "./SyncProgressBar";
 import MassDeletionThresholdSettings from "./MassDeletionThresholdSettings";
 
@@ -365,8 +366,8 @@ export default function DataProviderConfig() {
               </p>
             )}
             <p className="text-sm text-green-700" data-testid="sync-counts">
-              Users: {run.insertedUsers} added, {run.updatedUsers} updated, {run.unchangedUsers} unchanged; Teams:{" "}
-              {run.insertedTeams} added, {run.updatedTeams} updated, {run.unchangedTeams} unchanged; Membership
+              Users: {run.insertedUsers} added, {run.updatedUsers} updated, {formatCount(run.unchangedUsers, "not available")} unchanged; Teams:{" "}
+              {run.insertedTeams} added, {run.updatedTeams} updated, {formatCount(run.unchangedTeams, "not available")} unchanged; Membership
               changes: {run.membershipChanges}.
             </p>
             {run.deactivatedRecords > 0 && (

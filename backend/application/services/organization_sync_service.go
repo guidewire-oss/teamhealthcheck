@@ -1137,6 +1137,21 @@ func (s *OrganizationSyncService) GetRun(ctx context.Context, id string) (*orgsy
 	return s.runs.Get(ctx, id)
 }
 
+// ErrRunHistoryUnavailable means the configured run store cannot list history.
+var ErrRunHistoryUnavailable = errors.New("sync run history is not available")
+
+// ListRuns returns one page of run history, newest first, after failing any run
+// a crashed worker abandoned so an old PENDING/RUNNING row is not shown as
+// in progress forever.
+func (s *OrganizationSyncService) ListRuns(ctx context.Context, f orgsyncrun.HistoryFilter) ([]orgsyncrun.Run, int, error) {
+	reader, ok := s.runs.(orgsyncrun.HistoryReader)
+	if s.runs == nil || !ok {
+		return nil, 0, ErrRunHistoryUnavailable
+	}
+	s.recoverStaleRuns(ctx)
+	return reader.List(ctx, f)
+}
+
 // requirePodIQRoleLevels fails when a user carries a podiqRole whose mapped
 // level is not configured in this deployment. Snapshots without roles pass.
 func requirePodIQRoleLevels(snap *orgsnapshot.Snapshot, knownLevels map[string]bool) error {
