@@ -141,6 +141,14 @@ describe('Sync Now: status and progress', () => {
     expect(getRun.mock.calls.length).toBe(calls); // terminal: polling stopped
   });
 
+  it('shows an unrecorded unchanged count as not available, not 0', async () => {
+    await renderReady(makeRun({
+      status: 'SUCCESS', stage: 'COMPLETED', insertedUsers: 2, insertedTeams: 1, unchangedUsers: null, unchangedTeams: null,
+    }));
+    expect(screen.getByTestId('sync-counts')).toHaveTextContent('Users: 2 added, 0 updated, not available unchanged');
+    expect(screen.getByTestId('sync-counts')).toHaveTextContent('Teams: 1 added, 0 updated, not available unchanged');
+  });
+
   it('shows an identical re-sync as 0 added, 0 updated, everything unchanged, 0 membership changes', async () => {
     await renderReady(makeRun({
       status: 'SUCCESS', stage: 'COMPLETED', unchangedUsers: 1192, unchangedTeams: 237,
