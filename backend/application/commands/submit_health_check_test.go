@@ -632,3 +632,62 @@ func TestSubmitHealthCheck_AssessmentPeriodInput(t *testing.T) {
 		}
 	})
 }
+
+// participationRepo adds the optional ParticipationChecker to the fake repository.
+type participationRepo struct {
+	*fakeHealthCheckRepository
+	enabled, found bool
+	err            error
+}
+
+func (p *participationRepo) IsTeamHealthCheckEnabled(context.Context, string) (bool, bool, error) {
+	return p.enabled, p.found, p.err
+}
+
+func TestSubmitHealthCheck_ParticipationGate(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, time.January, 15, 10, 0, 0, 0, time.UTC)}
+	for _, surveyType := range []string{healthcheck.SurveyTypeIndividual, healthcheck.SurveyTypePostWorkshop} {
+		for _, completed := range []bool{true, false} {
+			base := &fakeHealthCheckRepository{}
+			repo := &participationRepo{fakeHealthCheckRepository: base, enabled: false, found: true}
+			cmd := baseCommand(func(c *SubmitHealthCheckCommand) { c.SurveyType = surveyType; c.Completed = completed })
+			_, err := NewSubmitHealthCheckHandlerWithClock(repo, clock.Now).Handle(cmd)
+			var disabled *healthcheck.ParticipationDisabledError
+			if !errors.As(err, &disabled) {
+				t.Fatalf("%s completed=%v: want ParticipationDisabledError, got %v", surveyType, completed, err)
+			}
+			if len(base.sessions) != 0 {
+				t.Fatalf("%s completed=%v: a disabled team must not persist a session", surveyType, completed)
+			}
+		}
+	}
+}
+
+func TestSubmitHealthCheck_ParticipationEnabledOrUnknownTeamProceeds(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, time.January, 15, 10, 0, 0, 0, time.UTC)}
+	for name, repo := range map[string]*participationRepo{
+		"enabled":      {fakeHealthCheckRepository: &fakeHealthCheckRepository{}, enabled: true, found: true},
+		"unknown team": {fakeHealthCheckRepository: &fakeHealthCheckRepository{}, enabled: false, found: false},
+	} {
+		if _, err := NewSubmitHealthCheckHandlerWithClock(repo, clock.Now).Handle(baseCommand(nil)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestSubmitHealthCheck_ParticipationLookupErrorFailsClosed(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, time.January, 15, 10, 0, 0, 0, time.UTC)}
+	repo := &participationRepo{fakeHealthCheckRepository: &fakeHealthCheckRepository{}, err: errors.New("db down")}
+	_, err := NewSubmitHealthCheckHandlerWithClock(repo, clock.Now).Handle(baseCommand(nil))
+	if err == nil {
+		t.Fatal("a failed participation lookup must reject the submission, not allow it")
+	}
+	// A typed error lets the HTTP layer report this as a server fault, not a bad request.
+	var lookupErr *healthcheck.ParticipationLookupError
+	if !errors.As(err, &lookupErr) {
+		t.Fatalf("expected a ParticipationLookupError, got %T: %v", err, err)
+	}
+	if lookupErr.Unwrap() == nil {
+		t.Fatal("the underlying cause must be preserved for logging")
+	}
+}

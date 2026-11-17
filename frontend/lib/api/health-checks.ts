@@ -146,8 +146,9 @@ export async function getTeamSubmissionStatus(
 
 export interface SurveyEligibility {
   eligible: boolean;
-  // Populated when eligible is false: one of "duplicate", "future_period", "past_period", or
-  // "invalid_period" (see backend healthcheck.PeriodEligibilityReason). Callers must branch on
+  // Populated when eligible is false: one of "duplicate", "future_period", "past_period",
+  // "invalid_period" (see backend healthcheck.PeriodEligibilityReason), or
+  // "participation_disabled" (the team is opted out of Team Health Check). Callers must branch on
   // this rather than assuming every ineligible result is a duplicate -- submittedPeriod and
   // nextEligiblePeriod are only meaningful when reason is "duplicate".
   reason?: string;

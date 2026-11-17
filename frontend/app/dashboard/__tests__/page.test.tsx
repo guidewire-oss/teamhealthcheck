@@ -166,7 +166,7 @@ describe('Team Lead dashboard: assessment period selection modal', () => {
     expect(checkSurveyEligibility).toHaveBeenCalledWith({
       surveyType: 'individual',
       assessmentPeriod: '2026 H1',
-      teamId: undefined,
+      teamId: 'team-1',
       userId: 'lead-1',
     });
   });
@@ -265,6 +265,22 @@ describe('Team Lead dashboard: assessment period selection modal', () => {
       expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('Individual Survey');
       expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('H1 2026');
       expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('H2 2026');
+      expect(push).not.toHaveBeenCalled();
+    });
+
+    it('tells the Team Lead their team is not opted in instead of opening the survey', async () => {
+      checkSurveyEligibility.mockResolvedValue({ eligible: false, reason: 'participation_disabled' });
+      const user = userEvent.setup({ delay: null });
+      render(<DashboardPage />);
+
+      await waitFor(() => expect(screen.getByTestId('take-survey-button')).toBeInTheDocument());
+      await user.click(screen.getByTestId('take-survey-button'));
+      await user.click(screen.getByTestId('period-selection-confirm-button'));
+
+      await waitFor(() => expect(screen.getByTestId('duplicate-submission-modal')).toBeInTheDocument());
+      expect(screen.getByTestId('duplicate-submission-modal')).toHaveTextContent('Team Not Opted In');
+      expect(screen.getByTestId('not-enrolled-message')).toHaveTextContent('not opted in to Team Health Check');
+      expect(screen.getByTestId('duplicate-submission-message')).not.toHaveTextContent('already submitted');
       expect(push).not.toHaveBeenCalled();
     });
 
@@ -368,7 +384,7 @@ describe('Team Lead dashboard: assessment period selection modal', () => {
       expect(push).not.toHaveBeenCalled();
     });
 
-    it('checks the individual survey eligibility by the logged-in user only, regardless of team', async () => {
+    it('checks the individual survey eligibility for the logged-in user and names the team so an opted-out team is caught', async () => {
       checkSurveyEligibility.mockResolvedValue({ eligible: true });
       const user = userEvent.setup({ delay: null });
       render(<DashboardPage />);
@@ -381,7 +397,7 @@ describe('Team Lead dashboard: assessment period selection modal', () => {
       const call = checkSurveyEligibility.mock.calls[0][0];
       expect(call.surveyType).toBe('individual');
       expect(call.userId).toBe('lead-1');
-      expect(call.teamId).toBeUndefined();
+      expect(call.teamId).toBe('team-1');
     });
 
     it('checks the post-workshop eligibility by the selected team', async () => {
