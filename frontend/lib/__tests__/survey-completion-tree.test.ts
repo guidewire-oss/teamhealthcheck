@@ -32,7 +32,7 @@ function team(overrides: Partial<SurveyCompletionTeam> = {}): SurveyCompletionTe
     teamName: 'Sunnyvale',
     completed: 3,
     total: 3,
-    postWorkshopCompleted: true,
+    postWorkshopCompleted: overrides.status === undefined || overrides.status === 'complete',
     status: 'complete',
     ...overrides,
   };
@@ -328,11 +328,14 @@ describe('getPodDisplayStatus', () => {
     expect(getPodDisplayStatus(team({ status: 'in_progress', completed: 45, total: 100 }))).toBe('in_progress');
   });
 
-  it('an in_progress pod whose rounded percentage reaches 100% displays as "complete", not "in_progress"', () => {
-    // 199 of 200 -- backend still says in_progress (completed < total),
-    // but rounds to 100%, so the display must show Completed, never a
-    // contradictory "100% completed" next to an "In Progress" badge.
-    expect(getPodDisplayStatus(team({ status: 'in_progress', completed: 199, total: 200 }))).toBe('complete');
+  it('a pod with a submitted post-workshop survey displays as "complete" even below 100% participation', () => {
+    expect(getPodDisplayStatus(team({ status: 'complete', completed: 4, total: 5, postWorkshopCompleted: true }))).toBe('complete');
+    expect(getPodDisplayStatus(team({ status: 'complete', completed: 5, total: 5, postWorkshopCompleted: true }))).toBe('complete');
+  });
+
+  it('a pod without a submitted post-workshop survey is never "complete", even at 100% or 99.5% participation', () => {
+    expect(getPodDisplayStatus(team({ status: 'in_progress', completed: 5, total: 5, postWorkshopCompleted: false }))).toBe('in_progress');
+    expect(getPodDisplayStatus(team({ status: 'in_progress', completed: 199, total: 200, postWorkshopCompleted: false }))).toBe('in_progress');
   });
 
   it('never touches not_started or opted_out pods -- they keep their own status unchanged', () => {
@@ -532,13 +535,17 @@ describe('buildVisibleGroups with two different team IDs sharing the same name',
 // placeholder names ("Leader One", "Pod One", etc.) deliberately -- the
 // helper must not special-case any particular person or pod name.
 describe('isPodFullyCompleted / isPersonSubtreeFullyCompleted', () => {
-  it('a pod at exactly 100% is fully completed; anything below is not', () => {
+  it('a pod is fully completed exactly when its post-workshop survey is submitted, regardless of participation', () => {
     expect(isPodFullyCompleted(team({ completed: 4, total: 4, status: 'complete' }))).toBe(true);
-    // Rounds up to 100% even though backend status still says in_progress --
-    // must agree with getPodCompletionPercent, the same helper the Status
-    // column itself uses.
-    expect(isPodFullyCompleted(team({ completed: 199, total: 200, status: 'in_progress' }))).toBe(true);
-    expect(isPodFullyCompleted(team({ completed: 1, total: 4, status: 'in_progress' }))).toBe(false);
+    // 4/5 + submitted post-workshop survey is fully completed.
+    expect(isPodFullyCompleted(team({ completed: 4, total: 5, status: 'complete', postWorkshopCompleted: true }))).toBe(true);
+    // 5/5 without a post-workshop survey is not.
+    expect(isPodFullyCompleted(team({ completed: 5, total: 5, status: 'in_progress', postWorkshopCompleted: false }))).toBe(false);
+    // 4/5 without one is not.
+    expect(isPodFullyCompleted(team({ completed: 4, total: 5, status: 'in_progress', postWorkshopCompleted: false }))).toBe(false);
+    // A pod with no eligible members is never complete.
+    expect(isPodFullyCompleted(team({ completed: 0, total: 0, status: 'not_started', postWorkshopCompleted: true }))).toBe(false);
+    expect(isPodFullyCompleted(team({ completed: 1, total: 4, status: 'in_progress', postWorkshopCompleted: false }))).toBe(false);
     expect(isPodFullyCompleted(team({ completed: 0, total: 4, status: 'not_started' }))).toBe(false);
   });
 

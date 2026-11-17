@@ -101,7 +101,7 @@ export function buildCompletionBars(
     .map((team) => {
       const percent = Math.round((team.completed / team.total) * 100);
       const status: CompletionBarStatus =
-        percent >= 100 && team.postWorkshopCompleted === true ? 'complete' : 'in_progress';
+        team.postWorkshopCompleted === true ? 'complete' : 'in_progress';
       return {
         teamId: team.teamId,
         teamName: team.teamName,
