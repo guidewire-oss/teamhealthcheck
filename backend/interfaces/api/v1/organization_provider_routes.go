@@ -49,6 +49,9 @@ func SetupOrganizationProviderRoutes(
 		// below) and run the same StartRun path with the same guards.
 		admin.POST("/organization-provider/sync", handler.Sync)
 		admin.GET("/organization-provider/sync/runs/:runId", handler.GetSyncRun)
+		// Read-only, paginated run history. Gin matches the static "runs"
+		// path separately from the ":runId" route above.
+		admin.GET("/organization-provider/sync/runs", handler.ListSyncRunHistory)
 
 		if cfg.scheduler != nil {
 			sched := &OrganizationSyncScheduleHandler{scheduler: cfg.scheduler}

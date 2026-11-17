@@ -47,7 +47,7 @@ func NewOrgSyncRunRepository(db *sql.DB) *OrgSyncRunRepository {
 const runColumns = `id, status, stage, initiated_by, snapshot_type, source_generated_at,
 	created_at, started_at, completed_at, heartbeat_at,
 	inserted_users, updated_users, inserted_teams, updated_teams, membership_changes,
-	unchanged_users, unchanged_teams, deactivated_records, retry_count, error_code, error_message, failed_stage, worker_id, hold_report,
+	unchanged_users, unchanged_teams, unchanged_recorded, deactivated_records, retry_count, error_code, error_message, failed_stage, worker_id, hold_report,
 	health_checks_disabled, health_checks_enabled, mass_deletion_overridden, trigger_type`
 
 type rowScanner interface{ Scan(dest ...any) error }
@@ -59,14 +59,21 @@ func scanRun(row rowScanner) (*orgsyncrun.Run, error) {
 		srcAt, started, completed, heartbeat   sql.NullTime
 		errCode, errMsg, failedStage, workerID sql.NullString
 		hold                                   []byte
+		unchangedUsers, unchangedTeams         int
+		unchangedRecorded                      bool
 		trigger                                string
 	)
 	if err := row.Scan(&r.ID, &status, &stage, &r.InitiatedBy, &snapType, &srcAt,
 		&r.CreatedAt, &started, &completed, &heartbeat,
 		&r.InsertedUsers, &r.UpdatedUsers, &r.InsertedTeams, &r.UpdatedTeams, &r.MembershipChanges,
-		&r.UnchangedUsers, &r.UnchangedTeams, &r.DeactivatedRecords, &r.RetryCount, &errCode, &errMsg, &failedStage, &workerID, &hold,
+		&unchangedUsers, &unchangedTeams, &unchangedRecorded, &r.DeactivatedRecords, &r.RetryCount, &errCode, &errMsg, &failedStage, &workerID, &hold,
 		&r.HealthChecksDisabled, &r.HealthChecksEnabled, &r.MassDeletionOverridden, &trigger); err != nil {
 		return nil, err
+	}
+	// The columns are NOT NULL and hold 0 when nothing was recorded, so the flag,
+	// not the value, says whether a count is real. Unknown stays nil, never 0.
+	if unchangedRecorded {
+		r.UnchangedUsers, r.UnchangedTeams = &unchangedUsers, &unchangedTeams
 	}
 	r.Status = orgsyncrun.Status(status)
 	r.Trigger = orgsyncrun.Trigger(trigger)
@@ -122,6 +129,8 @@ func (r *OrgSyncRunRepository) CreatePending(ctx context.Context, p orgsyncrun.N
 	if trigger == "" {
 		trigger = orgsyncrun.TriggerManual
 	}
+	// unchanged_recorded keeps its default FALSE: a new run has not recorded its
+	// unchanged counts yet (see migration 000032).
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO org_sync_runs (id, status, stage, initiated_by, idempotency_key, snapshot_type, trigger_type)
 		VALUES ($1, 'PENDING', $5, $2, $3, $4, $6)
@@ -208,6 +217,44 @@ func (r *OrgSyncRunRepository) LatestSuccessByTrigger(ctx context.Context, t org
 		return nil, nil
 	}
 	return run, err
+}
+
+// List returns one page of runs newest first plus the total matching the filter.
+// Every filter is a bound parameter; a NULL parameter disables its predicate, so
+// one static query serves all combinations. The ORDER BY is covered by
+// idx_org_sync_runs_created for the unfiltered case; the table holds one row per
+// sync attempt, so the filtered scans stay small.
+func (r *OrgSyncRunRepository) List(ctx context.Context, f orgsyncrun.HistoryFilter) ([]orgsyncrun.Run, int, error) {
+	nullable := func(v string) any {
+		if v == "" {
+			return nil
+		}
+		return v
+	}
+	status, trigger, snap := nullable(string(f.Status)), nullable(string(f.Trigger)), nullable(string(f.SnapshotType))
+	const where = `WHERE ($1::text IS NULL OR status = $1)
+		AND ($2::text IS NULL OR trigger_type = $2)
+		AND ($3::text IS NULL OR snapshot_type = $3)`
+
+	var total int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM org_sync_runs `+where, status, trigger, snap).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count sync runs: %w", err)
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT `+runColumns+` FROM org_sync_runs `+where+`
+		ORDER BY created_at DESC, id DESC LIMIT $4 OFFSET $5`, status, trigger, snap, f.Limit, f.Offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list sync runs: %w", err)
+	}
+	defer rows.Close()
+	runs := []orgsyncrun.Run{}
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to scan sync run: %w", err)
+		}
+		runs = append(runs, *run)
+	}
+	return runs, total, rows.Err()
 }
 
 // SetStage records progress and refreshes the heartbeat on a non-terminal run.
@@ -313,5 +360,6 @@ func (r *OrgSyncRunRepository) expectOne(ctx context.Context, query string, args
 
 var (
 	_ orgsyncrun.Store           = (*OrgSyncRunRepository)(nil)
+	_ orgsyncrun.HistoryReader   = (*OrgSyncRunRepository)(nil)
 	_ orgsyncschedule.RunHistory = (*OrgSyncRunRepository)(nil)
 )
