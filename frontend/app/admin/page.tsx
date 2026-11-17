@@ -31,6 +31,7 @@ import {
 import { API_BASE_URL } from "@/lib/api/client";
 import {
   Settings,
+  History,
   Users,
   Calendar,
   Plus,
@@ -50,6 +51,7 @@ import HierarchyConfig from "@/components/HierarchyConfig";
 import DimensionConfig from "@/components/DimensionConfig";
 import DataProviderConfig from "@/components/DataProviderConfig";
 import AutoSyncSettings from "@/components/AutoSyncSettings";
+import SyncHistory from "@/components/SyncHistory";
 import SupervisorChainModal from "@/components/SupervisorChainModal";
 import TeamMembersModal from "@/components/TeamMembersModal";
 import SurveyCompletionDashboard from "@/components/SurveyCompletionDashboard";
@@ -60,7 +62,7 @@ export default function AdminPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<
-    "hierarchy" | "teams" | "surveyCompletion" | "users" | "settings"
+    "hierarchy" | "teams" | "surveyCompletion" | "users" | "settings" | "syncHistory"
   >("hierarchy");
 
   // Teams tab state
@@ -856,9 +858,29 @@ export default function AdminPage() {
               Settings
             </div>
           </button>
+          <button
+            data-testid="sync-history-tab"
+            onClick={() => setActiveTab("syncHistory")}
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
+              activeTab === "syncHistory"
+                ? "text-indigo-600 border-indigo-600"
+                : "text-gray-500 border-transparent hover:text-gray-700"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <History className="w-5 h-5" />
+              Sync History
+            </div>
+          </button>
         </div>
 
         {activeTab === "hierarchy" && <HierarchyConfig />}
+
+        {activeTab === "syncHistory" && (
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <SyncHistory />
+          </div>
+        )}
 
         {activeTab === "teams" && (
           <div>
