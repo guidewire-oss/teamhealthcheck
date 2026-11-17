@@ -39,7 +39,10 @@ describe('CompletionBreakdownChart', () => {
     expect(container.querySelector('.recharts-pie')).not.toBeNull();
     // The SVG surface carries the chart's rendered size, which proves the mocked
     // container's dimensions reached Recharts (it would be 0 without them).
-    expect(container.querySelector('.recharts-surface')).toHaveAttribute('width', '800');
+    // Recharts 3 also gives each legend icon its own .recharts-surface (14px),
+    // so check the set of surfaces rather than whichever comes first in the DOM.
+    const surfaceWidths = Array.from(container.querySelectorAll('.recharts-surface')).map((s) => s.getAttribute('width'));
+    expect(surfaceWidths).toContain('800');
   });
 
   it('displays all four existing statuses in the legend, with their existing labels', async () => {
