@@ -130,7 +130,7 @@ func (r *OrgSyncRunRepository) CreatePending(ctx context.Context, p orgsyncrun.N
 		trigger = orgsyncrun.TriggerManual
 	}
 	// unchanged_recorded keeps its default FALSE: a new run has not recorded its
-	// unchanged counts yet (see migration 000032).
+	// unchanged counts yet (see migration 000033).
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO org_sync_runs (id, status, stage, initiated_by, idempotency_key, snapshot_type, trigger_type)
 		VALUES ($1, 'PENDING', $5, $2, $3, $4, $6)

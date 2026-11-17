@@ -142,7 +142,7 @@ var _ = Describe("Org sync run history (real Postgres)", func() {
 			Expect(created.UnchangedTeams).To(BeNil())
 		})
 
-		It("never stores NULL in the count columns, so a pre-000032 replica can still scan every row", func() {
+		It("never stores NULL in the count columns, so a pre-000033 replica can still scan every row", func() {
 			// The previous release scans these columns into a plain int. A NULL would make
 			// every read of that row fail, so none may exist, however the row was written.
 			_, err := db.Exec(`UPDATE org_sync_runs SET status='FAILED' WHERE id='r5'`)
