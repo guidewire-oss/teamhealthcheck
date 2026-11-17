@@ -443,25 +443,29 @@ func aggregateTeams(teams []dto.SurveyCompletionTeamDTO) (total, optedIn, comple
 // deriveSurveyCompletionStatus classifies a team from its counts, its
 // post-workshop session, and its health_check_enabled flag.
 //
-// "complete" requires BOTH every eligible member's individual survey done
-// (Completed >= Total) AND the team's post-workshop session completed --
-// per the original survey-completion-dashboard spec (issue #143), the
-// individual surveys alone only capture each member's private input; the
-// post-workshop session is where the team reviews those results together,
-// and a team isn't done until that has happened too. A team whose members
-// have all finished their individual surveys but hasn't yet held its
-// post-workshop session is "in_progress", never "complete" -- exactly the
-// same bucket a team with only some members done falls into, since from a
-// completion standpoint neither team is finished.
+// Individual participation (Completed/Total) and post-workshop completion
+// are separate values. "complete" is decided by the post-workshop session
+// alone: once the team lead has SUBMITTED it for the period (a draft never
+// counts -- see buildTeamProgress), the team is complete even when some
+// members never submitted their individual survey (e.g. one is on
+// vacation). Completed/Total keep reporting the real participation, so a
+// 4-of-5 team shows 4/5 and "Fully complete". Without a submitted
+// post-workshop session a team is "not_started" when nobody has
+// responded yet and "in_progress" otherwise -- even at 100% individual
+// participation. Opted-out teams and teams with no eligible members keep
+// their existing treatment.
 func deriveSurveyCompletionStatus(t queries.SurveyCompletionTeam) string {
 	if !t.HealthCheckEnabled {
 		return "opted_out"
 	}
-	if t.Total == 0 || t.Completed == 0 {
+	if t.Total == 0 {
 		return "not_started"
 	}
-	if t.Completed >= t.Total && t.PostWorkshopCompleted {
+	if t.PostWorkshopCompleted {
 		return "complete"
+	}
+	if t.Completed == 0 {
+		return "not_started"
 	}
 	return "in_progress"
 }

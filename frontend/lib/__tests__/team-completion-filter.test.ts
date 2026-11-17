@@ -168,11 +168,12 @@ describe('buildInProgressBars', () => {
     expect(bars.map((b) => b.teamName)).toEqual(['Alpha']);
   });
 
-  it('excludes an in_progress team whose percentage rounds up to exactly 100%', () => {
+  it('excludes a team that is complete via its post-workshop survey despite partial participation', () => {
     const bars = buildInProgressBars([
-      { teamId: 'Alpha', teamName: 'Alpha', completed: 1, total: 4, status: 'in_progress', postWorkshopCompleted: true },
-      // Raw status in_progress (completed < total), but rounds to 100%.
-      { teamId: 'RoundsUp', teamName: 'RoundsUp', completed: 199, total: 200, status: 'in_progress', postWorkshopCompleted: true },
+      { teamId: 'Alpha', teamName: 'Alpha', completed: 1, total: 4, status: 'in_progress', postWorkshopCompleted: false },
+      // Raw status in_progress (as if stale) passes the status filter, so only
+      // the post-workshop rule in buildCompletionBars can exclude it.
+      { teamId: 'Partial', teamName: 'Partial', completed: 4, total: 5, status: 'in_progress', postWorkshopCompleted: true },
     ]);
     expect(bars.map((b) => b.teamName)).toEqual(['Alpha']);
   });
@@ -189,7 +190,7 @@ describe('buildInProgressBars', () => {
   it('returns an empty array when nothing is genuinely in progress', () => {
     const bars = buildInProgressBars([
       { teamId: 'Beta', teamName: 'Beta', completed: 4, total: 4, status: 'complete', postWorkshopCompleted: true },
-      { teamId: 'RoundsUp', teamName: 'RoundsUp', completed: 199, total: 200, status: 'in_progress', postWorkshopCompleted: true },
+      { teamId: 'Partial', teamName: 'Partial', completed: 4, total: 5, status: 'in_progress', postWorkshopCompleted: true },
     ]);
     expect(bars).toEqual([]);
   });
