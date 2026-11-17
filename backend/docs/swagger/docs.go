@@ -3396,6 +3396,15 @@ const docTemplate = `{
                 "responseCount": {
                     "example": 5,
                     "type": "integer"
+                },
+                "trend": {
+                    "description": "Trend is the trend value (\"improving\", \"stable\", \"declining\") from the\nfinal completed post-workshop response for this team+dimension, if any.",
+                    "enum": [
+                        "improving",
+                        "stable",
+                        "declining"
+                    ],
+                    "type": "string"
                 }
             },
             "type": "object"

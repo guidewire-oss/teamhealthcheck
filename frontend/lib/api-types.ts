@@ -4,6 +4,8 @@
  * These types correspond to the Go structs in backend/interfaces/dto/
  */
 
+import type { DimensionTrendValue } from './dimension-trend';
+
 // =============================================================================
 // Authentication API Types (from auth_dto.go)
 // =============================================================================
@@ -99,6 +101,8 @@ export interface DimensionSummary {
   dimensionId: string;
   avgScore: number;
   responseCount: number;
+  /** Trend from the final post-workshop response, if one exists for this team+dimension. */
+  trend?: DimensionTrendValue;
 }
 
 // =============================================================================
@@ -122,6 +126,27 @@ export interface ManagerTrendsResponse {
   managerId: string;
   periods: string[];
   dimensions: DimensionTrend[];
+}
+
+export interface PostWorkshopComment {
+  teamId: string;
+  sessionId: string;
+  dimensionId: string;
+  comment: string;
+  date: string;
+}
+
+export interface ManagerFinalPostWorkshopCommentsResponse {
+  managerId: string;
+  comments: Record<string, PostWorkshopComment[]>;
+  assessmentPeriod?: string;
+}
+
+export interface ManagerMemberOverviewResponse {
+  managerId: string;
+  teamId?: string;
+  teams: TeamHealthSummary[];
+  assessmentPeriod?: string;
 }
 
 // =============================================================================

@@ -272,15 +272,10 @@ var _ = Describe("E2E: Dimension Matrix View", Label("e2e"), func() {
 			speedTrendVisible, _ := speedTrend.IsVisible()
 			Expect(speedTrendVisible).To(BeTrue())
 
-			By("Verifying comment indicator for cells with comments")
+			By("Verifying matrix shows no comment indicators (comments only in Cards view)")
 			commentIndicator := page.Locator("[data-testid='matrix-comment-e2e_matrix_s1-mission']")
 			commentCount, _ := commentIndicator.Count()
-			Expect(commentCount).To(Equal(1))
-
-			By("Verifying no comment indicator for cells without comments")
-			noComment := page.Locator("[data-testid='matrix-comment-e2e_matrix_s1-value']")
-			noCommentCount, _ := noComment.Count()
-			Expect(noCommentCount).To(Equal(0))
+			Expect(commentCount).To(Equal(0))
 		})
 	})
 })
