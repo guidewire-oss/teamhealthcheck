@@ -98,7 +98,7 @@ export default function MemberHomePage() {
   // a period that simply isn't open right now (e.g. from a previous year) -- these must never
   // share the "you already submitted this" wording, since only "duplicate" means that.
   const [blockedInfo, setBlockedInfo] = useState<{
-    reason: 'duplicate' | 'not_open';
+    reason: 'duplicate' | 'not_open' | 'not_enrolled';
     submittedPeriod: string;
     nextEligiblePeriod: string;
   } | null>(null);
@@ -220,6 +220,9 @@ export default function MemberHomePage() {
         surveyType: 'individual',
         assessmentPeriod,
         userId: user.id,
+        // The survey opens for the member's first team; sending it lets the server report
+        // an opted-out team up front instead of rejecting the submit at the end.
+        teamId: user.teamIds?.[0],
       });
 
       if (!result.eligible) {
@@ -227,7 +230,13 @@ export default function MemberHomePage() {
         // any other reason (e.g. the period isn't open) must not reuse that wording, since
         // result.submittedPeriod is empty in that case and would otherwise be papered over
         // with the period they just picked, falsely implying they'd already submitted it.
-        if (result.reason === 'duplicate') {
+        if (result.reason === 'participation_disabled') {
+          setBlockedInfo({
+            reason: 'not_enrolled',
+            submittedPeriod: '',
+            nextEligiblePeriod: '',
+          });
+        } else if (result.reason === 'duplicate') {
           setBlockedInfo({
             reason: 'duplicate',
             submittedPeriod: result.submittedPeriod || formatPeriodLabel(assessmentPeriod),
@@ -608,7 +617,11 @@ export default function MemberHomePage() {
                   <AlertCircle className="w-5 h-5 text-amber-600" />
                 </div>
                 <h3 id="duplicate-submission-modal-title" className="text-xl font-semibold text-gray-900">
-                  {blockedInfo.reason === 'duplicate' ? 'Already Submitted' : 'Period Not Available'}
+                  {blockedInfo.reason === 'duplicate'
+                    ? 'Already Submitted'
+                    : blockedInfo.reason === 'not_enrolled'
+                    ? 'Team Not Opted In'
+                    : 'Period Not Available'}
                 </h3>
               </div>
               <button
@@ -635,6 +648,11 @@ export default function MemberHomePage() {
                     </p>
                   )}
                 </>
+              ) : blockedInfo.reason === 'not_enrolled' ? (
+                <p className="text-base text-gray-700 leading-relaxed mb-8" data-testid="not-enrolled-message">
+                  Your team is not opted in to Team Health Check, so surveys are not available.
+                  Please contact your team lead or an administrator if this looks wrong.
+                </p>
               ) : (
                 <p className="text-base text-gray-700 leading-relaxed mb-8">
                   <span className="font-semibold">{blockedInfo.submittedPeriod}</span> is not open for

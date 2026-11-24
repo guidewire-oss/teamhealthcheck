@@ -21,6 +21,7 @@ func SetupActionItemRoutes(router *gin.Engine, db *sql.DB, jwtService *services.
 		teamRoutes.POST("", handler.CreateActionItem)
 		teamRoutes.PATCH("/:id", handler.UpdateActionItem)
 		teamRoutes.DELETE("/:id", handler.DeleteActionItem)
+		teamRoutes.GET("/direct-manager", handler.GetDirectManager)
 	}
 
 	// Manager summary route — requires JWT + manager or above role
@@ -29,5 +30,14 @@ func SetupActionItemRoutes(router *gin.Engine, db *sql.DB, jwtService *services.
 	managerRoutes.Use(middleware.ManagerOrAboveMiddleware())
 	{
 		managerRoutes.GET("", handler.GetTeamsActionSummary)
+	}
+
+	// Manager pod drill-down — read-only board for a single team in the
+	// manager/director/VP's hierarchy
+	podRoutes := router.Group("/api/v1/managers/:managerId/teams/:teamId/action-items")
+	podRoutes.Use(middleware.JWTAuthMiddleware(jwtService))
+	podRoutes.Use(middleware.ManagerOrAboveMiddleware())
+	{
+		podRoutes.GET("", handler.GetPodActionItems)
 	}
 }

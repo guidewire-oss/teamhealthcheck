@@ -14,6 +14,7 @@ import {
 } from "@/lib/api/admin";
 import { useSyncRun } from "@/lib/useSyncRun";
 import { isActive } from "@/lib/sync-progress";
+import { formatCount } from "@/lib/sync-history";
 import SyncProgressBar from "./SyncProgressBar";
 import MassDeletionThresholdSettings from "./MassDeletionThresholdSettings";
 
@@ -354,6 +355,7 @@ export default function DataProviderConfig() {
       {run?.status === "SUCCESS" && (
         <div
           data-testid="sync-result"
+          data-run-id={run.runId}
           className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg flex items-start gap-3"
         >
           <CheckCircle2 className="w-5 h-5 text-green-600 mt-0.5 flex-shrink-0" />
@@ -365,8 +367,8 @@ export default function DataProviderConfig() {
               </p>
             )}
             <p className="text-sm text-green-700" data-testid="sync-counts">
-              Users: {run.insertedUsers} added, {run.updatedUsers} updated, {run.unchangedUsers} unchanged; Teams:{" "}
-              {run.insertedTeams} added, {run.updatedTeams} updated, {run.unchangedTeams} unchanged; Membership
+              Users: {run.insertedUsers} added, {run.updatedUsers} updated, {formatCount(run.unchangedUsers, "not available")} unchanged; Teams:{" "}
+              {run.insertedTeams} added, {run.updatedTeams} updated, {formatCount(run.unchangedTeams, "not available")} unchanged; Membership
               changes: {run.membershipChanges}.
             </p>
             {run.deactivatedRecords > 0 && (

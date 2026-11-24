@@ -45,6 +45,22 @@ func (r *HealthCheckRepository) Save(ctx context.Context, session *healthcheck.H
 	}
 	defer tx.Rollback()
 
+	// Enforce enrollment in the same transaction as the write. The command checks the flag
+	// first for a fast answer, but that read is not atomic with this insert: a PodIQ sync could
+	// commit health_check_enabled = false in between. FOR SHARE locks the team row until this
+	// transaction ends, and the sync's UPDATE needs a conflicting lock, so either the sync
+	// commits first (the flag is false here and the save is rejected) or it waits for this save.
+	// An unknown team is left to the foreign key; a NULL flag counts as enabled.
+	var enabled sql.NullBool
+	err = tx.QueryRowContext(ctx, `SELECT health_check_enabled FROM teams WHERE id = $1 FOR SHARE`, session.TeamID).Scan(&enabled)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return &healthcheck.ParticipationLookupError{TeamID: session.TeamID, Err: err}
+	case enabled.Valid && !enabled.Bool:
+		return &healthcheck.ParticipationDisabledError{TeamID: session.TeamID}
+	}
+
 	// Insert or update session
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO health_check_sessions (
@@ -893,4 +909,18 @@ func (r *HealthCheckRepository) scanSessions(ctx context.Context, query string, 
 	}
 
 	return sessions, nil
+}
+
+// IsTeamHealthCheckEnabled implements healthcheck.ParticipationChecker. A NULL flag is
+// treated as enabled, matching team_repository's read of the column.
+func (r *HealthCheckRepository) IsTeamHealthCheckEnabled(ctx context.Context, teamID string) (bool, bool, error) {
+	var enabled sql.NullBool
+	err := r.db.QueryRowContext(ctx, `SELECT health_check_enabled FROM teams WHERE id = $1`, teamID).Scan(&enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("failed to read team participation: %w", err)
+	}
+	return !enabled.Valid || enabled.Bool, true, nil
 }
