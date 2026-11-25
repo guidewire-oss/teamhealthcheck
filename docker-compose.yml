@@ -19,7 +19,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       PORT: ${API_PORT:-8080}
       GIN_MODE: ${GIN_MODE:-release}
-      ORG_SYNC_MAX_DELETE_PERCENT: ${ORG_SYNC_MAX_DELETE_PERCENT:?ORG_SYNC_MAX_DELETE_PERCENT is required}
+      ORG_SYNC_MAX_DELETE_PERCENT: ${ORG_SYNC_MAX_DELETE_PERCENT:-20}
       # Data provider integration (optional - leave unset to disable)
       DATA_PROVIDER_BASE_URL: ${DATA_PROVIDER_BASE_URL:-}
       DATA_PROVIDER_API_TOKEN: ${DATA_PROVIDER_API_TOKEN:-}
@@ -29,7 +29,7 @@ services:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 30s
       timeout: 3s
-      start-period: 10s
+      start_period: 10s
       retries: 3
     restart: unless-stopped
 
@@ -55,6 +55,6 @@ services:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
       interval: 30s
       timeout: 3s
-      start-period: 15s
+      start_period: 15s
       retries: 3
     restart: unless-stopped

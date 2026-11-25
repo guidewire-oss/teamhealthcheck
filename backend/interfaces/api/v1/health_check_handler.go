@@ -173,6 +173,29 @@ func (h *HealthCheckHandler) SubmitHealthCheck(c *gin.Context) {
 			return
 		}
 
+		var disabledErr *healthcheck.ParticipationDisabledError
+		if errors.As(err, &disabledErr) {
+			log.WithField("team_id", req.TeamID).Warn("rejected health check submission for a team that is not enrolled")
+			c.JSON(http.StatusForbidden, dto.ErrorResponse{
+				Error:   "Health checks disabled for this team",
+				Message: disabledErr.Error(),
+				Code:    healthcheck.CodeParticipationDisabled,
+			})
+			return
+		}
+
+		// The enrollment lookup failed: a server-side fault, not a bad request. The cause is
+		// logged but not returned, so database detail never reaches the client.
+		var lookupErr *healthcheck.ParticipationLookupError
+		if errors.As(err, &lookupErr) {
+			log.WithError(err).WithField("team_id", req.TeamID).Error("could not verify team enrollment for a health check submission")
+			c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+				Error:   "Failed to verify team enrollment",
+				Message: "Team enrollment could not be confirmed right now. Please try again.",
+			})
+			return
+		}
+
 		var notOpenErr *healthcheck.PeriodNotOpenError
 		if errors.As(err, &notOpenErr) {
 			log.WithField("team_id", req.TeamID).WithField("survey_type", notOpenErr.SurveyType).
@@ -509,6 +532,25 @@ func (h *HealthCheckHandler) CheckSurveyEligibility(c *gin.Context) {
 		return
 	}
 
+	// A team that is not enrolled is never eligible, whatever its period history says.
+	if pc, ok := h.repository.(healthcheck.ParticipationChecker); ok && teamID != "" {
+		enabled, found, perr := pc.IsTeamHealthCheckEnabled(ctx, teamID)
+		if perr != nil {
+			c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+				Error:   "Failed to check survey eligibility",
+				Message: perr.Error(),
+			})
+			return
+		}
+		if found && !enabled {
+			c.JSON(http.StatusOK, dto.SurveyEligibilityResponse{
+				Eligible: false,
+				Reason:   healthcheck.CodeParticipationDisabled,
+			})
+			return
+		}
+	}
+
 	submittedPeriods, err := h.repository.FindSubmittedPeriods(ctx, healthcheck.LatestSubmissionQuery{
 		SurveyType: surveyType,
 		TeamID:     teamID,
@@ -556,13 +598,15 @@ func canQueryEligibilityScope(c *gin.Context, surveyType, teamID, userID string)
 	if surveyType == healthcheck.SurveyTypePostWorkshop {
 		return slices.Contains(claims.TeamIDs, teamID)
 	}
-	return userID == claims.UserID
+	// An Individual Survey lookup may also name the team (to learn whether it is opted in), but
+	// only one the caller belongs to or leads, so it cannot probe other teams' enrolment.
+	return userID == claims.UserID && (teamID == "" || slices.Contains(claims.TeamIDs, teamID))
 }
 
 // GetAssessmentPeriods handles GET /api/v1/assessment-periods
 //
 // @Summary List distinct assessment periods
-// @Description Returns the distinct assessment period values that appear on at least one submitted health check session, for populating period-selector dropdowns in the frontend.
+// @Description Returns the half-year periods (YYYY H1, YYYY H2, or the older YYYY - 1st Half / 2nd Half label) that appear on at least one completed health check session, for populating period-selector dropdowns. Sessions stored under any other period value are not offered.
 // @Tags Health Checks
 // @Produce json
 // @Success 200 {object} map[string][]string "periods"

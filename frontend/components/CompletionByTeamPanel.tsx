@@ -54,6 +54,7 @@ export default function CompletionByTeamPanel({ teamStats }: CompletionByTeamPan
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search teams"
+            aria-label="Search teams"
             data-testid="team-bars-search-input"
             className="w-full pl-9 pr-9 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
           />

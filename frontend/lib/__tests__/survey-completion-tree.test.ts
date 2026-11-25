@@ -32,7 +32,7 @@ function team(overrides: Partial<SurveyCompletionTeam> = {}): SurveyCompletionTe
     teamName: 'Sunnyvale',
     completed: 3,
     total: 3,
-    postWorkshopCompleted: true,
+    postWorkshopCompleted: overrides.status === undefined || overrides.status === 'complete',
     status: 'complete',
     ...overrides,
   };
@@ -328,11 +328,14 @@ describe('getPodDisplayStatus', () => {
     expect(getPodDisplayStatus(team({ status: 'in_progress', completed: 45, total: 100 }))).toBe('in_progress');
   });
 
-  it('an in_progress pod whose rounded percentage reaches 100% displays as "complete", not "in_progress"', () => {
-    // 199 of 200 -- backend still says in_progress (completed < total),
-    // but rounds to 100%, so the display must show Completed, never a
-    // contradictory "100% completed" next to an "In Progress" badge.
-    expect(getPodDisplayStatus(team({ status: 'in_progress', completed: 199, total: 200 }))).toBe('complete');
+  it('a pod with a submitted post-workshop survey displays as "complete" even below 100% participation', () => {
+    expect(getPodDisplayStatus(team({ status: 'complete', completed: 4, total: 5, postWorkshopCompleted: true }))).toBe('complete');
+    expect(getPodDisplayStatus(team({ status: 'complete', completed: 5, total: 5, postWorkshopCompleted: true }))).toBe('complete');
+  });
+
+  it('a pod without a submitted post-workshop survey is never "complete", even at 100% or 99.5% participation', () => {
+    expect(getPodDisplayStatus(team({ status: 'in_progress', completed: 5, total: 5, postWorkshopCompleted: false }))).toBe('in_progress');
+    expect(getPodDisplayStatus(team({ status: 'in_progress', completed: 199, total: 200, postWorkshopCompleted: false }))).toBe('in_progress');
   });
 
   it('never touches not_started or opted_out pods -- they keep their own status unchanged', () => {
@@ -532,13 +535,17 @@ describe('buildVisibleGroups with two different team IDs sharing the same name',
 // placeholder names ("Leader One", "Pod One", etc.) deliberately -- the
 // helper must not special-case any particular person or pod name.
 describe('isPodFullyCompleted / isPersonSubtreeFullyCompleted', () => {
-  it('a pod at exactly 100% is fully completed; anything below is not', () => {
+  it('a pod is fully completed exactly when its post-workshop survey is submitted, regardless of participation', () => {
     expect(isPodFullyCompleted(team({ completed: 4, total: 4, status: 'complete' }))).toBe(true);
-    // Rounds up to 100% even though backend status still says in_progress --
-    // must agree with getPodCompletionPercent, the same helper the Status
-    // column itself uses.
-    expect(isPodFullyCompleted(team({ completed: 199, total: 200, status: 'in_progress' }))).toBe(true);
-    expect(isPodFullyCompleted(team({ completed: 1, total: 4, status: 'in_progress' }))).toBe(false);
+    // 4/5 + submitted post-workshop survey is fully completed.
+    expect(isPodFullyCompleted(team({ completed: 4, total: 5, status: 'complete', postWorkshopCompleted: true }))).toBe(true);
+    // 5/5 without a post-workshop survey is not.
+    expect(isPodFullyCompleted(team({ completed: 5, total: 5, status: 'in_progress', postWorkshopCompleted: false }))).toBe(false);
+    // 4/5 without one is not.
+    expect(isPodFullyCompleted(team({ completed: 4, total: 5, status: 'in_progress', postWorkshopCompleted: false }))).toBe(false);
+    // A pod with no eligible members is never complete.
+    expect(isPodFullyCompleted(team({ completed: 0, total: 0, status: 'not_started', postWorkshopCompleted: true }))).toBe(false);
+    expect(isPodFullyCompleted(team({ completed: 1, total: 4, status: 'in_progress', postWorkshopCompleted: false }))).toBe(false);
     expect(isPodFullyCompleted(team({ completed: 0, total: 4, status: 'not_started' }))).toBe(false);
   });
 
@@ -756,6 +763,119 @@ describe('buildFullyCompletedGroups', () => {
   });
 });
 
+// Regression: the Fully complete card counts pods, so a fully completed pod must
+// be listed under its owner even when that owner has other pods that are not
+// complete (in progress, not started, opted out).
+describe('buildFullyCompletedGroups — complete pod under an owner with incomplete pods', () => {
+  const done = team({ teamId: 'done', teamName: 'Done Pod', completed: 6, total: 6, status: 'complete' });
+  const ownerWith = (...others: SurveyCompletionTeam[]): SurveyCompletionPersonGroup => ({
+    type: 'person',
+    person: person('own', 'Some Owner', 'Manager'),
+    totalTeams: 1 + others.length,
+    optedInTeams: 1 + others.length,
+    completionPercent: 50,
+    remindCount: others.length,
+    directTeams: [done, ...others],
+    children: [],
+  });
+  const collectPods = (g: SurveyCompletionGroup): SurveyCompletionTeam[] =>
+    g.type === 'person'
+      ? [...(g.directTeams ?? []), ...(g.children ?? []).flatMap(collectPods)]
+      : (g.teams ?? []);
+  const shown = (g: SurveyCompletionPersonGroup, query = '') => {
+    const v = buildFullyCompletedGroups([g], query);
+    return v.flatMap((x) => (x.type === 'person' ? x.visibleDirectTeams.map((t) => t.teamId) : []));
+  };
+
+  it.each([
+    ['in progress', team({ teamId: 'o', completed: 2, total: 6, status: 'in_progress' })],
+    ['not started', team({ teamId: 'o', completed: 0, total: 6, status: 'not_started', postWorkshopCompleted: false })],
+    ['opted out', team({ teamId: 'o', completed: 0, total: 0, status: 'opted_out', postWorkshopCompleted: false })],
+  ])('lists the complete pod and not the %s sibling', (_label, other) => {
+    expect(shown(ownerWith(other))).toEqual(['done']);
+  });
+
+  it('a pod at 100% without its post-workshop session is not listed', () => {
+    const noWorkshop = team({ teamId: 'nw', completed: 3, total: 3, status: 'in_progress', postWorkshopCompleted: false });
+    expect(shown(ownerWith(noWorkshop))).toEqual(['done']);
+  });
+
+  it('shows only the complete pod and no incomplete child under a non-qualifying owner', () => {
+    const child: SurveyCompletionPersonGroup = {
+      type: 'person',
+      person: person('kid', 'Kid', 'Manager'),
+      totalTeams: 1,
+      optedInTeams: 1,
+      completionPercent: 10,
+      remindCount: 1,
+      directTeams: [team({ teamId: 'kid-pod', completed: 1, total: 9, status: 'in_progress' })],
+      children: [],
+    };
+    const owner = { ...ownerWith(), directTeams: [done], children: [child] };
+    const v = buildFullyCompletedGroups([owner], '');
+    expect(v).toHaveLength(1);
+    if (v[0].type !== 'person') throw new Error('expected person');
+    expect(v[0].visibleDirectTeams.map((t) => t.teamId)).toEqual(['done']);
+    expect(v[0].visibleChildren).toEqual([]);
+  });
+
+  it('search by pod name or owner name still finds it', () => {
+    const other = team({ teamId: 'o', completed: 0, total: 6, status: 'not_started', postWorkshopCompleted: false });
+    expect(shown(ownerWith(other), 'done pod')).toEqual(['done']);
+    expect(shown(ownerWith(other), 'some owner')).toEqual(['done']);
+    expect(shown(ownerWith(other), 'zzz')).toEqual([]);
+  });
+
+  it('parity: the number of listed pods equals the number of complete pods the card counts', () => {
+    const groups: SurveyCompletionGroup[] = [
+      ownerWith(team({ teamId: 'o1', completed: 1, total: 6, status: 'in_progress' })),
+      {
+        type: 'other',
+        label: 'Other',
+        totalTeams: 2,
+        optedInTeams: 2,
+        completionPercent: 50,
+        remindCount: 1,
+        teams: [
+          team({ teamId: 'other-done', completed: 2, total: 2, status: 'complete' }),
+          team({ teamId: 'other-inc', completed: 0, total: 2, status: 'not_started', postWorkshopCompleted: false }),
+        ],
+      },
+    ];
+    // The card counts every pod whose backend status is 'complete'; derive that
+    // from the fixture itself rather than hardcoding it.
+    const allPods = groups.flatMap((g) => collectPods(g));
+    const cardCount = allPods.filter((t) => t.status === 'complete').length;
+    expect(cardCount).toBe(2);
+    expect(countVisibleTeams(buildFullyCompletedGroups(groups, ''))).toBe(cardCount);
+  });
+
+  it('does not list an in-progress pod that merely rounds to 100% (199/200 with post-workshop done)', () => {
+    const rounded = team({
+      teamId: 'rounded', completed: 199, total: 200, status: 'in_progress', postWorkshopCompleted: true,
+    });
+    const notStarted = team({ teamId: 'ns', completed: 0, total: 6, status: 'not_started', postWorkshopCompleted: false });
+    // The owner has a genuinely incomplete pod, so only backend-complete pods are listed.
+    expect(shown(ownerWith(rounded, notStarted))).toEqual(['done']);
+  });
+
+  it('marks a leader listed only for their own complete pods as subtreeIncomplete, so no Completed badge is implied', () => {
+    const other = team({ teamId: 'o', completed: 0, total: 6, status: 'not_started', postWorkshopCompleted: false });
+    const v = buildFullyCompletedGroups([ownerWith(other)], '');
+    expect(v).toHaveLength(1);
+    if (v[0].type !== 'person') throw new Error('expected person');
+    expect(v[0].subtreeIncomplete).toBe(true);
+    expect(v[0].completionPercent).toBe(50); // the owner's real figure, not a forced 100
+  });
+
+  it('does not mark a leader whose whole subtree is complete', () => {
+    const v = buildFullyCompletedGroups([ownerWith()], '');
+    expect(v).toHaveLength(1);
+    if (v[0].type !== 'person') throw new Error('expected person');
+    expect(v[0].subtreeIncomplete).toBeUndefined();
+  });
+});
+
 // Not Started and Opted Out must never be conflated: opted_out comes purely
 // from the pod's canonical `status` field (never inferred from a 0%
 // completion percentage), and matchesCardFilter/buildVisibleGroups compare
@@ -875,10 +995,18 @@ describe('buildVisibleGroups — Not Started and Opted Out filters', () => {
     expect(optedOutIds.has('pod-nested-ns')).toBe(false);
   });
 
-  it('the Fully Completed filter continues to work unaffected by this fixture', () => {
-    // Neither root nor nested leader qualifies (they have not_started/opted_out
-    // descendants), and no subtree here independently qualifies either.
-    expect(buildFullyCompletedGroups(groups, '')).toHaveLength(0);
+  it('the Fully Completed filter lists only the complete pod, under its non-qualifying owner', () => {
+    // Neither root nor nested leader qualifies as a whole subtree (they have
+    // not_started/opted_out descendants), but Root Leader owns one fully
+    // completed pod, which the Fully complete card counts and the list must show.
+    const visible = buildFullyCompletedGroups(groups, '');
+    expect(visible).toHaveLength(1);
+    const root = visible[0];
+    if (root.type !== 'person') throw new Error('expected person');
+    expect(root.name).toBe('Root Leader');
+    expect(root.visibleDirectTeams.map((t) => t.teamId)).toEqual(['pod-complete']);
+    expect(root.visibleChildren).toEqual([]);
+    expect(root.subtreeIncomplete).toBe(true);
   });
 });
 
@@ -1367,3 +1495,79 @@ describe('getPartialCompletionBadgeClass', () => {
   });
 });
 
+
+describe('computeHierarchyAggregate -- status derives from source pods, not the rounded percentage', () => {
+  function manager(directTeams: SurveyCompletionTeam[]): SurveyCompletionPersonGroup {
+    return {
+      type: 'person',
+      person: person('mgr-agg', 'Aggregate Manager', 'Manager'),
+      totalTeams: directTeams.length,
+      optedInTeams: directTeams.length,
+      completionPercent: 0,
+      remindCount: 0,
+      directTeams,
+      children: [],
+    };
+  }
+
+  it('keeps a lone 1-of-201 pod in_progress even though its percentage rounds to 0', () => {
+    const result = computeHierarchyAggregate(
+      manager([team({ teamId: 'p1', status: 'in_progress', completed: 1, total: 201, postWorkshopCompleted: false })]),
+    );
+    expect(result?.percent).toBe(0);
+    expect(result?.displayStatus).toBe('in_progress');
+  });
+
+  it('stays in_progress when a 0%-rounding in-progress pod sits beside a not_started pod', () => {
+    const result = computeHierarchyAggregate(
+      manager([
+        team({ teamId: 'p1', status: 'in_progress', completed: 1, total: 201, postWorkshopCompleted: false }),
+        team({ teamId: 'p2', status: 'not_started', completed: 0, total: 5, postWorkshopCompleted: false }),
+      ]),
+    );
+    expect(result?.percent).toBe(0);
+    expect(result?.displayStatus).toBe('in_progress');
+  });
+
+  it('is not_started only when every source pod is not_started', () => {
+    const result = computeHierarchyAggregate(
+      manager([
+        team({ teamId: 'p1', status: 'not_started', completed: 0, total: 5, postWorkshopCompleted: false }),
+        team({ teamId: 'p2', status: 'not_started', completed: 0, total: 8, postWorkshopCompleted: false }),
+      ]),
+    );
+    expect(result?.percent).toBe(0);
+    expect(result?.displayStatus).toBe('not_started');
+  });
+
+  it('is in_progress for mixed not_started and complete pods', () => {
+    const result = computeHierarchyAggregate(
+      manager([
+        team({ teamId: 'p1', status: 'not_started', completed: 0, total: 5, postWorkshopCompleted: false }),
+        team({ teamId: 'p2', status: 'complete', completed: 4, total: 4 }),
+      ]),
+    );
+    expect(result?.displayStatus).toBe('in_progress');
+  });
+
+  it('is complete only when every pod is fully completed', () => {
+    const result = computeHierarchyAggregate(
+      manager([
+        team({ teamId: 'p1', status: 'complete', completed: 4, total: 4 }),
+        team({ teamId: 'p2', status: 'complete', completed: 2, total: 2 }),
+      ]),
+    );
+    expect(result?.percent).toBe(100);
+    expect(result?.displayStatus).toBe('complete');
+  });
+
+  it('ignores opted-out pods when deciding the aggregate status', () => {
+    const result = computeHierarchyAggregate(
+      manager([
+        team({ teamId: 'p1', status: 'opted_out', completed: 0, total: 5, postWorkshopCompleted: null }),
+        team({ teamId: 'p2', status: 'not_started', completed: 0, total: 5, postWorkshopCompleted: false }),
+      ]),
+    );
+    expect(result?.displayStatus).toBe('not_started');
+  });
+});

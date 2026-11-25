@@ -30,6 +30,15 @@ type SnapshotFilterResult struct {
 	ClearedTeamLeads     int
 }
 
+// hasPodIQRole reports whether the user carries a podiqRole at all. Such a user
+// is never skipped for an unknown provider level (say, level-6 from grade 9): a
+// valid role stores them at the level it names, and an invalid one must reach
+// orgsnapshot.Validate so the snapshot is rejected rather than the user being
+// dropped silently.
+func hasPodIQRole(u orgsnapshot.User) bool {
+	return u.PodIQRole != nil
+}
+
 // FilterSnapshot removes records this deployment cannot import and repairs the
 // references that removal leaves dangling.
 //
@@ -73,6 +82,20 @@ func FilterSnapshot(in *orgsnapshot.Snapshot, knownLevels map[string]bool) (Snap
 
 	for _, u := range in.Users {
 		switch {
+		case u.ID == "":
+			// A record with no id is a contract breach, not an unimportable
+			// person. Dropping it here (as the level checks below would) would
+			// hide the breach whenever another user survives, so it is kept as
+			// is and orgsnapshot.Validate rejects the whole snapshot with a
+			// field-specific error.
+			users = append(users, u)
+		case u.HierarchyLevelID == "" && hasPodIQRole(u):
+			// A user with no level is normally skipped, but one carrying a
+			// podiqRole must reach validation: skipping it would let an invalid
+			// role, or a role whose level this deployment lacks, go unreported.
+			// The record is kept and orgsnapshot.Validate rejects the whole
+			// snapshot with a field-specific error.
+			users = append(users, u)
 		case u.HierarchyLevelID == "":
 			result.SkippedUsers = append(result.SkippedUsers, orgprovider.SkippedUser{
 				UserID:   u.ID,
@@ -80,7 +103,7 @@ func FilterSnapshot(in *orgsnapshot.Snapshot, knownLevels map[string]bool) (Snap
 				Reason:   orgprovider.SkipReasonMissingLevel,
 			})
 			result.PreservedMemberUserIDs = append(result.PreservedMemberUserIDs, u.ID)
-		case !knownLevels[u.HierarchyLevelID]:
+		case !knownLevels[u.HierarchyLevelID] && !hasPodIQRole(u):
 			result.SkippedUsers = append(result.SkippedUsers, orgprovider.SkippedUser{
 				UserID:           u.ID,
 				Username:         u.Username,
@@ -98,8 +121,12 @@ func FilterSnapshot(in *orgsnapshot.Snapshot, knownLevels map[string]bool) (Snap
 	// manager was skipped above or was never in the snapshot at all. Both mean
 	// "the provider named someone we cannot resolve", and in both cases keeping
 	// THC's existing value beats asserting the person reports to nobody.
+	//
+	// An explicit empty string is different: nil means "no manager", but ""
+	// is contract-invalid. It is left untouched so Validate rejects it rather
+	// than being repaired here into "keep the existing manager".
 	for i := range users {
-		if users[i].ReportsToID != nil && !importable[*users[i].ReportsToID] {
+		if users[i].ReportsToID != nil && *users[i].ReportsToID != "" && !importable[*users[i].ReportsToID] {
 			users[i].ReportsToID = nil
 			result.PreserveReportsToUserIDs[users[i].ID] = true
 			result.ClearedManagers++
@@ -112,9 +139,14 @@ func FilterSnapshot(in *orgsnapshot.Snapshot, knownLevels map[string]bool) (Snap
 	}
 
 	// Keep memberships whose user and team both survived, dropping duplicates.
+	// A nil in.Memberships (omitted or null) must stay nil here: orgsnapshot.Validate
+	// rejects that case, and allocating a non-nil slice would mask it.
 	type membershipKey struct{ userID, teamID string }
 	seen := make(map[membershipKey]bool, len(in.Memberships))
-	memberships := make([]orgsnapshot.Membership, 0, len(in.Memberships))
+	var memberships []orgsnapshot.Membership
+	if in.Memberships != nil {
+		memberships = make([]orgsnapshot.Membership, 0, len(in.Memberships))
+	}
 	membersOfTeam := make(map[string]map[string]bool, len(in.Teams))
 
 	for _, m := range in.Memberships {
@@ -143,7 +175,10 @@ func FilterSnapshot(in *orgsnapshot.Snapshot, knownLevels map[string]bool) (Snap
 	copy(teams, in.Teams)
 	for i := range teams {
 		lead := teams[i].TeamLeadID
-		if lead == nil {
+		// nil (omitted) preserves the existing lead; an explicit "" is
+		// contract-invalid and must reach Validate rather than be turned into
+		// nil, which would silently keep the previous lead.
+		if lead == nil || *lead == "" {
 			continue
 		}
 		if !importable[*lead] || !membersOfTeam[teams[i].ID][*lead] {
@@ -154,6 +189,7 @@ func FilterSnapshot(in *orgsnapshot.Snapshot, knownLevels map[string]bool) (Snap
 
 	result.Snapshot = &orgsnapshot.Snapshot{
 		ContractVersion: in.ContractVersion,
+		SnapshotType:    in.SnapshotType,
 		GeneratedAt:     in.GeneratedAt,
 		Teams:           teams,
 		Users:           users,

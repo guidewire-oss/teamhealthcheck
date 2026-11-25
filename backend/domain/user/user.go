@@ -28,13 +28,27 @@ type User struct {
 	AuthType         AuthType  `json:"authType,omitempty"`
 	CreatedAt        time.Time `json:"createdAt,omitempty"`
 	UpdatedAt        time.Time `json:"updatedAt,omitempty"`
+
+	// IsActive is false for a soft-deactivated person. They are never deleted:
+	// surveys, responses and action items keep pointing at them.
+	IsActive      bool       `json:"isActive"`
+	DeactivatedAt *time.Time `json:"deactivatedAt,omitempty"`
 }
 
 // ListFilter holds search/role filter criteria for paginated user listing.
 type ListFilter struct {
 	Search         string // matches username, full name, or email (case-insensitive substring)
 	HierarchyLevel string // exact match on hierarchy_level_id, empty = no filter
+	// Status limits the list to StatusActive or StatusInactive people. Empty
+	// means everyone: inactive people stay listed and searchable by default.
+	Status string
 }
+
+// Listing status filters.
+const (
+	StatusActive   = "active"
+	StatusInactive = "inactive"
+)
 
 // Repository defines the interface for user data access
 type Repository interface {
@@ -54,6 +68,10 @@ type Repository interface {
 	Save(ctx context.Context, user *User) error
 	Update(ctx context.Context, user *User) error
 	Delete(ctx context.Context, id string) error
+	// Deactivate soft-deactivates a person: they are marked inactive and their
+	// memberships end, but the row and everything that references it stay.
+	// Deactivating someone already inactive is a no-op.
+	Deactivate(ctx context.Context, id string) error
 	// Additional methods for team membership
 	FindTeamIDsForUser(ctx context.Context, userID string) ([]string, error)
 	// FindTeamIDsForUsers is the batched form of FindTeamIDsForUser, for

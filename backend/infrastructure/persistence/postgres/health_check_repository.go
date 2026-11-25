@@ -45,6 +45,22 @@ func (r *HealthCheckRepository) Save(ctx context.Context, session *healthcheck.H
 	}
 	defer tx.Rollback()
 
+	// Enforce enrollment in the same transaction as the write. The command checks the flag
+	// first for a fast answer, but that read is not atomic with this insert: a PodIQ sync could
+	// commit health_check_enabled = false in between. FOR SHARE locks the team row until this
+	// transaction ends, and the sync's UPDATE needs a conflicting lock, so either the sync
+	// commits first (the flag is false here and the save is rejected) or it waits for this save.
+	// An unknown team is left to the foreign key; a NULL flag counts as enabled.
+	var enabled sql.NullBool
+	err = tx.QueryRowContext(ctx, `SELECT health_check_enabled FROM teams WHERE id = $1 FOR SHARE`, session.TeamID).Scan(&enabled)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return &healthcheck.ParticipationLookupError{TeamID: session.TeamID, Err: err}
+	case enabled.Valid && !enabled.Bool:
+		return &healthcheck.ParticipationDisabledError{TeamID: session.TeamID}
+	}
+
 	// Insert or update session
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO health_check_sessions (
@@ -487,7 +503,7 @@ func (r *HealthCheckRepository) GetTeamSubmissionStatus(ctx context.Context, tea
 		FROM team_members tm
 		LEFT JOIN health_check_sessions hcs ON tm.user_id = hcs.user_id AND tm.team_id = hcs.team_id
 			AND hcs.assessment_period = $2 AND hcs.survey_type = 'individual'
-		WHERE tm.team_id = $1
+		WHERE tm.team_id = $1 AND tm.is_active
 	`
 
 	var totalMembers, submittedMembers int
@@ -572,8 +588,9 @@ func (r *HealthCheckRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// FindDistinctAssessmentPeriods returns all unique assessment periods from
-// submitted sessions, most recent first. Ordering is done in Go
+// FindDistinctAssessmentPeriods returns the unique SELECTABLE assessment
+// periods (half-years only) from submitted sessions, most recent
+// first. Ordering is done in Go
 // (healthcheck.SortAssessmentPeriodsDescending) rather than in SQL: this
 // app's period strings come in five different formats (monthly, quarterly,
 // half-yearly, yearly, and a legacy half-year format — see
@@ -604,12 +621,13 @@ func (r *HealthCheckRepository) FindDistinctAssessmentPeriods(ctx context.Contex
 		return nil, fmt.Errorf("error iterating assessment periods: %w", err)
 	}
 
-	if periods == nil {
-		periods = []string{}
-	}
-	healthcheck.SortAssessmentPeriodsDescending(periods)
-
-	return periods, nil
+	// Only half-year periods ("YYYY H1"/"YYYY H2", or the older
+	// "YYYY - 1st/2nd Half" label) are selectable;
+	// stored sessions with any other value stay in the table but are never
+	// offered (see healthcheck.IsSelectableAssessmentPeriod). This is the one
+	// source for every period dropdown and for the admin dashboard's period
+	// validation, so all dashboards agree.
+	return healthcheck.SelectableAssessmentPeriods(periods), nil
 }
 
 // scanSessions is a helper function to scan query results into sessions
@@ -689,4 +707,18 @@ func (r *HealthCheckRepository) scanSessions(ctx context.Context, query string, 
 	}
 
 	return sessions, nil
+}
+
+// IsTeamHealthCheckEnabled implements healthcheck.ParticipationChecker. A NULL flag is
+// treated as enabled, matching team_repository's read of the column.
+func (r *HealthCheckRepository) IsTeamHealthCheckEnabled(ctx context.Context, teamID string) (bool, bool, error) {
+	var enabled sql.NullBool
+	err := r.db.QueryRowContext(ctx, `SELECT health_check_enabled FROM teams WHERE id = $1`, teamID).Scan(&enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("failed to read team participation: %w", err)
+	}
+	return !enabled.Valid || enabled.Bool, true, nil
 }

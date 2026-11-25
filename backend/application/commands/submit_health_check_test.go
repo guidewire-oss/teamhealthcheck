@@ -579,3 +579,115 @@ func TestSubmitHealthCheck_SupportsMonthlyAndYearlyCadences(t *testing.T) {
 		}
 	})
 }
+
+// New submissions never persist an unsupported period string: valid half-years
+// are accepted, a legacy quarter label is stored in its canonical half-year
+// form, and anything unrecognized is rejected before it reaches the repository.
+func TestSubmitHealthCheck_AssessmentPeriodInput(t *testing.T) {
+	// Submitted in November 2026 so both "2026 H1" (catch-up) and "2026 H2" are open.
+	at := func(period, user string) SubmitHealthCheckCommand {
+		return baseCommand(func(c *SubmitHealthCheckCommand) {
+			c.Date = "2026-11-15T10:00:00Z"
+			c.AssessmentPeriod = period
+			c.UserID = user
+		})
+	}
+
+	t.Run("accepts 2026 H1 and 2026 H2", func(t *testing.T) {
+		repo := &fakeHealthCheckRepository{}
+		handler, clock := newTestHandler(repo)
+		for i, period := range []string{"2026 H1", "2026 H2"} {
+			session, err := submit(handler, clock, at(period, "user-"+string(rune('a'+i))))
+			if err != nil {
+				t.Fatalf("%s should be accepted, got: %v", period, err)
+			}
+			if session.AssessmentPeriod != period {
+				t.Errorf("stored %q, want %q", session.AssessmentPeriod, period)
+			}
+		}
+	})
+
+	t.Run("stores a quarter label as its canonical half-year", func(t *testing.T) {
+		repo := &fakeHealthCheckRepository{}
+		handler, clock := newTestHandler(repo)
+		session, err := submit(handler, clock, at("2026 Q3", "user-q"))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if session.AssessmentPeriod != "2026 H2" {
+			t.Errorf("stored %q, want \"2026 H2\" -- a Q3 string must never be persisted", session.AssessmentPeriod)
+		}
+	})
+
+	t.Run("rejects unsupported values and persists nothing", func(t *testing.T) {
+		for _, period := range []string{"", "2026 Q5", "2026 H3", "2026 Mrch", "H1 2026", "free text", "2026 H1; DROP TABLE"} {
+			repo := &fakeHealthCheckRepository{}
+			handler, clock := newTestHandler(repo)
+			if _, err := submit(handler, clock, at(period, "user-x")); err == nil {
+				t.Errorf("period %q should be rejected", period)
+			}
+			if len(repo.sessions) != 0 {
+				t.Errorf("period %q: %d sessions persisted, want 0", period, len(repo.sessions))
+			}
+		}
+	})
+}
+
+// participationRepo adds the optional ParticipationChecker to the fake repository.
+type participationRepo struct {
+	*fakeHealthCheckRepository
+	enabled, found bool
+	err            error
+}
+
+func (p *participationRepo) IsTeamHealthCheckEnabled(context.Context, string) (bool, bool, error) {
+	return p.enabled, p.found, p.err
+}
+
+func TestSubmitHealthCheck_ParticipationGate(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, time.January, 15, 10, 0, 0, 0, time.UTC)}
+	for _, surveyType := range []string{healthcheck.SurveyTypeIndividual, healthcheck.SurveyTypePostWorkshop} {
+		for _, completed := range []bool{true, false} {
+			base := &fakeHealthCheckRepository{}
+			repo := &participationRepo{fakeHealthCheckRepository: base, enabled: false, found: true}
+			cmd := baseCommand(func(c *SubmitHealthCheckCommand) { c.SurveyType = surveyType; c.Completed = completed })
+			_, err := NewSubmitHealthCheckHandlerWithClock(repo, clock.Now).Handle(cmd)
+			var disabled *healthcheck.ParticipationDisabledError
+			if !errors.As(err, &disabled) {
+				t.Fatalf("%s completed=%v: want ParticipationDisabledError, got %v", surveyType, completed, err)
+			}
+			if len(base.sessions) != 0 {
+				t.Fatalf("%s completed=%v: a disabled team must not persist a session", surveyType, completed)
+			}
+		}
+	}
+}
+
+func TestSubmitHealthCheck_ParticipationEnabledOrUnknownTeamProceeds(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, time.January, 15, 10, 0, 0, 0, time.UTC)}
+	for name, repo := range map[string]*participationRepo{
+		"enabled":      {fakeHealthCheckRepository: &fakeHealthCheckRepository{}, enabled: true, found: true},
+		"unknown team": {fakeHealthCheckRepository: &fakeHealthCheckRepository{}, enabled: false, found: false},
+	} {
+		if _, err := NewSubmitHealthCheckHandlerWithClock(repo, clock.Now).Handle(baseCommand(nil)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestSubmitHealthCheck_ParticipationLookupErrorFailsClosed(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, time.January, 15, 10, 0, 0, 0, time.UTC)}
+	repo := &participationRepo{fakeHealthCheckRepository: &fakeHealthCheckRepository{}, err: errors.New("db down")}
+	_, err := NewSubmitHealthCheckHandlerWithClock(repo, clock.Now).Handle(baseCommand(nil))
+	if err == nil {
+		t.Fatal("a failed participation lookup must reject the submission, not allow it")
+	}
+	// A typed error lets the HTTP layer report this as a server fault, not a bad request.
+	var lookupErr *healthcheck.ParticipationLookupError
+	if !errors.As(err, &lookupErr) {
+		t.Fatalf("expected a ParticipationLookupError, got %T: %v", err, err)
+	}
+	if lookupErr.Unwrap() == nil {
+		t.Fatal("the underlying cause must be preserved for logging")
+	}
+}

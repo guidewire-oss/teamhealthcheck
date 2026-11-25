@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var usernamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{2,50}$`)
@@ -27,6 +28,25 @@ const (
 )
 
 // ValidationError represents a single validation failure.
+// maxIDChars, maxNameChars and maxEmailChars mirror the VARCHAR(255) columns
+// the snapshot is written to (users.id, users.full_name, users.email,
+// teams.id, teams.name). PostgreSQL counts VARCHAR(n) in characters, not
+// bytes, so lengths here are Unicode code points: a 200-character name in a
+// multi-byte script is valid, and 256 ASCII characters are not.
+const (
+	maxIDChars    = 255
+	maxNameChars  = 255
+	maxEmailChars = 255
+	// maxLevelIDChars bounds hierarchyLevelId, which this contract caps at 50.
+	maxLevelIDChars = 50
+)
+
+func charCount(s string) int { return utf8.RuneCountInString(s) }
+
+// tooLongIdentifier labels a record by its position when its own id is too long
+// to be useful (or safe) to echo back in an error.
+func tooLongIdentifier(i int) string { return fmt.Sprintf("index %d", i) }
+
 type ValidationError struct {
 	Entity     EntityType `json:"entity"`
 	Identifier string     `json:"identifier"`
@@ -64,11 +84,11 @@ func (e ValidationError) Error() string {
 // all validation errors found.
 func (s Snapshot) Validate() ValidationErrors {
 	var errs ValidationErrors
-	if s.ContractVersion != ContractVersion {
+	if !SupportedContractVersion(s.ContractVersion) {
 		errs = append(errs, ValidationError{
 			Entity:  EntitySnapshot,
 			Field:   "contractVersion",
-			Message: fmt.Sprintf("unsupported contract version %q; expected %q", s.ContractVersion, ContractVersion),
+			Message: fmt.Sprintf("unsupported contract version %q; expected %q or %q", s.ContractVersion, ContractVersion, ContractVersionV11),
 		})
 	}
 	if s.GeneratedAt.IsZero() {
@@ -76,6 +96,13 @@ func (s Snapshot) Validate() ValidationErrors {
 			Entity:  EntitySnapshot,
 			Field:   "generatedAt",
 			Message: "generatedAt is required",
+		})
+	}
+	if s.SnapshotType != "" && s.SnapshotType != TypeComplete && s.SnapshotType != TypePartial {
+		errs = append(errs, ValidationError{
+			Entity:  EntitySnapshot,
+			Field:   "snapshotType",
+			Message: fmt.Sprintf("snapshotType must be %q or %q when present", TypeComplete, TypePartial),
 		})
 	}
 	if len(s.Users) == 0 {
@@ -90,6 +117,17 @@ func (s Snapshot) Validate() ValidationErrors {
 			Entity:  EntitySnapshot,
 			Field:   "teams",
 			Message: "teams must contain at least one record",
+		})
+	}
+	if s.Memberships == nil {
+		// A missing field and an explicit JSON null both unmarshal to nil here,
+		// while an explicit [] unmarshals to a non-nil empty slice. Treating nil
+		// as "no memberships" would make a provider that omits the field wipe
+		// every existing team membership during sync; require [] to say that.
+		errs = append(errs, ValidationError{
+			Entity:  EntitySnapshot,
+			Field:   "memberships",
+			Message: "memberships is required and must not be null; use [] to explicitly clear all memberships",
 		})
 	}
 
@@ -118,6 +156,14 @@ func (s Snapshot) Validate() ValidationErrors {
 		} else {
 			userIDs[u.ID] = true
 		}
+		if charCount(u.ID) > maxIDChars {
+			errs = append(errs, ValidationError{
+				Entity:     EntityUser,
+				Identifier: tooLongIdentifier(i),
+				Field:      "id",
+				Message:    fmt.Sprintf("id must not exceed %d characters", maxIDChars),
+			})
+		}
 		if !usernamePattern.MatchString(u.Username) {
 			errs = append(errs, ValidationError{
 				Entity:     EntityUser,
@@ -126,15 +172,15 @@ func (s Snapshot) Validate() ValidationErrors {
 				Message:    "username must be 2-50 characters containing only letters, numbers, underscores, or hyphens",
 			})
 		}
-		if u.DisplayName == "" {
+		if u.DisplayName == "" || charCount(u.DisplayName) > maxNameChars {
 			errs = append(errs, ValidationError{
 				Entity:     EntityUser,
 				Identifier: identifier,
 				Field:      "displayName",
-				Message:    "displayName is required and must be non-empty",
+				Message:    "displayName is required and must not exceed 255 characters",
 			})
 		}
-		if u.HierarchyLevelID == "" || len(u.HierarchyLevelID) > 50 {
+		if u.HierarchyLevelID == "" || charCount(u.HierarchyLevelID) > maxLevelIDChars {
 			errs = append(errs, ValidationError{
 				Entity:     EntityUser,
 				Identifier: identifier,
@@ -142,12 +188,31 @@ func (s Snapshot) Validate() ValidationErrors {
 				Message:    "hierarchyLevelId is required and must not exceed 50 characters",
 			})
 		}
-		if !emailPattern.MatchString(u.Email) {
+		if u.PodIQRole != nil {
+			switch {
+			case s.ContractVersion != ContractVersionV11:
+				errs = append(errs, ValidationError{
+					Entity:     EntityUser,
+					Identifier: identifier,
+					Field:      "podiqRole",
+					Message:    fmt.Sprintf("podiqRole requires contractVersion %q", ContractVersionV11),
+				})
+			case !ValidPodIQRole(*u.PodIQRole):
+				errs = append(errs, ValidationError{
+					Entity:     EntityUser,
+					Identifier: identifier,
+					Field:      "podiqRole",
+					Message: fmt.Sprintf("podiqRole must be %q, %q or %q when present",
+						PodIQRoleL2, PodIQRoleL1, PodIQRoleDeveloper),
+				})
+			}
+		}
+		if !emailPattern.MatchString(u.Email) || charCount(u.Email) > maxEmailChars {
 			errs = append(errs, ValidationError{
 				Entity:     EntityUser,
 				Identifier: identifier,
 				Field:      "email",
-				Message:    "email must be a valid address",
+				Message:    "email must be a valid address and must not exceed 255 characters",
 			})
 		}
 	}
@@ -177,12 +242,20 @@ func (s Snapshot) Validate() ValidationErrors {
 		} else {
 			teamIDs[t.ID] = true
 		}
-		if t.Name == "" {
+		if charCount(t.ID) > maxIDChars {
+			errs = append(errs, ValidationError{
+				Entity:     EntityTeam,
+				Identifier: tooLongIdentifier(i),
+				Field:      "id",
+				Message:    fmt.Sprintf("id must not exceed %d characters", maxIDChars),
+			})
+		}
+		if t.Name == "" || charCount(t.Name) > maxNameChars {
 			errs = append(errs, ValidationError{
 				Entity:     EntityTeam,
 				Identifier: identifier,
 				Field:      "name",
-				Message:    "name is required and must be non-empty",
+				Message:    "name is required and must not exceed 255 characters",
 			})
 		}
 	}

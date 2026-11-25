@@ -236,6 +236,45 @@ func (n *nodeBuilder) toDTO() (dto.SurveyCompletionGroupDTO, []dto.SurveyComplet
 	}, subtreeTeams
 }
 
+// findCycleMembers returns the set of nodes that lie on a cycle in the
+// child -> parent map. Each node is visited once (three-state walk), so the
+// cost is O(N) regardless of hierarchy depth.
+func findCycleMembers(parentOf map[string]string) map[string]bool {
+	const (
+		unvisited = iota
+		visiting
+		done
+	)
+	state := make(map[string]int, len(parentOf))
+	members := make(map[string]bool)
+
+	for start := range parentOf {
+		if state[start] != unvisited {
+			continue
+		}
+		var path []string
+		cur := start
+		for cur != "" && state[cur] == unvisited {
+			state[cur] = visiting
+			path = append(path, cur)
+			cur = parentOf[cur]
+		}
+		if cur != "" && state[cur] == visiting {
+			// Walked back into this path: everything from cur around is a cycle.
+			for n := cur; ; n = parentOf[n] {
+				members[n] = true
+				if parentOf[n] == cur {
+					break
+				}
+			}
+		}
+		for _, n := range path {
+			state[n] = done
+		}
+	}
+	return members
+}
+
 func buildSurveyCompletionResponse(overview *queries.SurveyCompletionOverview) dto.SurveyCompletionResponse {
 	nodeBuilders := make(map[string]*nodeBuilder, len(overview.Persons))
 	for _, p := range overview.Persons {
@@ -243,14 +282,35 @@ func buildSurveyCompletionResponse(overview *queries.SurveyCompletionOverview) d
 		nodeBuilders[p.UserID] = &nodeBuilder{person: person}
 	}
 
+	// parentOf mirrors overview.Persons' ParentID links, used below to detect
+	// a circular manager chain (e.g. A -> B -> A) before attaching a node as
+	// a child. Attaching blindly would leave every member of the cycle
+	// unreachable from rootOrder -- never a root (each has a parent) and
+	// never actually linked into a tree reachable from one (the cycle has no
+	// top) -- so their teams would still be counted in the totals above but
+	// silently missing from the rendered Groups.
+	parentOf := make(map[string]string, len(overview.Persons))
+	for _, p := range overview.Persons {
+		parentOf[p.UserID] = p.ParentID
+	}
+
+	// inCycle holds every user whose parent chain leads back to itself, i.e.
+	// whose attachment under its parent would create (or be part of) a cycle.
+	// It is computed once in O(N) so each person is not re-walked per request.
+	inCycle := findCycleMembers(parentOf)
+
 	var rootOrder []string
 	for _, p := range overview.Persons {
 		if p.ParentID != "" {
-			if parent, ok := nodeBuilders[p.ParentID]; ok {
+			if parent, ok := nodeBuilders[p.ParentID]; ok && !inCycle[p.UserID] {
 				parent.children = append(parent.children, nodeBuilders[p.UserID])
 				continue
 			}
 		}
+		// Either a genuine root, an orphan (parent missing from this
+		// overview), or a member of a cycle: in every case the node must
+		// still be rendered, so it becomes its own root instead of being
+		// dropped.
 		rootOrder = append(rootOrder, p.UserID)
 	}
 
@@ -383,25 +443,29 @@ func aggregateTeams(teams []dto.SurveyCompletionTeamDTO) (total, optedIn, comple
 // deriveSurveyCompletionStatus classifies a team from its counts, its
 // post-workshop session, and its health_check_enabled flag.
 //
-// "complete" requires BOTH every eligible member's individual survey done
-// (Completed >= Total) AND the team's post-workshop session completed --
-// per the original survey-completion-dashboard spec (issue #143), the
-// individual surveys alone only capture each member's private input; the
-// post-workshop session is where the team reviews those results together,
-// and a team isn't done until that has happened too. A team whose members
-// have all finished their individual surveys but hasn't yet held its
-// post-workshop session is "in_progress", never "complete" -- exactly the
-// same bucket a team with only some members done falls into, since from a
-// completion standpoint neither team is finished.
+// Individual participation (Completed/Total) and post-workshop completion
+// are separate values. "complete" is decided by the post-workshop session
+// alone: once the team lead has SUBMITTED it for the period (a draft never
+// counts -- see buildTeamProgress), the team is complete even when some
+// members never submitted their individual survey (e.g. one is on
+// vacation). Completed/Total keep reporting the real participation, so a
+// 4-of-5 team shows 4/5 and "Fully complete". Without a submitted
+// post-workshop session a team is "not_started" when nobody has
+// responded yet and "in_progress" otherwise -- even at 100% individual
+// participation. Opted-out teams and teams with no eligible members keep
+// their existing treatment.
 func deriveSurveyCompletionStatus(t queries.SurveyCompletionTeam) string {
 	if !t.HealthCheckEnabled {
 		return "opted_out"
 	}
-	if t.Total == 0 || t.Completed == 0 {
+	if t.Total == 0 {
 		return "not_started"
 	}
-	if t.Completed >= t.Total && t.PostWorkshopCompleted {
+	if t.PostWorkshopCompleted {
 		return "complete"
+	}
+	if t.Completed == 0 {
+		return "not_started"
 	}
 	return "in_progress"
 }

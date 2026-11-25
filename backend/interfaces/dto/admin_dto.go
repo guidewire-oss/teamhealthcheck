@@ -1,6 +1,9 @@
 package dto
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ============================================================================
 // Hierarchy Levels DTOs
@@ -63,6 +66,9 @@ type AdminUserDTO struct {
 	AuthType       string    `json:"authType"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+	// IsActive is false for a soft-deactivated person, who stays listed for history.
+	IsActive      bool       `json:"isActive"`
+	DeactivatedAt *time.Time `json:"deactivatedAt,omitempty"`
 } //@name AdminUserDTO
 
 // CreateUserRequest represents request to create a user
@@ -133,6 +139,9 @@ type AdminTeamDTO struct {
 	MemberCount           int       `json:"memberCount"`
 	CreatedAt             time.Time `json:"createdAt"`
 	UpdatedAt             time.Time `json:"updatedAt"`
+	// IsActive is false for a soft-deactivated team, which stays listed for history.
+	IsActive      bool       `json:"isActive"`
+	DeactivatedAt *time.Time `json:"deactivatedAt,omitempty"`
 } //@name AdminTeamDTO
 
 // CreateTeamRequest represents request to create a team
@@ -150,7 +159,20 @@ type UpdateTeamRequest struct {
 	TeamLeadID            *string `json:"teamLeadId"`
 	Cadence               *string `json:"cadence" binding:"omitempty,oneof=monthly half-yearly yearly"`
 	DistributionListEmail *string `json:"distributionListEmail" binding:"omitempty,email"`
+	// HealthCheckEnabled is never applied: enrollment is owned by PodIQ and written only by
+	// the organization sync. The field exists so a client that sends it gets an explicit
+	// rejection (CodeParticipationManagedByPodIQ) instead of a silent no-op.
+	//
+	// It is a json.RawMessage rather than a *bool so that presence is what counts, not the
+	// value: an explicit "healthCheckEnabled": null decodes to a non-empty RawMessage ("null"),
+	// whereas a *bool would decode it to nil and be indistinguishable from an omitted field.
+	// The value is never parsed; any value, including null, is rejected.
+	HealthCheckEnabled json.RawMessage `json:"healthCheckEnabled,omitempty" swaggerignore:"true"`
 } //@name UpdateTeamRequest
+
+// CodeParticipationManagedByPodIQ is the ErrorResponse.Code returned when a local edit tries
+// to change a team's health-check participation.
+const CodeParticipationManagedByPodIQ = "participation_managed_by_podiq"
 
 // TeamsResponse represents response with list of teams
 type TeamsResponse struct {

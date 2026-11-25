@@ -139,6 +139,41 @@ func NewPeriodNotOpenError(surveyType string, period string, reason PeriodEligib
 	}
 }
 
+// CodeParticipationDisabled is the machine-readable ErrorResponse.Code returned when a
+// submission targets a team whose health_check_enabled flag is false.
+const CodeParticipationDisabled = "participation_disabled"
+
+// ParticipationDisabledError indicates a submission was rejected because the team has
+// opted out of health checks. Enrollment is owned by PodIQ and arrives through the
+// organization sync; THC only enforces it.
+type ParticipationDisabledError struct {
+	TeamID string
+}
+
+func (e *ParticipationDisabledError) Error() string {
+	return "Health checks are not enabled for this team. Enrollment is managed in PodIQ."
+}
+
+// ParticipationLookupError means a team's enrollment could not be read, so a submission can
+// neither be accepted nor rejected as opted out. It is an infrastructure failure, not a problem
+// with the request, and is reported to the client as a server error.
+type ParticipationLookupError struct {
+	TeamID string
+	Err    error
+}
+
+func (e *ParticipationLookupError) Error() string {
+	return fmt.Sprintf("could not verify health check enrollment for team %q: %v", e.TeamID, e.Err)
+}
+
+func (e *ParticipationLookupError) Unwrap() error { return e.Err }
+
+// ParticipationChecker reports whether a team currently participates in health checks.
+// found is false when the team does not exist; callers keep their existing behavior then.
+type ParticipationChecker interface {
+	IsTeamHealthCheckEnabled(ctx context.Context, teamID string) (enabled bool, found bool, err error)
+}
+
 // DimensionSummary represents aggregated dimension health
 type DimensionSummary struct {
 	DimensionID   string  `json:"dimensionId"`
@@ -162,7 +197,7 @@ type Repository interface {
 	// Team submission status for post-workshop survey
 	GetTeamSubmissionStatus(ctx context.Context, teamID string, assessmentPeriod string) (*TeamSubmissionStatus, error)
 
-	// FindDistinctAssessmentPeriods returns all unique assessment periods from submitted sessions
+	// FindDistinctAssessmentPeriods returns the unique selectable (half-year) assessment periods from submitted sessions
 	FindDistinctAssessmentPeriods(ctx context.Context) ([]string, error)
 
 	// FindSubmittedPeriods returns the assessment-period labels of every completed submission

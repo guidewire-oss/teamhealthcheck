@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -36,8 +37,35 @@ var ErrNilConfig = errors.New("dataprovider: config must not be nil")
 // ErrEmptyAPIToken is returned by NewClient when the config's APIToken is empty.
 var ErrEmptyAPIToken = errors.New("dataprovider: APIToken must not be empty")
 
-// ErrRequestFailed is returned by Do when the underlying transport fails; raw URL-containing errors are logged server-side only.
+// ErrRequestFailed is returned by Do when the underlying transport fails. The
+// raw transport error is neither returned nor logged: net/http wraps failures
+// in *url.Error, whose message carries the full request URL (including any
+// userinfo or query string).
 var ErrRequestFailed = errors.New("dataprovider: request failed")
+
+// ErrInvalidBaseURL is returned for a base URL that cannot be parsed or is not
+// an absolute http(s) URL with a hostname. The message deliberately omits the
+// offending value: it may embed credentials.
+var ErrInvalidBaseURL = errors.New("dataprovider: base URL must be an absolute http(s) URL")
+
+// ErrBaseURLHasCredentials is returned for a base URL with userinfo
+// (https://user:pass@host). The only supported credential is the x-api-key
+// token, so embedded credentials are rejected rather than silently sent.
+var ErrBaseURLHasCredentials = errors.New("dataprovider: base URL must not contain credentials")
+
+// errCrossOriginRedirect is returned by the client's redirect policy. It
+// carries no URLs for the same reason ErrRequestFailed does.
+var errCrossOriginRedirect = errors.New("dataprovider: refusing cross-origin redirect")
+
+// Error categories logged for a failed request. Only these fixed values are
+// ever logged, never the underlying error text.
+const (
+	failureTimeout       = "timeout"
+	failureCanceled      = "canceled"
+	failureRedirect      = "cross_origin_redirect"
+	failureTransport     = "transport"
+	requestFailedLogText = "dataprovider: request failed"
+)
 
 // Client makes HTTP requests to the data provider API, authenticating every
 // outbound request with the x-api-key header.
@@ -78,12 +106,16 @@ func NewClient(config *Config) (*Client, error) {
 // client, and ValidateBaseURL exposes the same check to callers (the
 // settings handler) that need to validate a base URL without an API token.
 func parseBaseURL(raw string) (*url.URL, error) {
+	// url.Parse's own error echoes the input, so it is dropped here.
 	baseURL, err := url.Parse(raw)
 	if err != nil {
-		return nil, fmt.Errorf("dataprovider: invalid base URL %q: %w", raw, err)
+		return nil, ErrInvalidBaseURL
 	}
 	if !baseURL.IsAbs() || (baseURL.Scheme != "http" && baseURL.Scheme != "https") || baseURL.Hostname() == "" {
-		return nil, fmt.Errorf("dataprovider: base URL %q must be an absolute http(s) URL", raw)
+		return nil, ErrInvalidBaseURL
+	}
+	if baseURL.User != nil {
+		return nil, ErrBaseURLHasCredentials
 	}
 	return baseURL, nil
 }
@@ -108,7 +140,7 @@ func rejectCrossOriginRedirect(req *http.Request, via []*http.Request) error {
 
 	origin := via[0].URL
 	if req.URL.Scheme != origin.Scheme || req.URL.Host != origin.Host {
-		return fmt.Errorf("dataprovider: refusing cross-origin redirect from %s to %s", origin, req.URL)
+		return errCrossOriginRedirect
 	}
 
 	return nil
@@ -137,12 +169,45 @@ func (c *Client) Do(ctx context.Context, method, path string, body io.Reader) (*
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// Log raw URL-containing errors server-side; return only a fixed, credential-free error to callers.
-		logger.Get().WithError(err).Error("dataprovider: request failed")
+		// Never log err itself (see ErrRequestFailed): only a fixed category
+		// and the HTTP method, both allowlisted values.
+		logger.Get().
+			WithField("operation", "dataprovider.do").
+			WithField("method", safeMethod(method)).
+			WithField("failure", classifyFailure(err)).
+			Error(requestFailedLogText)
 		return nil, ErrRequestFailed
 	}
 
 	return resp, nil
+}
+
+// classifyFailure maps a transport error to one of the fixed failure
+// categories without exposing its text.
+func classifyFailure(err error) string {
+	var netErr net.Error
+	switch {
+	case errors.Is(err, errCrossOriginRedirect):
+		return failureRedirect
+	case errors.Is(err, context.Canceled):
+		return failureCanceled
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		return failureTimeout
+	default:
+		return failureTransport
+	}
+}
+
+// safeMethod returns method only if it is a standard HTTP method, so a
+// caller-supplied string can never smuggle arbitrary text into the log.
+func safeMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodOptions:
+		return method
+	default:
+		return "other"
+	}
 }
 
 // resolve joins path onto the configured base URL using net/url, so the

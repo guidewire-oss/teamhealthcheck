@@ -10,7 +10,7 @@
  * All endpoints require admin privileges.
  */
 
-import { API_BASE_URL, APIError, APIRequestError, createApiClient } from './client';
+import { API_BASE_URL, APIError, APIRequestError, apiRequest, createApiClient, handleResponse } from './client';
 
 // Re-export shared error types
 export type { APIError };
@@ -67,6 +67,9 @@ export interface AdminUser {
   authType: 'local' | 'sso';
   createdAt: string;
   updatedAt: string;
+  /** False for a soft-deactivated person, who stays listed for history. */
+  isActive: boolean;
+  deactivatedAt?: string | null;
 }
 
 export interface CreateUserRequest {
@@ -109,6 +112,8 @@ export interface ListUsersParams {
   pageSize?: number;
   search?: string;
   role?: string;
+  /** Limit to active or inactive people. Omit for everyone (inactive included). */
+  status?: 'active' | 'inactive';
   signal?: AbortSignal;
 }
 
@@ -137,6 +142,9 @@ export interface AdminTeam {
   memberCount: number;
   createdAt: string;
   updatedAt: string;
+  /** False for a soft-deactivated team, which stays listed for history. */
+  isActive: boolean;
+  deactivatedAt?: string | null;
   // Future OAuth/groups support
   externalGroupId?: string;
 }
@@ -229,36 +237,6 @@ export interface DimensionsListResponse {
 }
 
 // ============================================================================
-// NOTIFICATION SETTINGS TYPES
-// ============================================================================
-
-export interface NotificationSettings {
-  emailEnabled: boolean;
-  slackEnabled: boolean;
-  notifyOnSubmission: boolean;
-  notifyManagers: boolean;
-  reminderDaysBefore: number;
-  reminderRecipients: string[];
-  smtpConfigured: boolean;
-}
-
-export interface UpdateNotificationSettingsRequest {
-  emailEnabled?: boolean;
-  slackEnabled?: boolean;
-  notifyOnSubmission?: boolean;
-}
-
-export interface RetentionPolicy {
-  keepSessionsMonths: number;
-  archiveEnabled: boolean;
-  anonymizeAfterDays: number;
-}
-
-export interface UpdateRetentionPolicyRequest {
-  keepSessionsMonths: number;
-}
-
-// ============================================================================
 // HIERARCHY LEVEL API METHODS
 // ============================================================================
 
@@ -338,18 +316,55 @@ export async function deleteHierarchyLevel(levelId: string): Promise<void> {
  * @returns The requested page of users plus pagination metadata
  */
 export async function listUsers(params: ListUsersParams = {}): Promise<UsersListResponse> {
-  const { page, pageSize, search, role, signal } = params;
+  const { page, pageSize, search, role, status, signal } = params;
   const query = new URLSearchParams();
   if (page !== undefined) query.set('page', String(page));
   if (pageSize !== undefined) query.set('pageSize', String(pageSize));
   if (search) query.set('search', search);
   if (role) query.set('role', role);
+  if (status) query.set('status', status);
 
   const qs = query.toString();
   return createApiClient<UsersListResponse>(
     `${API_BASE_URL}/api/v1/admin/users${qs ? `?${qs}` : ''}`,
     signal ? { signal } : undefined
   );
+}
+
+/** The backend clamps pageSize to 100, so asking for more gains nothing. */
+const ALL_USERS_PAGE_SIZE = 100;
+
+/**
+ * Fetches EVERY user matching the optional filters by walking all pages of
+ * listUsers. Use this only where the full set is genuinely needed (e.g. an
+ * add-member picker); listUsers itself stays a single, bounded page so
+ * unrelated callers never trigger an unbounded fetch. Users are deduplicated
+ * by id, since rows can shift between pages if the set changes mid-walk, and
+ * the AbortSignal cancels both the in-flight page and any remaining pages.
+ *
+ * @returns Every matching user, in listing order
+ */
+export async function listAllUsers(
+  params: Pick<ListUsersParams, 'search' | 'role' | 'signal'> = {}
+): Promise<AdminUser[]> {
+  const { signal } = params;
+  const byId = new Map<string, AdminUser>();
+  let page = 1;
+  let totalPages = 1;
+
+  do {
+    if (signal?.aborted) {
+      throw new DOMException('Request aborted', 'AbortError');
+    }
+    const response = await listUsers({ ...params, page, pageSize: ALL_USERS_PAGE_SIZE });
+    for (const user of response.users ?? []) {
+      if (!byId.has(user.id)) byId.set(user.id, user);
+    }
+    totalPages = response.pagination?.totalPages ?? 1;
+    page += 1;
+  } while (page <= totalPages);
+
+  return Array.from(byId.values());
 }
 
 /**
@@ -592,20 +607,6 @@ export async function updateDimension(
   );
 }
 
-/**
- * Deletes a health dimension
- *
- * @param dimensionId - Dimension ID
- */
-export async function deleteDimension(dimensionId: string): Promise<void> {
-  await createApiClient<void>(
-    `${API_BASE_URL}/api/v1/admin/settings/dimensions/${dimensionId}`,
-    {
-      method: 'DELETE',
-    }
-  );
-}
-
 // ============================================================================
 // BRANDING SETTINGS API METHODS
 // ============================================================================
@@ -632,67 +633,6 @@ export async function updateBrandingSettings(
 ): Promise<BrandingSettings> {
   return createApiClient<BrandingSettings>(
     `${API_BASE_URL}/api/v1/admin/settings/branding`,
-    {
-      method: 'PUT',
-      body: JSON.stringify(request),
-    }
-  );
-}
-
-// ============================================================================
-// NOTIFICATION SETTINGS API METHODS
-// ============================================================================
-
-/**
- * Fetches notification settings
- *
- * @returns Current notification settings
- */
-export async function getNotificationSettings(): Promise<NotificationSettings> {
-  return createApiClient<NotificationSettings>(
-    `${API_BASE_URL}/api/v1/admin/settings/notifications`
-  );
-}
-
-/**
- * Updates notification settings
- *
- * @param request - Fields to update
- * @returns Updated notification settings
- */
-export async function updateNotificationSettings(
-  request: UpdateNotificationSettingsRequest
-): Promise<NotificationSettings> {
-  return createApiClient<NotificationSettings>(
-    `${API_BASE_URL}/api/v1/admin/settings/notifications`,
-    {
-      method: 'PUT',
-      body: JSON.stringify(request),
-    }
-  );
-}
-
-// ============================================================================
-// RETENTION POLICY API METHODS
-// ============================================================================
-
-/**
- * Fetches retention policy settings
- */
-export async function getRetentionPolicy(): Promise<RetentionPolicy> {
-  return createApiClient<RetentionPolicy>(
-    `${API_BASE_URL}/api/v1/admin/settings/retention`
-  );
-}
-
-/**
- * Updates retention policy settings
- */
-export async function updateRetentionPolicy(
-  request: UpdateRetentionPolicyRequest
-): Promise<RetentionPolicy> {
-  return createApiClient<RetentionPolicy>(
-    `${API_BASE_URL}/api/v1/admin/settings/retention`,
     {
       method: 'PUT',
       body: JSON.stringify(request),
@@ -797,30 +737,48 @@ export interface SkippedProviderUser {
   reason: string;
 }
 
-/** The outcome of one synchronization run. */
-export interface OrganizationSyncResult {
-  status: string;
-  teamsSynced: number;
-  usersSynced: number;
-  membershipsSynced: number;
-  membershipsRemoved: number;
+/** Persisted lifecycle state of one organization sync run. */
+export type SyncRunStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED';
+
+/**
+ * One organization sync run as the backend persists it. This is the single
+ * source of truth for the Sync Now screen, so a refreshed page re-reads it
+ * instead of guessing.
+ */
+export interface SyncRun {
+  runId: string;
+  status: SyncRunStatus;
+  /** Current step, e.g. UPSERTING_USERS; FAILED once the run has failed. */
+  stage: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  /** Added = newly inserted. Updated = existing and a business field really changed. */
+  insertedUsers: number;
+  updatedUsers: number;
+  /** Existing and identical: never counted as updated. null = not recorded for this run. */
+  unchangedUsers: number | null;
+  insertedTeams: number;
+  updatedTeams: number;
+  unchangedTeams: number | null;
+  /** Real membership additions, reactivations and removals only. */
+  membershipChanges: number;
+  /** People and teams marked inactive. Nothing is ever hard-deleted. */
+  deactivatedRecords: number;
+  /** Teams whose health checks this sync switched off / on. */
   healthChecksDisabled: number;
   healthChecksEnabled: number;
-  usersDeleted: number;
-  teamsDeleted: number;
-  /** Action items removed as a side effect of the deletions above (cascaded, not held back). */
-  actionItemsDeleted: number;
-  usersSkipped: number;
-  skippedUsers?: SkippedProviderUser[];
-  managerLinksCleared: number;
-  teamLeadsCleared: number;
-  membershipsDiscarded: number;
-  /** True when this run only completed because an admin waived the mass-deletion hold. */
-  massDeletionOverridden?: boolean;
-  /** The counts that were waived, present only alongside massDeletionOverridden. */
+  /** True when an administrator waived the mass-deletion hold for this run. */
+  massDeletionOverridden: boolean;
+  errorCode: string | null;
+  /** Safe to show an administrator; never contains credentials. */
+  errorMessage: string | null;
+  /** The stage that failed, present only when status is FAILED. */
+  failedStage: string | null;
+  /** Counts behind a mass-deactivation hold, when that is why the run failed. */
   massDeletion?: MassDeletionReport;
-  startedAt: string;
-  completedAt: string;
+  /** True when a start request was answered with a run already in flight. */
+  alreadyActive?: boolean;
 }
 
 /**
@@ -939,21 +897,16 @@ export interface MassDeletionReport {
   memberships?: DeletionMetric;
 }
 
-/** The typed `code` the backend sets on a held sync. */
-export const MASS_DELETION_HOLD_CODE = 'mass_deletion_hold';
+/** The typed `errorCode` a run carries when the mass-deactivation guard held it. */
+export const MASS_DEACTIVATION_HOLD_CODE = 'MASS_DEACTIVATION_HOLD';
 
 /**
- * Extracts the mass-deletion report from a failed sync, or null if the failure
- * was something else.
- *
- * Recognition is by the typed `code` field, not by matching message text.
+ * The counts behind a held run, or null if the run failed for another reason.
+ * Recognition is by the typed errorCode, not by matching message text.
  */
-export function getMassDeletionHold(error: unknown): MassDeletionReport | null {
-  const apiError = (error as APIRequestError | undefined)?.apiError as
-    | { code?: string; massDeletion?: MassDeletionReport }
-    | undefined;
-  if (!apiError || apiError.code !== MASS_DELETION_HOLD_CODE) return null;
-  return apiError.massDeletion ?? null;
+export function getMassDeletionHold(run: SyncRun | null | undefined): MassDeletionReport | null {
+  if (!run || run.status !== 'FAILED' || run.errorCode !== MASS_DEACTIVATION_HOLD_CODE) return null;
+  return run.massDeletion ?? null;
 }
 
 /** The four counts an admin reviewed on a held sync's response, echoed back
@@ -986,7 +939,7 @@ export interface ConfirmedMassDeletion {
  */
 export async function syncOrganizationProvider(
   options: { overrideMassDeletion?: boolean; confirmedMassDeletion?: ConfirmedMassDeletion } = {}
-): Promise<OrganizationSyncResult> {
+): Promise<SyncRun> {
   const request: RequestInit = { method: 'POST' };
   if (options.overrideMassDeletion) {
     request.body = JSON.stringify({
@@ -994,8 +947,156 @@ export async function syncOrganizationProvider(
       confirmedMassDeletion: options.confirmedMassDeletion,
     });
   }
-  return createApiClient<OrganizationSyncResult>(
+  // The backend answers 202 with the PENDING run; the work itself continues in
+  // the background and is followed with getSyncRun.
+  return createApiClient<SyncRun>(
     `${API_BASE_URL}/api/v1/admin/organization-provider/sync`,
     request
+  );
+}
+
+/** Reads one run's persisted state. */
+export async function getSyncRun(runId: string): Promise<SyncRun> {
+  return createApiClient<SyncRun>(
+    `${API_BASE_URL}/api/v1/admin/organization-provider/sync/runs/${encodeURIComponent(runId)}`
+  );
+}
+
+/**
+ * The most recent run, or null if no sync has ever run (the backend answers
+ * 204 with no body, which the shared JSON helper cannot parse).
+ */
+export async function getLatestSyncRun(): Promise<SyncRun | null> {
+  const response = await apiRequest(`${API_BASE_URL}/api/v1/admin/organization-provider/sync/runs/latest`);
+  if (response.status === 204) return null;
+  return handleResponse<SyncRun>(response);
+}
+
+/** How often an automatic organization sync runs. */
+export type AutoSyncFrequency = 'DAILY' | 'WEEKLY' | 'MONTHLY';
+
+/** One automatic run. `startedAt` is when the attempt was recorded (UTC). */
+export interface AutoSyncAttempt {
+  runId: string;
+  status: SyncRunStatus;
+  startedAt: string;
+  completedAt: string | null;
+  /** Safe to show an administrator; never contains credentials. */
+  errorMessage: string | null;
+}
+
+/** Saved automatic-sync schedule plus automatic-run history. All times are UTC. */
+export interface AutoSyncSchedule {
+  enabled: boolean;
+  frequency: AutoSyncFrequency;
+  /** e.g. "Weekly on Monday at 02:00 UTC" */
+  description: string;
+  timezone: string;
+  /** null when auto-sync is disabled. */
+  nextRunAt: string | null;
+  lastAttempt: AutoSyncAttempt | null;
+  /** Completion time of the last SUCCESSFUL automatic sync. */
+  lastSuccessAt: string | null;
+}
+
+export async function getAutoSyncSchedule(): Promise<AutoSyncSchedule> {
+  return createApiClient<AutoSyncSchedule>(
+    `${API_BASE_URL}/api/v1/admin/organization-provider/auto-sync`
+  );
+}
+
+/** Saves the schedule. This never starts a sync. */
+export async function updateAutoSyncSchedule(
+  enabled: boolean,
+  frequency: AutoSyncFrequency
+): Promise<AutoSyncSchedule> {
+  return createApiClient<AutoSyncSchedule>(
+    `${API_BASE_URL}/api/v1/admin/organization-provider/auto-sync`,
+    { method: 'PUT', body: JSON.stringify({ enabled, frequency }) }
+  );
+}
+
+// ============================================================================
+// SYNC HISTORY (read-only)
+// ============================================================================
+
+/** What started a run (org_sync_runs.trigger_type). */
+export type SyncRunTrigger = 'MANUAL' | 'SCHEDULED';
+
+/** Whether the provider snapshot was complete (org_sync_runs.snapshot_type). */
+export type SyncRunSnapshotType = 'COMPLETE' | 'PARTIAL';
+
+/**
+ * One row of sync history, as the admin-only history endpoint returns it. It is
+ * a deliberate subset of the persisted run: no idempotency key, worker id,
+ * heartbeat or raw hold report.
+ */
+export interface SyncRunHistoryItem {
+  runId: string;
+  snapshotType: SyncRunSnapshotType;
+  trigger: SyncRunTrigger;
+  status: SyncRunStatus;
+  stage: string;
+  /** Administrator user id, or "scheduler" for an automatic run. */
+  initiatedBy: string;
+  /** When the run was accepted/queued -- not when work began. */
+  createdAt: string;
+  /** When a worker began processing; null while queued or if it failed first. */
+  startedAt: string | null;
+  /** When the run reached SUCCESS or FAILED; null while active. */
+  completedAt: string | null;
+  /** When the provider generated the applied snapshot; only for SUCCESS runs. */
+  sourceGeneratedAt: string | null;
+  /** startedAt -> completedAt; null when it cannot be calculated accurately. */
+  durationSeconds: number | null;
+  /** Failed runs only. */
+  failedStage: string | null;
+  errorCode: string | null;
+  /** Failed runs only; sanitized by the server. */
+  errorMessage: string | null;
+  /**
+   * What this run committed, same meaning as the Settings "Sync complete"
+   * summary. All null unless status is SUCCESS (a queued, running or failed run
+   * committed nothing). null = not available; 0 is a real zero.
+   */
+  insertedUsers: number | null;
+  updatedUsers: number | null;
+  /** Also null for older runs that never recorded it. */
+  unchangedUsers: number | null;
+  insertedTeams: number | null;
+  updatedTeams: number | null;
+  unchangedTeams: number | null;
+  membershipChanges: number | null;
+}
+
+export interface SyncRunHistoryResponse {
+  runs: SyncRunHistoryItem[];
+  pagination: PaginationMeta;
+}
+
+export interface ListSyncRunHistoryParams {
+  page?: number;
+  pageSize?: number;
+  status?: SyncRunStatus;
+  trigger?: SyncRunTrigger;
+  snapshotType?: SyncRunSnapshotType;
+  signal?: AbortSignal;
+}
+
+/** Fetches one page of sync-run history, newest first. Admin only. */
+export async function listSyncRunHistory(
+  params: ListSyncRunHistoryParams = {}
+): Promise<SyncRunHistoryResponse> {
+  const { page, pageSize, status, trigger, snapshotType, signal } = params;
+  const query = new URLSearchParams();
+  if (page !== undefined) query.set('page', String(page));
+  if (pageSize !== undefined) query.set('pageSize', String(pageSize));
+  if (status) query.set('status', status);
+  if (trigger) query.set('trigger', trigger);
+  if (snapshotType) query.set('snapshotType', snapshotType);
+  const qs = query.toString();
+  return createApiClient<SyncRunHistoryResponse>(
+    `${API_BASE_URL}/api/v1/admin/organization-provider/sync/runs${qs ? `?${qs}` : ''}`,
+    signal ? { signal } : undefined
   );
 }

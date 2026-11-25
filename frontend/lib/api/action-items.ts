@@ -1,6 +1,8 @@
 import { authenticatedFetch } from '@/lib/auth';
 import { API_BASE_URL } from './client';
 
+export type ActionItemStatus = 'open' | 'on_hold' | 'in_progress' | 'done';
+
 export interface ActionItem {
   id: string;
   teamId: string;
@@ -12,7 +14,7 @@ export interface ActionItem {
   assigneeName: string | null;
   title: string;
   description: string;
-  status: 'open' | 'in_progress' | 'done';
+  status: ActionItemStatus;
   dueDate: string | null;
   assessmentPeriod: string | null;
   createdAt: string;
@@ -29,13 +31,20 @@ export interface CreateActionItemPayload {
 }
 
 export interface UpdateActionItemPayload {
-  status?: 'open' | 'in_progress' | 'done';
+  status?: ActionItemStatus;
   title?: string;
   description?: string;
-  dimensionId?: string;
-  assignedTo?: string;
-  dueDate?: string;
+  // For these three fields, `null` clears the stored value and an omitted key
+  // leaves it unchanged (undefined is dropped by JSON.stringify).
+  dimensionId?: string | null;
+  assignedTo?: string | null;
+  dueDate?: string | null;
   assessmentPeriod?: string;
+}
+
+export interface DirectManager {
+  id: string;
+  name: string;
 }
 
 export async function listActionItems(teamId: string, status?: string): Promise<ActionItem[]> {
@@ -72,10 +81,18 @@ export async function deleteActionItem(teamId: string, id: string): Promise<void
   if (!res.ok) throw new Error('Failed to delete action item');
 }
 
+export interface ActionStatusCounts {
+  open: number;
+  onHold: number;
+  inProgress: number;
+  completed: number;
+}
+
 export interface TeamActionSummary {
   teamId: string;
   teamName: string;
   openCount: number;
+  statusCounts: ActionStatusCounts;
 }
 
 export async function listManagerTeamsActionSummary(managerId: string): Promise<TeamActionSummary[]> {
@@ -83,4 +100,19 @@ export async function listManagerTeamsActionSummary(managerId: string): Promise<
   if (!res.ok) throw new Error('Failed to fetch action item summary');
   const data = await res.json();
   return data.teams ?? [];
+}
+
+export async function getDirectManager(teamId: string): Promise<DirectManager | null> {
+  const res = await authenticatedFetch(`${API_BASE_URL}/api/v1/teams/${teamId}/action-items/direct-manager`);
+  if (!res.ok) throw new Error('Failed to fetch direct manager');
+  const data = await res.json();
+  if (!data.id) return null;
+  return { id: data.id, name: data.name };
+}
+
+export async function listPodActionItems(managerId: string, teamId: string): Promise<ActionItem[]> {
+  const res = await authenticatedFetch(`${API_BASE_URL}/api/v1/managers/${managerId}/teams/${teamId}/action-items`);
+  if (!res.ok) throw new Error('Failed to fetch pod action items');
+  const data = await res.json();
+  return data.actionItems ?? [];
 }

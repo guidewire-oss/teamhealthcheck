@@ -3,10 +3,12 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/team"
+	"github.com/lib/pq"
 )
 
 // TeamRepository implements the team.Repository interface
@@ -28,9 +30,10 @@ func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, e
 	var distributionListEmail sql.NullString
 	var healthCheckEnabled sql.NullBool
 	var createdAt, updatedAt sql.NullTime
+	var deactivatedAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, `
-		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name
+		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name, t.is_active, t.deactivated_at
 		FROM teams t
 		LEFT JOIN users u ON t.team_lead_id = u.id
 		WHERE t.id = $1
@@ -44,6 +47,8 @@ func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, e
 		&distributionListEmail,
 		&healthCheckEnabled,
 		&teamLeadName,
+		&t.IsActive,
+		&deactivatedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -74,6 +79,11 @@ func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, e
 	}
 	if updatedAt.Valid {
 		t.UpdatedAt = updatedAt.Time
+	}
+
+	if deactivatedAt.Valid {
+		d := deactivatedAt.Time
+		t.DeactivatedAt = &d
 	}
 
 	// Fetch team members
@@ -107,10 +117,28 @@ func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, e
 
 // FindAll retrieves all teams
 func (r *TeamRepository) FindAll(ctx context.Context) ([]*team.Team, error) {
+	return r.findByStatus(ctx, team.StatusAll)
+}
+
+// findByStatus loads teams, restricted in the query to the given status so rows
+// the caller does not want are never read or scanned.
+func (r *TeamRepository) findByStatus(ctx context.Context, status string) ([]*team.Team, error) {
+	var filter string
+	switch status {
+	case team.StatusAll:
+	case team.StatusActive:
+		filter = "WHERE t.is_active"
+	case team.StatusInactive:
+		filter = "WHERE NOT t.is_active"
+	default:
+		return nil, fmt.Errorf("unknown team status filter %q", status)
+	}
+
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name
+		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name, t.is_active, t.deactivated_at
 		FROM teams t
 		LEFT JOIN users u ON t.team_lead_id = u.id
+		`+filter+`
 		ORDER BY t.name
 	`)
 	if err != nil {
@@ -123,7 +151,13 @@ func (r *TeamRepository) FindAll(ctx context.Context) ([]*team.Team, error) {
 
 // FindAllWithDetails retrieves all teams with enriched details
 func (r *TeamRepository) FindAllWithDetails(ctx context.Context) ([]team.Team, error) {
-	teams, err := r.FindAll(ctx)
+	return r.FindWithDetailsByStatus(ctx, team.StatusAll)
+}
+
+// FindWithDetailsByStatus retrieves teams with enriched details, filtering by
+// active status in the query.
+func (r *TeamRepository) FindWithDetailsByStatus(ctx context.Context, status string) ([]team.Team, error) {
+	teams, err := r.findByStatus(ctx, status)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +174,7 @@ func (r *TeamRepository) FindAllWithDetails(ctx context.Context) ([]team.Team, e
 // FindByLeadID retrieves all teams led by a specific user
 func (r *TeamRepository) FindByLeadID(ctx context.Context, leadID string) ([]*team.Team, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name
+		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name, t.is_active, t.deactivated_at
 		FROM teams t
 		LEFT JOIN users u ON t.team_lead_id = u.id
 		WHERE t.team_lead_id = $1
@@ -158,7 +192,7 @@ func (r *TeamRepository) FindByLeadID(ctx context.Context, leadID string) ([]*te
 // FindBySupervisorID retrieves all teams where a user is in the supervisor chain
 func (r *TeamRepository) FindBySupervisorID(ctx context.Context, supervisorID string) ([]*team.Team, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT DISTINCT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name
+		SELECT DISTINCT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name, t.is_active, t.deactivated_at
 		FROM teams t
 		INNER JOIN team_supervisors ts ON t.id = ts.team_id
 		LEFT JOIN users u ON t.team_lead_id = u.id
@@ -187,8 +221,16 @@ func (r *TeamRepository) FindBySupervisorID(ctx context.Context, supervisorID st
 // supervisor purely via users.reports_to.
 //
 // health_check_enabled is added by migration 000021_add_health_check_enabled
-// — any database that has run migrations has it. No other method on this
-// repository selects it, so FindAll/FindByID/etc. are unaffected.
+// — the migration must be applied first. Other methods on this repository
+// (FindByID, FindAll, FindByLeadID, ...) also select it, so none of them
+// work against a database that lacks the column.
+//
+// Only ACTIVE teams (teams.is_active) are returned. A deactivated team is
+// not a live pod, so it must not be counted as opted in, appear in the
+// dashboard's lists, or be a reminder candidate — whatever its
+// health_check_enabled flag says. The filter lives here, in the one query
+// every dashboard count, list and reminder plan is derived from, so none of
+// them can disagree. Inactive rows are left untouched in the database.
 //
 // Deliberately does NOT return a member count: eligibility for the
 // individual survey (Level 4 + Level 5 only) can't be answered from this
@@ -212,6 +254,7 @@ func (r *TeamRepository) FindSurveyCompletionTeams(ctx context.Context) ([]team.
 			LIMIT 1
 		) sup ON true
 		LEFT JOIN users tl ON tl.id = t.team_lead_id
+		WHERE t.is_active
 		ORDER BY t.name
 	`)
 	if err != nil {
@@ -263,14 +306,16 @@ func (r *TeamRepository) FindSurveyCompletionTeams(ctx context.Context) ([]team.
 // the INNER JOIN to users: a team_members row whose user no longer exists
 // never survives the join (the users FK's ON DELETE CASCADE means such a
 // row cannot outlive its user in practice, but this query does not rely on
-// that alone either).
+// that alone either). A soft-deactivated team is excluded too, so an Inactive
+// team never receives surveys even if a member row is attached to it.
 func (r *TeamRepository) FindEligibleMemberIDs(ctx context.Context) (map[string][]string, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT DISTINCT tm.team_id, tm.user_id
 		FROM team_members tm
+		JOIN teams t ON t.id = tm.team_id
 		JOIN users u ON u.id = tm.user_id
 		JOIN hierarchy_levels hl ON hl.id = u.hierarchy_level_id
-		WHERE hl.position IN (4, 5)
+		WHERE hl.position IN (4, 5) AND tm.is_active AND u.is_active AND t.is_active
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query eligible team members: %w", err)
@@ -297,7 +342,7 @@ func (r *TeamRepository) FindMembers(ctx context.Context, teamID string) ([]*tea
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT user_id
 		FROM team_members
-		WHERE team_id = $1
+		WHERE team_id = $1 AND is_active
 		ORDER BY user_id
 	`, teamID)
 
@@ -334,7 +379,7 @@ func (r *TeamRepository) FindTeamMembers(ctx context.Context, teamID string) ([]
 		SELECT u.id, u.username, u.full_name, u.email
 		FROM users u
 		INNER JOIN team_members tm ON u.id = tm.user_id
-		WHERE tm.team_id = $1
+		WHERE tm.team_id = $1 AND tm.is_active
 		ORDER BY u.username
 	`, teamID)
 
@@ -370,7 +415,7 @@ func (r *TeamRepository) CountTeamMembers(ctx context.Context, teamID string) (i
 	err := r.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM team_members
-		WHERE team_id = $1
+		WHERE team_id = $1 AND is_active
 	`, teamID).Scan(&count)
 
 	if err != nil {
@@ -452,6 +497,10 @@ func (r *TeamRepository) Save(ctx context.Context, t *team.Team) error {
 	`, t.ID, t.Name, teamLeadID, cadence, distributionListEmail, t.CreatedAt, t.UpdatedAt)
 
 	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return fmt.Errorf("%w: %s", team.ErrDuplicateTeam, t.ID)
+		}
 		return fmt.Errorf("failed to save team: %w", err)
 	}
 
@@ -531,17 +580,24 @@ func (r *TeamRepository) Update(ctx context.Context, t *team.Team) error {
 		return fmt.Errorf("team not found: %s", t.ID)
 	}
 
-	// Update team members
-	// Delete existing members
-	_, err = tx.ExecContext(ctx, "DELETE FROM team_members WHERE team_id = $1", t.ID)
-	if err != nil {
-		return fmt.Errorf("failed to delete team members: %w", err)
+	// Reconcile members without destroying history: someone taken out of the
+	// team becomes an inactive membership (kept), and someone put back is
+	// reactivated. Deleting every row and re-inserting would erase the inactive
+	// history and reset joined dates for everyone.
+	memberIDs := make([]string, len(t.Members))
+	for i, member := range t.Members {
+		memberIDs[i] = member.ID
+	}
+	if _, err = tx.ExecContext(ctx, `
+		UPDATE team_members
+		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
+		WHERE team_id = $1 AND is_active AND user_id <> ALL($2)
+	`, t.ID, pq.Array(memberIDs)); err != nil {
+		return fmt.Errorf("failed to end team memberships: %w", err)
 	}
 
-	// Insert new members
-	for _, member := range t.Members {
-		err = r.addMemberTx(ctx, tx, t.ID, member.ID)
-		if err != nil {
+	for _, id := range memberIDs {
+		if err = r.addMemberTx(ctx, tx, t.ID, id); err != nil {
 			return err
 		}
 	}
@@ -565,22 +621,43 @@ func (r *TeamRepository) Update(ctx context.Context, t *team.Team) error {
 	return nil
 }
 
-// Delete removes a team
-func (r *TeamRepository) Delete(ctx context.Context, id string) error {
-	result, err := r.db.ExecContext(ctx, "DELETE FROM teams WHERE id = $1", id)
+// Deactivate soft-deactivates a team. The teams row is kept, so the team's
+// surveys, responses and action items keep resolving to it; its memberships end
+// (kept as inactive history) in the same transaction. deactivated_at keeps its
+// original value if the team was already inactive, so repeating the call is
+// harmless. Team membership or team-lead changes never call this.
+func (r *TeamRepository) Deactivate(ctx context.Context, id string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to delete team: %w", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
+	defer tx.Rollback()
 
-	rowsAffected, err := result.RowsAffected()
+	res, err := tx.ExecContext(ctx, `
+		UPDATE teams
+		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+	`, id)
 	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
+		return fmt.Errorf("failed to deactivate team: %w", err)
 	}
-
-	if rowsAffected == 0 {
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("failed to confirm team deactivation: %w", err)
+	} else if n == 0 {
 		return fmt.Errorf("team not found: %s", id)
 	}
 
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE team_members
+		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
+		WHERE team_id = $1 AND is_active
+	`, id); err != nil {
+		return fmt.Errorf("failed to end memberships of deactivated team: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit team deactivation: %w", err)
+	}
 	return nil
 }
 
@@ -589,7 +666,9 @@ func (r *TeamRepository) AddMember(ctx context.Context, teamID, userID string) e
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO team_members (team_id, user_id)
 		VALUES ($1, $2)
-		ON CONFLICT DO NOTHING
+		ON CONFLICT (team_id, user_id) DO UPDATE
+			SET is_active = true, deactivated_at = NULL
+			WHERE team_members.is_active = false
 	`, teamID, userID)
 
 	if err != nil {
@@ -599,11 +678,13 @@ func (r *TeamRepository) AddMember(ctx context.Context, teamID, userID string) e
 	return nil
 }
 
-// RemoveMember removes a member from a team
+// RemoveMember ends a member's membership of a team (soft: the row is kept as history)
 func (r *TeamRepository) RemoveMember(ctx context.Context, teamID, userID string) error {
+	// Ends the membership but keeps the row as inactive history.
 	result, err := r.db.ExecContext(ctx, `
-		DELETE FROM team_members
-		WHERE team_id = $1 AND user_id = $2
+		UPDATE team_members
+		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
+		WHERE team_id = $1 AND user_id = $2 AND is_active
 	`, teamID, userID)
 
 	if err != nil {
@@ -658,6 +739,7 @@ func (r *TeamRepository) scanTeams(ctx context.Context, rows *sql.Rows) ([]*team
 		var distributionListEmail sql.NullString
 		var healthCheckEnabled sql.NullBool
 		var createdAt, updatedAt sql.NullTime
+		var deactivatedAt sql.NullTime
 
 		err := rows.Scan(
 			&t.ID,
@@ -669,6 +751,8 @@ func (r *TeamRepository) scanTeams(ctx context.Context, rows *sql.Rows) ([]*team
 			&distributionListEmail,
 			&healthCheckEnabled,
 			&teamLeadName,
+			&t.IsActive,
+			&deactivatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan team: %w", err)
@@ -697,6 +781,11 @@ func (r *TeamRepository) scanTeams(ctx context.Context, rows *sql.Rows) ([]*team
 		}
 		if updatedAt.Valid {
 			t.UpdatedAt = updatedAt.Time
+		}
+
+		if deactivatedAt.Valid {
+			d := deactivatedAt.Time
+			t.DeactivatedAt = &d
 		}
 
 		// Fetch team members
@@ -747,6 +836,9 @@ func (r *TeamRepository) addMemberTx(ctx context.Context, tx *sql.Tx, teamID, us
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO team_members (team_id, user_id)
 		VALUES ($1, $2)
+		ON CONFLICT (team_id, user_id) DO UPDATE
+			SET is_active = true, deactivated_at = NULL
+			WHERE team_members.is_active = false
 	`, teamID, userID)
 
 	if err != nil {

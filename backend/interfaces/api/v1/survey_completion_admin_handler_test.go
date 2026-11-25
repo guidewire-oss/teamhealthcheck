@@ -237,16 +237,20 @@ var _ = Describe("buildSurveyCompletionResponse post-workshop completion rule", 
 	overview := &queries.SurveyCompletionOverview{
 		Persons: persons,
 		Teams: []queries.SurveyCompletionTeam{
-			// Every eligible member finished their individual survey, but the
-			// team hasn't held its post-workshop session yet.
-			{TeamID: "pod-individuals-only", TeamName: "Individuals Only", OwnerUserID: "leader-1", Total: 3, Completed: 3, PostWorkshopCompleted: false, HealthCheckEnabled: true},
-			// Same individual completion, but the post-workshop session is
-			// also done -- this is the only one of the three that should
-			// read "complete".
-			{TeamID: "pod-fully-done", TeamName: "Fully Done", OwnerUserID: "leader-1", Total: 3, Completed: 3, PostWorkshopCompleted: true, HealthCheckEnabled: true},
-			// Post-workshop marked done, but individuals aren't -- can't be
-			// "complete" either; still reads as ordinary partial progress.
-			{TeamID: "pod-partial-with-workshop", TeamName: "Partial With Workshop", OwnerUserID: "leader-1", Total: 3, Completed: 1, PostWorkshopCompleted: true, HealthCheckEnabled: true},
+			// 4 of 5 members responded (the fifth is on vacation) and the team
+			// lead submitted the post-workshop survey: Fully complete, and the
+			// real 4/5 participation is preserved.
+			{TeamID: "pod-4of5-pw", TeamName: "Four Of Five With Workshop", OwnerUserID: "leader-1", Total: 5, Completed: 4, PostWorkshopCompleted: true, HealthCheckEnabled: true},
+			{TeamID: "pod-5of5-pw", TeamName: "Five Of Five With Workshop", OwnerUserID: "leader-1", Total: 5, Completed: 5, PostWorkshopCompleted: true, HealthCheckEnabled: true},
+			// No submitted post-workshop survey (a draft or an unopened form
+			// both leave PostWorkshopCompleted false): never complete.
+			{TeamID: "pod-4of5-nopw", TeamName: "Four Of Five No Workshop", OwnerUserID: "leader-1", Total: 5, Completed: 4, PostWorkshopCompleted: false, HealthCheckEnabled: true},
+			{TeamID: "pod-5of5-nopw", TeamName: "Five Of Five No Workshop", OwnerUserID: "leader-1", Total: 5, Completed: 5, PostWorkshopCompleted: false, HealthCheckEnabled: true},
+			{TeamID: "pod-0of5", TeamName: "Zero Of Five", OwnerUserID: "leader-1", Total: 5, Completed: 0, PostWorkshopCompleted: false, HealthCheckEnabled: true},
+			// Opted-out teams keep their treatment even with a post-workshop row.
+			{TeamID: "pod-opted-out", TeamName: "Opted Out", OwnerUserID: "leader-1", Total: 5, Completed: 4, PostWorkshopCompleted: true, HealthCheckEnabled: false},
+			// No eligible members: never complete.
+			{TeamID: "pod-empty", TeamName: "Empty", OwnerUserID: "leader-1", Total: 0, Completed: 0, PostWorkshopCompleted: true, HealthCheckEnabled: true},
 		},
 	}
 
@@ -257,21 +261,43 @@ var _ = Describe("buildSurveyCompletionResponse post-workshop completion rule", 
 		byID[t.TeamID] = t
 	}
 
-	It("keeps a pod in_progress when every individual response is in but the post-workshop session isn't done", func() {
-		Expect(byID["pod-individuals-only"].Status).To(Equal("in_progress"))
+	It("marks 4/5 + submitted post-workshop survey as complete and keeps the 4/5 count", func() {
+		Expect(byID["pod-4of5-pw"].Status).To(Equal("complete"))
+		Expect(byID["pod-4of5-pw"].Completed).To(Equal(4))
+		Expect(byID["pod-4of5-pw"].Total).To(Equal(5))
+		Expect(*byID["pod-4of5-pw"].PostWorkshopCompleted).To(BeTrue())
 	})
 
-	It("only reports complete once both individual responses AND the post-workshop session are done", func() {
-		Expect(byID["pod-fully-done"].Status).To(Equal("complete"))
+	It("marks 5/5 + submitted post-workshop survey as complete", func() {
+		Expect(byID["pod-5of5-pw"].Status).To(Equal("complete"))
+		Expect(byID["pod-5of5-pw"].Completed).To(Equal(5))
 	})
 
-	It("stays in_progress when the post-workshop session is done but individual responses are still partial", func() {
-		Expect(byID["pod-partial-with-workshop"].Status).To(Equal("in_progress"))
+	It("keeps 4/5 without a post-workshop survey in_progress", func() {
+		Expect(byID["pod-4of5-nopw"].Status).To(Equal("in_progress"))
 	})
 
-	It("never counts an individuals-only pod as fully complete in the overall tally", func() {
-		Expect(resp.FullyComplete).To(Equal(1)) // only pod-fully-done
-		Expect(resp.InProgress).To(Equal(2))    // pod-individuals-only, pod-partial-with-workshop
+	It("keeps 5/5 without a post-workshop survey in_progress, never complete", func() {
+		Expect(byID["pod-5of5-nopw"].Status).To(Equal("in_progress"))
+	})
+
+	It("keeps a team with no responses and no post-workshop survey not_started", func() {
+		Expect(byID["pod-0of5"].Status).To(Equal("not_started"))
+	})
+
+	It("keeps an opted-out team opted_out and a team with no eligible members not_started", func() {
+		Expect(byID["pod-opted-out"].Status).To(Equal("opted_out"))
+		Expect(byID["pod-empty"].Status).To(Equal("not_started"))
+	})
+
+	It("keeps summary counts and overall completion consistent with row statuses, without double counting", func() {
+		Expect(resp.TotalTeams).To(Equal(7))
+		Expect(resp.OptedOut).To(Equal(1))
+		Expect(resp.OptedIn).To(Equal(6))
+		Expect(resp.FullyComplete).To(Equal(2))      // pod-4of5-pw, pod-5of5-pw
+		Expect(resp.InProgress).To(Equal(2))         // pod-4of5-nopw, pod-5of5-nopw
+		Expect(resp.NotStarted).To(Equal(2))         // pod-0of5, pod-empty
+		Expect(resp.OverallCompletion).To(Equal(33)) // 2 of 6 opted-in teams
 	})
 })
 
@@ -514,5 +540,107 @@ var _ = Describe("buildSurveyCompletionResponse never lets one team ID render tw
 		Expect(resp.Groups).To(HaveLen(1))
 		Expect(resp.Groups[0].DirectTeams).To(HaveLen(1))
 		Expect(resp.Groups[0].TotalTeams).To(Equal(1))
+	})
+})
+
+// Regression test: a circular manager relationship (a sync/data error, e.g.
+// A's ParentID points to B and B's ParentID points back to A) must not make
+// every cycle member vanish from the rendered hierarchy. Before the fix,
+// each cycle member always had a parent present in nodeBuilders, so none of
+// them ever qualified for rootOrder, and they were never reachable from any
+// other root either -- their teams were still counted in the overview
+// totals but silently absent from Groups.
+var _ = Describe("buildSurveyCompletionResponse cycle handling", func() {
+	It("still renders both members of a two-person cycle (A -> B -> A), each exactly once", func() {
+		persons := []queries.PersonNode{
+			{UserID: "a", Name: "A", LevelID: "manager", LevelName: "Manager", ParentID: "b"},
+			{UserID: "b", Name: "B", LevelID: "manager", LevelName: "Manager", ParentID: "a"},
+		}
+		overview := &queries.SurveyCompletionOverview{
+			Persons: persons,
+			Teams: []queries.SurveyCompletionTeam{
+				{TeamID: "team-a", TeamName: "Team A", OwnerUserID: "a", Total: 1, Completed: 1, PostWorkshopCompleted: true, HealthCheckEnabled: true},
+				{TeamID: "team-b", TeamName: "Team B", OwnerUserID: "b", Total: 1, Completed: 1, PostWorkshopCompleted: true, HealthCheckEnabled: true},
+			},
+		}
+
+		resp := buildSurveyCompletionResponse(overview)
+
+		Expect(resp.TotalTeams).To(Equal(2))
+
+		names := []string{}
+		for _, g := range resp.Groups {
+			if g.Person != nil {
+				names = append(names, g.Person.Name)
+			}
+		}
+		Expect(names).To(ConsistOf("A", "B"))
+
+		seen := map[string]int{}
+		for _, g := range resp.Groups {
+			countGroupTeams(g, seen)
+		}
+		Expect(seen).To(HaveLen(2))
+		for id, count := range seen {
+			Expect(count).To(Equal(1), "team %s should appear exactly once", id)
+		}
+	})
+
+	It("still renders every member of a longer cycle (A -> B -> C -> A), each exactly once", func() {
+		persons := []queries.PersonNode{
+			{UserID: "a", Name: "A", LevelID: "manager", LevelName: "Manager", ParentID: "c"},
+			{UserID: "b", Name: "B", LevelID: "manager", LevelName: "Manager", ParentID: "a"},
+			{UserID: "c", Name: "C", LevelID: "manager", LevelName: "Manager", ParentID: "b"},
+		}
+		overview := &queries.SurveyCompletionOverview{
+			Persons: persons,
+			Teams: []queries.SurveyCompletionTeam{
+				{TeamID: "team-a", TeamName: "Team A", OwnerUserID: "a", Total: 1, Completed: 1, HealthCheckEnabled: true},
+				{TeamID: "team-b", TeamName: "Team B", OwnerUserID: "b", Total: 1, Completed: 1, HealthCheckEnabled: true},
+				{TeamID: "team-c", TeamName: "Team C", OwnerUserID: "c", Total: 1, Completed: 1, HealthCheckEnabled: true},
+			},
+		}
+
+		resp := buildSurveyCompletionResponse(overview)
+
+		Expect(resp.TotalTeams).To(Equal(3))
+
+		names := []string{}
+		for _, g := range resp.Groups {
+			if g.Person != nil {
+				names = append(names, g.Person.Name)
+			}
+		}
+		Expect(names).To(ConsistOf("A", "B", "C"))
+
+		seen := map[string]int{}
+		for _, g := range resp.Groups {
+			countGroupTeams(g, seen)
+		}
+		Expect(seen).To(HaveLen(3))
+		for id, count := range seen {
+			Expect(count).To(Equal(1), "team %s should appear exactly once", id)
+		}
+	})
+
+	It("leaves a normal acyclic hierarchy unaffected by the cycle check", func() {
+		persons := []queries.PersonNode{
+			{UserID: "root", Name: "Root", LevelID: "director", LevelName: "Director", ParentID: ""},
+			{UserID: "child", Name: "Child", LevelID: "manager", LevelName: "Manager", ParentID: "root"},
+		}
+		overview := &queries.SurveyCompletionOverview{
+			Persons: persons,
+			Teams: []queries.SurveyCompletionTeam{
+				{TeamID: "team-root", TeamName: "Team Root", OwnerUserID: "root", Total: 1, Completed: 1, HealthCheckEnabled: true},
+				{TeamID: "team-child", TeamName: "Team Child", OwnerUserID: "child", Total: 1, Completed: 1, HealthCheckEnabled: true},
+			},
+		}
+
+		resp := buildSurveyCompletionResponse(overview)
+
+		Expect(resp.Groups).To(HaveLen(1))
+		Expect(resp.Groups[0].Person.Name).To(Equal("Root"))
+		Expect(resp.Groups[0].Children).To(HaveLen(1))
+		Expect(resp.Groups[0].Children[0].Person.Name).To(Equal("Child"))
 	})
 })

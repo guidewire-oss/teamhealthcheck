@@ -3,7 +3,7 @@ package dataprovider
 import (
 	"context"
 	"errors"
-	"net"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -93,31 +93,60 @@ func TestFetchSnapshot_DecodesContract(t *testing.T) {
 	}
 }
 
+// trackedReadCloser wraps a response body and records whether Close() was
+// actually called on it, so the assertion below directly proves the body
+// was closed instead of inferring it from connection-reuse behavior (reading
+// a response fully can let a connection be reused even if Close() was never
+// called, which would make a reuse-based assertion pass regardless).
+type trackedReadCloser struct {
+	io.ReadCloser
+	closed bool
+}
+
+func (t *trackedReadCloser) Close() error {
+	t.closed = true
+	return t.ReadCloser.Close()
+}
+
+type trackingRoundTripper struct {
+	underlying http.RoundTripper
+	bodies     []*trackedReadCloser
+}
+
+func (rt *trackingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := rt.underlying.RoundTrip(req)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+	tracked := &trackedReadCloser{ReadCloser: resp.Body}
+	rt.bodies = append(rt.bodies, tracked)
+	resp.Body = tracked
+	return resp, nil
+}
+
 func TestFetchSnapshot_ClosesTheResponseBody(t *testing.T) {
-	// A body that is fully read and closed returns its connection to the idle
-	// pool, so two sequential fetches share one connection. A leaked body would
-	// force the second fetch onto a new one.
-	var newConnections int
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(validSnapshot))
 	}))
-	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
-		if state == http.StateNew {
-			newConnections++
-		}
-	}
-	server.Start()
 	defer server.Close()
 
 	client := newSnapshotClient(t, server.URL, "token")
-	for i := range 2 {
-		if _, err := client.FetchSnapshot(context.Background()); err != nil {
-			t.Fatalf("FetchSnapshot() call %d error = %v", i+1, err)
-		}
+	underlying := client.httpClient.Transport
+	if underlying == nil {
+		underlying = http.DefaultTransport
+	}
+	rt := &trackingRoundTripper{underlying: underlying}
+	client.httpClient.Transport = rt
+
+	if _, err := client.FetchSnapshot(context.Background()); err != nil {
+		t.Fatalf("FetchSnapshot() error = %v", err)
 	}
 
-	if newConnections != 1 {
-		t.Errorf("server saw %d new connections for 2 fetches, want 1 (an unclosed body prevents reuse)", newConnections)
+	if len(rt.bodies) != 1 {
+		t.Fatalf("expected exactly one response body to be tracked, got %d", len(rt.bodies))
+	}
+	if !rt.bodies[0].closed {
+		t.Error("FetchSnapshot() did not close the response body")
 	}
 }
 

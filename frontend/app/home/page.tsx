@@ -6,8 +6,10 @@ import { getCurrentUser, logout, authenticatedFetch } from '@/lib/auth';
 import { HEALTH_DIMENSIONS } from '@/lib/data';
 import { API_BASE_URL } from '@/lib/api/client';
 import { getOrgConfig, getHierarchyLevel } from '@/lib/org-config';
+import { formatScore } from '@/lib/format';
 import { getAssessmentPeriod, getCurrentYearPeriods, toCadence, formatPeriodLabel, formatMonthYear } from '@/lib/assessment-period';
-import { LogOut, Building2, ChevronDown, ClipboardList, TrendingUp, Calendar, Clock, CalendarClock, BookOpen, X, AlertCircle } from 'lucide-react';
+import { LogOut, ChevronDown, ClipboardList, TrendingUp, Calendar, Clock, CalendarClock, BookOpen, X, AlertCircle } from 'lucide-react';
+import BrandMark from '@/components/BrandMark';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts';
 import { getTeamInfoCached, TeamInfo } from '@/lib/api/teams';
 import { checkSurveyEligibility } from '@/lib/api/health-checks';
@@ -96,7 +98,7 @@ export default function MemberHomePage() {
   // a period that simply isn't open right now (e.g. from a previous year) -- these must never
   // share the "you already submitted this" wording, since only "duplicate" means that.
   const [blockedInfo, setBlockedInfo] = useState<{
-    reason: 'duplicate' | 'not_open';
+    reason: 'duplicate' | 'not_open' | 'not_enrolled';
     submittedPeriod: string;
     nextEligiblePeriod: string;
   } | null>(null);
@@ -218,6 +220,9 @@ export default function MemberHomePage() {
         surveyType: 'individual',
         assessmentPeriod,
         userId: user.id,
+        // The survey opens for the member's first team; sending it lets the server report
+        // an opted-out team up front instead of rejecting the submit at the end.
+        teamId: user.teamIds?.[0],
       });
 
       if (!result.eligible) {
@@ -225,7 +230,13 @@ export default function MemberHomePage() {
         // any other reason (e.g. the period isn't open) must not reuse that wording, since
         // result.submittedPeriod is empty in that case and would otherwise be papered over
         // with the period they just picked, falsely implying they'd already submitted it.
-        if (result.reason === 'duplicate') {
+        if (result.reason === 'participation_disabled') {
+          setBlockedInfo({
+            reason: 'not_enrolled',
+            submittedPeriod: '',
+            nextEligiblePeriod: '',
+          });
+        } else if (result.reason === 'duplicate') {
           setBlockedInfo({
             reason: 'duplicate',
             submittedPeriod: result.submittedPeriod || formatPeriodLabel(assessmentPeriod),
@@ -288,16 +299,9 @@ export default function MemberHomePage() {
       <header className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex justify-between items-center">
-            <div className="flex items-center space-x-3">
-              {brandingLogo ? (
-                <img src={brandingLogo} alt="Company logo" className="w-8 h-8 object-contain rounded" />
-              ) : (
-                <Building2 className="h-8 w-8 text-blue-600" />
-              )}
-              <div>
-                <h1 className="text-xl font-bold text-gray-900">{brandingName || 'Team360'}</h1>
-                <p className="text-sm text-gray-500">Member Home</p>
-              </div>
+            <div className="min-w-0">
+              <BrandMark logoUrl={brandingLogo} companyName={brandingName} size="header" className="mb-1.5" />
+              <h1 className="text-xl font-bold text-gray-900">Member Home</h1>
             </div>
             <div className="relative">
               <button
@@ -491,7 +495,6 @@ export default function MemberHomePage() {
                     <RadarChart data={radarData}>
                       <PolarGrid />
                       <PolarAngleAxis dataKey="dimension" tick={{ fontSize: 10 }} />
-                      <PolarRadiusAxis domain={[0, 3]} tickCount={4} />
                       <Radar
                         name="Score"
                         dataKey="score"
@@ -499,7 +502,8 @@ export default function MemberHomePage() {
                         fill="#3b82f6"
                         fillOpacity={0.5}
                       />
-                      <Tooltip />
+                      <PolarRadiusAxis domain={[0, 3]} tickCount={4} tick={{ fill: '#334155', fontSize: 12, fontWeight: 600 }} />
+                      <Tooltip formatter={(value: number, name: string) => [formatScore(Number(value)), name]} />
                     </RadarChart>
                   </ResponsiveContainer>
                 </div>
@@ -613,7 +617,11 @@ export default function MemberHomePage() {
                   <AlertCircle className="w-5 h-5 text-amber-600" />
                 </div>
                 <h3 id="duplicate-submission-modal-title" className="text-xl font-semibold text-gray-900">
-                  {blockedInfo.reason === 'duplicate' ? 'Already Submitted' : 'Period Not Available'}
+                  {blockedInfo.reason === 'duplicate'
+                    ? 'Already Submitted'
+                    : blockedInfo.reason === 'not_enrolled'
+                    ? 'Team Not Opted In'
+                    : 'Period Not Available'}
                 </h3>
               </div>
               <button
@@ -640,6 +648,11 @@ export default function MemberHomePage() {
                     </p>
                   )}
                 </>
+              ) : blockedInfo.reason === 'not_enrolled' ? (
+                <p className="text-base text-gray-700 leading-relaxed mb-8" data-testid="not-enrolled-message">
+                  Your team is not opted in to Team Health Check, so surveys are not available.
+                  Please contact your team lead or an administrator if this looks wrong.
+                </p>
               ) : (
                 <p className="text-base text-gray-700 leading-relaxed mb-8">
                   <span className="font-semibold">{blockedInfo.submittedPeriod}</span> is not open for

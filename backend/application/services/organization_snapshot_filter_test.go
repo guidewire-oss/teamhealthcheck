@@ -1,6 +1,7 @@
 package services_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -128,7 +129,7 @@ func TestFilterSnapshotClearsUnresolvableManagerLinks(t *testing.T) {
 			user("exec", "ceo", "level-0", nil),
 		},
 		[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
-		nil,
+		[]orgsnapshot.Membership{},
 	)
 
 	got, err := services.FilterSnapshot(in, knownLevels())
@@ -323,5 +324,237 @@ func TestFilterSnapshotRejectsDuplicateUserIDWhenBothAreImportable(t *testing.T)
 	_, err := services.FilterSnapshot(in, knownLevels())
 	if err == nil {
 		t.Fatal("expected an error for a duplicate user id, got nil")
+	}
+}
+
+// The filter must never turn a contract-invalid payload into a valid one:
+// whatever it repairs, orgsnapshot.Validate has to see the original breach.
+
+func validateFiltered(t *testing.T, in *orgsnapshot.Snapshot) error {
+	t.Helper()
+	got, err := services.FilterSnapshot(in, knownLevels())
+	if err != nil {
+		t.Fatalf("FilterSnapshot: %v", err)
+	}
+	return got.Snapshot.ValidationError()
+}
+
+func TestFilterSnapshotRejectsEmptyUserIDAlongsideAValidUser(t *testing.T) {
+	cases := map[string]orgsnapshot.User{
+		"importable level":   user("", "ghost", "level-3", nil),
+		"missing level":      user("", "ghost", "", nil),
+		"level THC lacks":    user("", "ghost", "level-unknown", nil),
+		"valid level, no id": user("", "ghost", "level-5", nil),
+	}
+	for name, bad := range cases {
+		t.Run(name, func(t *testing.T) {
+			snap := baseSnapshot(
+				[]orgsnapshot.User{user("u1", "alice", "level-3", nil), bad},
+				[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
+				[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}},
+			)
+			if err := validateFiltered(t, snap); err == nil {
+				t.Fatal("a record with an empty user id must reject the snapshot even though u1 is valid")
+			}
+		})
+	}
+}
+
+func TestFilterSnapshotDoesNotRepairAnEmptyReportsToID(t *testing.T) {
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("u1", "alice", "level-3", nil), user("u2", "bob", "level-3", strPtr(""))},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
+		[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}, {UserID: "u2", TeamID: "t1"}},
+	)
+
+	got, err := services.FilterSnapshot(snap, knownLevels())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClearedManagers != 0 || got.PreserveReportsToUserIDs["u2"] {
+		t.Fatalf("an empty reportsToId must not be treated as a repairable dangling manager: %+v", got)
+	}
+	if rt := got.Snapshot.Users[1].ReportsToID; rt == nil || *rt != "" {
+		t.Fatalf("the explicit empty value must be preserved for validation, got %v", rt)
+	}
+	if err := got.Snapshot.ValidationError(); err == nil {
+		t.Fatal("an empty reportsToId must fail validation")
+	}
+}
+
+func TestFilterSnapshotStillRepairsADanglingNonEmptyReportsToID(t *testing.T) {
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("u1", "alice", "level-3", strPtr("ghost"))},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
+		[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}},
+	)
+	got, _ := services.FilterSnapshot(snap, knownLevels())
+	if got.ClearedManagers != 1 || !got.PreserveReportsToUserIDs["u1"] {
+		t.Fatalf("a genuinely unresolvable manager is still cleared and preserved: %+v", got)
+	}
+}
+
+func TestFilterSnapshotDoesNotRepairAnEmptyTeamLeadID(t *testing.T) {
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("u1", "alice", "level-3", nil)},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz", TeamLeadID: strPtr("")}},
+		[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}},
+	)
+
+	got, err := services.FilterSnapshot(snap, knownLevels())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClearedTeamLeads != 0 {
+		t.Fatalf("an empty teamLeadId must not be counted as a cleared lead: %+v", got)
+	}
+	if lead := got.Snapshot.Teams[0].TeamLeadID; lead == nil || *lead != "" {
+		t.Fatalf("the explicit empty value must be preserved for validation, got %v", lead)
+	}
+	if err := got.Snapshot.ValidationError(); err == nil {
+		t.Fatal("an empty teamLeadId must fail validation")
+	}
+}
+
+func TestFilterSnapshotKeepsOmittedTeamLeadAsPreserve(t *testing.T) {
+	snap := baseSnapshot(
+		[]orgsnapshot.User{user("u1", "alice", "level-3", nil)},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}}, // omitted => preserve existing
+		[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}},
+	)
+	got, _ := services.FilterSnapshot(snap, knownLevels())
+	if got.Snapshot.Teams[0].TeamLeadID != nil {
+		t.Fatal("an omitted teamLeadId must stay nil (preserve)")
+	}
+	if err := got.Snapshot.ValidationError(); err != nil {
+		t.Fatalf("omitted lead is valid: %v", err)
+	}
+}
+
+// End to end: an invalid snapshot is rejected by Sync and nothing reaches
+// persistence, so no fallback value (previous manager or lead) is written.
+type invalidSnapshotFetcher struct{ snap *orgsnapshot.Snapshot }
+
+func (f invalidSnapshotFetcher) FetchSnapshot(context.Context) (*orgsnapshot.Snapshot, error) {
+	return f.snap, nil
+}
+
+func TestSyncRejectsContractInvalidSnapshotsWithoutPersisting(t *testing.T) {
+	invalid := map[string]*orgsnapshot.Snapshot{
+		"empty user id next to a valid user": baseSnapshot(
+			[]orgsnapshot.User{user("u1", "alice", "level-3", nil), user("", "ghost", "level-unknown", nil)},
+			[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
+			[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}}),
+		"empty reportsToId": baseSnapshot(
+			[]orgsnapshot.User{user("u1", "alice", "level-3", strPtr(""))},
+			[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
+			[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}}),
+		"empty teamLeadId": baseSnapshot(
+			[]orgsnapshot.User{user("u1", "alice", "level-3", nil)},
+			[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz", TeamLeadID: strPtr("")}},
+			[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}}),
+	}
+	for name, snap := range invalid {
+		t.Run(name, func(t *testing.T) {
+			repo := &holdingRepo{}
+			service := services.NewOrganizationSyncService(repo, invalidSnapshotFetcher{snap}, nil, nil)
+
+			if _, err := service.Sync(context.Background()); err == nil {
+				t.Fatal("expected the contract-invalid snapshot to be rejected")
+			}
+			if repo.calls != 0 {
+				t.Fatalf("nothing may be persisted for a rejected snapshot, ApplySnapshot ran %d time(s)", repo.calls)
+			}
+		})
+	}
+}
+
+func TestFilterSnapshotKeepsRoleMappedUserWithUnknownProviderLevel(t *testing.T) {
+	roleUser := user("u1", "alice", "level-6", nil)
+	roleUser.PodIQRole = strPtr("L1")
+	legacyUser := user("u2", "bob", "level-6", nil)
+	invalidRole := user("u3", "carol", "level-6", nil)
+	invalidRole.PodIQRole = strPtr("Manager")
+
+	in := baseSnapshot(
+		[]orgsnapshot.User{roleUser, legacyUser, invalidRole},
+		[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
+		[]orgsnapshot.Membership{},
+	)
+	in.ContractVersion = orgsnapshot.ContractVersionV11
+
+	got, err := services.FilterSnapshot(in, knownLevels())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Snapshot.Users) != 2 || got.Snapshot.Users[0].ID != "u1" || got.Snapshot.Users[1].ID != "u3" {
+		t.Fatalf("role users must survive the filter, got %+v", got.Snapshot.Users)
+	}
+	if len(got.SkippedUsers) != 1 || got.SkippedUsers[0].UserID != "u2" {
+		t.Fatalf("only the legacy user keeps the unknown-level skip, got %+v", got.SkippedUsers)
+	}
+	// The invalid role is kept so validation rejects it, not silently dropped.
+	if errs := got.Snapshot.Validate(); len(errs) != 1 || errs[0].Field != "podiqRole" || errs[0].Identifier != "u3" {
+		t.Fatalf("expected one podiqRole error for u3, got %+v", errs)
+	}
+}
+
+func TestFilterSnapshotKeepsBlankLevelUserWithRoleForValidation(t *testing.T) {
+	cases := []struct {
+		name          string
+		version       string
+		role          string
+		wantRoleError bool
+	}{
+		{"unknown role in v1.1", orgsnapshot.ContractVersionV11, "Manager", true},
+		{"valid role in v1.0", orgsnapshot.ContractVersion, "L1", true},
+		{"valid role in v1.1", orgsnapshot.ContractVersionV11, "L1", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blank := user("u2", "bob", "", nil)
+			blank.PodIQRole = strPtr(tc.role)
+			in := baseSnapshot(
+				[]orgsnapshot.User{user("u1", "alice", "level-5", nil), blank},
+				[]orgsnapshot.Team{{ID: "t1", Name: "Alcatraz"}},
+				[]orgsnapshot.Membership{{UserID: "u1", TeamID: "t1"}})
+			in.ContractVersion = tc.version
+
+			got, err := services.FilterSnapshot(in, knownLevels())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got.Snapshot.Users) != 2 || len(got.SkippedUsers) != 0 {
+				t.Fatalf("users=%d skipped=%d, want the blank-level user kept for validation", len(got.Snapshot.Users), len(got.SkippedUsers))
+			}
+
+			// u1, the team and the membership are valid, so every error here
+			// must come from the kept record u2.
+			fields := map[string]bool{}
+			for _, e := range got.Snapshot.Validate() {
+				if e.Identifier != "u2" {
+					t.Fatalf("unexpected validation error for %q: %+v", e.Identifier, e)
+				}
+				fields[e.Field] = true
+			}
+			if !fields["hierarchyLevelId"] {
+				t.Errorf("want a hierarchyLevelId error for u2, got fields %v", fields)
+			}
+			if fields["podiqRole"] != tc.wantRoleError {
+				t.Errorf("podiqRole error = %v, want %v (fields %v)", fields["podiqRole"], tc.wantRoleError, fields)
+			}
+		})
+	}
+}
+
+func TestFilterSnapshotStillSkipsBlankLevelUserWithoutRole(t *testing.T) {
+	in := baseSnapshot([]orgsnapshot.User{user("u1", "alice", "level-5", nil), user("u2", "bob", "", nil)}, nil, nil)
+	got, err := services.FilterSnapshot(in, knownLevels())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Snapshot.Users) != 1 || len(got.SkippedUsers) != 1 ||
+		got.SkippedUsers[0].Reason != orgprovider.SkipReasonMissingLevel {
+		t.Fatalf("users=%d skipped=%+v, want the blank-level user skipped as missing level", len(got.Snapshot.Users), got.SkippedUsers)
 	}
 }

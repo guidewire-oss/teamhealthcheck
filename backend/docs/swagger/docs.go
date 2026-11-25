@@ -635,7 +635,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns every team in the organization with the full set of admin-facing details: ID, name, team lead ID and name, cadence, distribution list email, member count, and timestamps, along with the total team count. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
+                "description": "Returns every team in the organization -- active and inactive -- with the full set of admin-facing details: ID, name, active status, team lead ID and name, cadence, distribution list email, current (active) member count, and timestamps, along with the total team count. Inactive teams are soft-deactivated, never deleted, and stay listed for historical data; use the status filter to narrow the list. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
                 "produces": [
                     "application/json"
                 ],
@@ -643,11 +643,30 @@ const docTemplate = `{
                     "Admin Teams"
                 ],
                 "summary": "List all teams (admin)",
+                "parameters": [
+                    {
+                        "enum": [
+                            "active",
+                            "inactive",
+                            "all"
+                        ],
+                        "type": "string",
+                        "description": "Limit to active or inactive teams; omit or use all for every team",
+                        "name": "status",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/TeamsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid status filter",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
                         }
                     },
                     "500": {
@@ -695,6 +714,12 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Invalid request body",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "A team with this ID already exists, possibly an inactive one that only a provider sync can reactivate",
                         "schema": {
                             "$ref": "#/definitions/ErrorResponse"
                         }
@@ -777,14 +802,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Permanently deletes the team identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
+                "description": "Soft-deactivates the team identified by the path ID. The team is never deleted: it stays listed and searchable as Inactive, its surveys, responses and action items are kept, and its memberships end. Repeating the call for an already inactive team changes nothing. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Admin Teams"
                 ],
-                "summary": "Delete a team",
+                "summary": "Deactivate a team",
                 "parameters": [
                     {
                         "type": "string",
@@ -801,8 +826,14 @@ const docTemplate = `{
                             "$ref": "#/definitions/MessageResponse"
                         }
                     },
+                    "404": {
+                        "description": "Team not found",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
                     "500": {
-                        "description": "Failed to delete team",
+                        "description": "Failed to deactivate team",
                         "schema": {
                             "$ref": "#/definitions/ErrorResponse"
                         }
@@ -905,6 +936,12 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Team not found or user not found",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Team is inactive",
                         "schema": {
                             "$ref": "#/definitions/ErrorResponse"
                         }
@@ -1121,6 +1158,17 @@ const docTemplate = `{
                         "description": "Exact hierarchy level id, for example level-5",
                         "name": "role",
                         "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "active",
+                            "inactive",
+                            "all"
+                        ],
+                        "type": "string",
+                        "description": "Limit to active or inactive people; omit or use all for everyone",
+                        "name": "status",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -1128,6 +1176,12 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/UsersResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid status filter",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
                         }
                     },
                     "500": {
@@ -1257,14 +1311,14 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Permanently deletes the user identified by the path ID. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
+                "description": "Soft-deactivates the user identified by the path ID. The person is never deleted: they stay listed and searchable as Inactive, their surveys, responses and action items are kept, and their team memberships end. Repeating the call for an already inactive user changes nothing. Access is restricted to authenticated users holding the Admin role with level-1 administrative permission.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Admin Users"
                 ],
-                "summary": "Delete a user",
+                "summary": "Deactivate a user",
                 "parameters": [
                     {
                         "type": "string",
@@ -1281,8 +1335,14 @@ const docTemplate = `{
                             "$ref": "#/definitions/MessageResponse"
                         }
                     },
+                    "404": {
+                        "description": "User not found",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
                     "500": {
-                        "description": "Failed to delete user",
+                        "description": "Failed to deactivate user",
                         "schema": {
                             "$ref": "#/definitions/ErrorResponse"
                         }
@@ -1297,7 +1357,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the distinct assessment period values that appear on at least one submitted health check session, for populating period-selector dropdowns in the frontend.",
+                "description": "Returns the half-year periods (YYYY H1, YYYY H2, or the older YYYY - 1st Half / 2nd Half label) that appear on at least one completed health check session, for populating period-selector dropdowns. Sessions stored under any other period value are not offered.",
                 "produces": [
                     "application/json"
                 ],
@@ -1943,7 +2003,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns, for every team the given manager supervises, the team's ID, name, and count of action items whose status is not \"done\", ordered by team name. Access requires a manager-or-above role, and the authenticated caller may only request their own summary; requesting another manager's summary is rejected with a 403.",
+                "description": "Returns, for every team the given manager supervises, the team's ID, name, and count of action items whose status is not \"done\" plus per-status counts (open, onHold, inProgress, completed), ordered by team name. Access requires a manager-or-above role, and the authenticated caller may only request their own summary; requesting another manager's summary is rejected with a 403.",
                 "produces": [
                     "application/json"
                 ],
@@ -2034,6 +2094,59 @@ const docTemplate = `{
                 }
             }
         },
+        "/managers/{managerId}/teams/{teamId}/action-items": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns every action item for one team the given manager supervises, newest first. The authenticated caller may only request their own view (managerId must match the token) and the team must be one they supervise; otherwise the request is rejected with a 403. Access requires a manager-or-above role.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Action Items"
+                ],
+                "summary": "Get a pod's action items (read-only)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Manager ID",
+                        "name": "managerId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Team ID",
+                        "name": "teamId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/ActionItemsResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — not your view, or team is not in your hierarchy",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to validate pod access or fetch action items",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/teams": {
             "get": {
                 "security": [
@@ -2072,7 +2185,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the action items belonging to the given team, newest first, optionally narrowed by status (open, in_progress, done) and/or assessment period via query parameters. Each item includes its dimension, creator, assignee, title, description, status, due date, assessment period, and timestamps, with names resolved for the linked dimension, creator, and assignee. Access requires membership on the team or manager-or-above privileges.",
+                "description": "Returns the action items belonging to the given team, newest first, optionally narrowed by status (open, on_hold, in_progress, done) and/or assessment period via query parameters. Each item includes its dimension, creator, assignee, title, description, status, due date, assessment period, and timestamps, with names resolved for the linked dimension, creator, and assignee. Access requires membership on the team or manager-or-above privileges.",
                 "produces": [
                     "application/json"
                 ],
@@ -2090,7 +2203,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Filter by status (open, in_progress, done)",
+                        "description": "Filter by status (open, on_hold, in_progress, done)",
                         "name": "status",
                         "in": "query"
                     },
@@ -2198,6 +2311,58 @@ const docTemplate = `{
                 }
             }
         },
+        "/teams/{teamId}/action-items/direct-manager": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the authenticated user's direct manager (reports_to) so the UI can offer them as an assignee. The id and name are null when the user has no manager. Access requires membership on the team or manager-or-above privileges.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Action Items"
+                ],
+                "summary": "Get the caller's direct manager",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Team ID",
+                        "name": "teamId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/DirectManagerResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Access denied: team membership or manager-or-above privileges required",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to resolve direct manager",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/teams/{teamId}/action-items/{id}": {
             "delete": {
                 "security": [
@@ -2271,7 +2436,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Partially updates the action item identified by the path ID within the given team; only the fields present in the request body are changed. Status, when provided, must be one of open, in_progress, or done. When assignedTo is set, the target user must already be a member of the team or the request is rejected with a 400. Returns a 404 if no matching item exists for that team. Access requires membership on the team or manager-or-above privileges.",
+                "description": "Partially updates the action item identified by the path ID within the given team; only the fields present in the request body are changed. dimensionId, assignedTo and dueDate may be set to null to clear them; omitting a key leaves it unchanged. Status, when provided, must be one of open, on_hold, in_progress, or done. When assignedTo is set, the target user must already be a member of the team or the request is rejected with a 400. Returns a 404 if no matching item exists for that team. Access requires membership on the team or manager-or-above privileges.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2918,6 +3083,27 @@ const docTemplate = `{
             },
             "type": "object"
         },
+        "ActionStatusCountsResponse": {
+            "properties": {
+                "completed": {
+                    "example": 3,
+                    "type": "integer"
+                },
+                "inProgress": {
+                    "example": 1,
+                    "type": "integer"
+                },
+                "onHold": {
+                    "example": 1,
+                    "type": "integer"
+                },
+                "open": {
+                    "example": 2,
+                    "type": "integer"
+                }
+            },
+            "type": "object"
+        },
         "AddTeamMemberRequest": {
             "properties": {
                 "userId": {
@@ -2940,6 +3126,9 @@ const docTemplate = `{
                     "example": "2026-09-08T10:20:19.860027Z",
                     "type": "string"
                 },
+                "deactivatedAt": {
+                    "type": "string"
+                },
                 "distributionListEmail": {
                     "example": "phoenix-squad@teams360.demo",
                     "type": "string"
@@ -2947,6 +3136,10 @@ const docTemplate = `{
                 "id": {
                     "example": "team-phoenix",
                     "type": "string"
+                },
+                "isActive": {
+                    "description": "IsActive is false for a soft-deactivated team, which stays listed for history.",
+                    "type": "boolean"
                 },
                 "memberCount": {
                     "example": 4,
@@ -2981,6 +3174,9 @@ const docTemplate = `{
                     "example": "2026-09-08T10:20:19.860027Z",
                     "type": "string"
                 },
+                "deactivatedAt": {
+                    "type": "string"
+                },
                 "email": {
                     "example": "alice@teams360.demo",
                     "type": "string"
@@ -2996,6 +3192,10 @@ const docTemplate = `{
                 "id": {
                     "example": "alice",
                     "type": "string"
+                },
+                "isActive": {
+                    "description": "IsActive is false for a soft-deactivated person, who stays listed for history.",
+                    "type": "boolean"
                 },
                 "reportsTo": {
                     "example": "teamlead1",
@@ -3290,6 +3490,19 @@ const docTemplate = `{
                         "$ref": "#/definitions/HealthDimensionDTO"
                     },
                     "type": "array"
+                }
+            },
+            "type": "object"
+        },
+        "DirectManagerResponse": {
+            "properties": {
+                "id": {
+                    "example": "manager1",
+                    "type": "string"
+                },
+                "name": {
+                    "example": "Morgan Manager",
+                    "type": "string"
                 }
             },
             "type": "object"
@@ -4205,8 +4418,16 @@ const docTemplate = `{
         "TeamActionSummaryResponse": {
             "properties": {
                 "openCount": {
-                    "example": 1,
+                    "example": 4,
                     "type": "integer"
+                },
+                "statusCounts": {
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/ActionStatusCountsResponse"
+                        }
+                    ],
+                    "description": "Per-status counts, so clients don't have to download every card to tally them."
                 },
                 "teamId": {
                     "example": "team-phoenix",
@@ -4494,7 +4715,8 @@ const docTemplate = `{
                 },
                 "assignedTo": {
                     "example": "alice",
-                    "type": "string"
+                    "type": "string",
+                    "x-nullable": true
                 },
                 "description": {
                     "example": "Codebase health scored 2.6. Add tests to the payments and auth packages first.",
@@ -4502,11 +4724,13 @@ const docTemplate = `{
                 },
                 "dimensionId": {
                     "example": "health",
-                    "type": "string"
+                    "type": "string",
+                    "x-nullable": true
                 },
                 "dueDate": {
                     "example": "2026-12-15",
-                    "type": "string"
+                    "type": "string",
+                    "x-nullable": true
                 },
                 "status": {
                     "example": "in_progress",

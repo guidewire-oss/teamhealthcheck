@@ -1,5 +1,6 @@
 "use client";
 
+import StatusBadge from "@/components/StatusBadge";
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { getCurrentUser, logout } from "@/lib/auth";
@@ -18,10 +19,6 @@ import {
   clearAdminCache,
   getBrandingSettings,
   updateBrandingSettings,
-  getNotificationSettings,
-  updateNotificationSettings,
-  getRetentionPolicy,
-  updateRetentionPolicy,
   AdminUser,
   UserLite,
   HierarchyLevel,
@@ -31,15 +28,16 @@ import {
   PaginationMeta,
   UsersListResponse,
 } from "@/lib/api/admin";
+import { API_BASE_URL } from "@/lib/api/client";
 import {
   Settings,
+  History,
   Users,
   Calendar,
   Plus,
   Edit2,
   Trash2,
   LogOut,
-  Shield,
   Save,
   X,
   Building2,
@@ -52,16 +50,19 @@ import {
 import HierarchyConfig from "@/components/HierarchyConfig";
 import DimensionConfig from "@/components/DimensionConfig";
 import DataProviderConfig from "@/components/DataProviderConfig";
+import AutoSyncSettings from "@/components/AutoSyncSettings";
+import SyncHistory from "@/components/SyncHistory";
 import SupervisorChainModal from "@/components/SupervisorChainModal";
 import TeamMembersModal from "@/components/TeamMembersModal";
 import SurveyCompletionDashboard from "@/components/SurveyCompletionDashboard";
 import DocsLink from "@/components/DocsLink";
+import BrandMark from "@/components/BrandMark";
 
 export default function AdminPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<
-    "hierarchy" | "teams" | "surveyCompletion" | "users" | "settings"
+    "hierarchy" | "teams" | "surveyCompletion" | "users" | "settings" | "syncHistory"
   >("hierarchy");
 
   // Teams tab state
@@ -84,6 +85,8 @@ export default function AdminPage() {
   const [availableTeamLeads, setAvailableTeamLeads] = useState<UserLite[]>([]);
   const [teamLeadsLoading, setTeamLeadsLoading] = useState(false);
   const [teamSearchQuery, setTeamSearchQuery] = useState("");
+  // "" = every team: inactive teams stay visible and searchable for history.
+  const [teamStatusFilter, setTeamStatusFilter] = useState<"" | "active" | "inactive">("");
 
   const [showNewUserForm, setShowNewUserForm] = useState(false);
   const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
@@ -111,6 +114,8 @@ export default function AdminPage() {
   const [userSearchQuery, setUserSearchQuery] = useState("");
   const [debouncedUserSearchQuery, setDebouncedUserSearchQuery] = useState("");
   const [userRoleFilter, setUserRoleFilter] = useState("");
+  // "" = everyone: inactive people stay visible and searchable for history.
+  const [userStatusFilter, setUserStatusFilter] = useState<"" | "active" | "inactive">("");
   const [currentUsersPage, setCurrentUsersPage] = useState(1);
   const [usersPagination, setUsersPagination] = useState<PaginationMeta | null>(null);
   const [usersPageLoading, setUsersPageLoading] = useState(false);
@@ -121,14 +126,9 @@ export default function AdminPage() {
   const usersAbortControllerRef = useRef<AbortController | null>(null);
   const usersInFlightKeyRef = useRef<string | null>(null);
   const usersPageCacheRef = useRef<Map<string, UsersListResponse>>(new Map());
-  const prevUsersFiltersRef = useRef({ search: "", role: "" });
+  const prevUsersFiltersRef = useRef({ search: "", role: "", status: "" });
 
   // Settings tab state
-  const [emailEnabled, setEmailEnabled] = useState(false);
-  const [slackEnabled, setSlackEnabled] = useState(false);
-  const [notifyOnSubmission, setNotifyOnSubmission] = useState(false);
-  const [smtpConfigured, setSmtpConfigured] = useState(false);
-  const [retentionMonths, setRetentionMonths] = useState(12);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
@@ -137,6 +137,10 @@ export default function AdminPage() {
   // Branding state
   const [brandingCompanyName, setBrandingCompanyName] = useState("My Company");
   const [brandingLogoURL, setBrandingLogoURL] = useState("");
+
+  // Header branding (org identity shown in the page header, independent of the Settings form above)
+  const [brandingName, setBrandingName] = useState("");
+  const [brandingLogo, setBrandingLogo] = useState<string | null>(null);
 
   useEffect(() => {
     const currentUser = getCurrentUser();
@@ -148,6 +152,16 @@ export default function AdminPage() {
       setUser(currentUser);
     }
   }, [router]);
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/v1/config`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.companyName) setBrandingName(data.companyName);
+        if (data.logoURL) setBrandingLogo(data.logoURL);
+      })
+      .catch(() => {});
+  }, []);
 
   // Fetch teams and team leads when activeTab changes to 'teams'
   useEffect(() => {
@@ -185,12 +199,14 @@ export default function AdminPage() {
 
     const filtersChanged =
       prevUsersFiltersRef.current.search !== debouncedUserSearchQuery ||
-      prevUsersFiltersRef.current.role !== userRoleFilter;
+      prevUsersFiltersRef.current.role !== userRoleFilter ||
+      prevUsersFiltersRef.current.status !== userStatusFilter;
 
     if (filtersChanged) {
       prevUsersFiltersRef.current = {
         search: debouncedUserSearchQuery,
         role: userRoleFilter,
+        status: userStatusFilter,
       };
       if (currentUsersPage !== 1) {
         setCurrentUsersPage(1);
@@ -198,15 +214,14 @@ export default function AdminPage() {
       }
     }
 
-    loadUsersPage(currentUsersPage, debouncedUserSearchQuery, userRoleFilter);
+    loadUsersPage(currentUsersPage, debouncedUserSearchQuery, userRoleFilter, userStatusFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, currentUsersPage, debouncedUserSearchQuery, userRoleFilter]);
+  }, [activeTab, currentUsersPage, debouncedUserSearchQuery, userRoleFilter, userStatusFilter]);
 
-  // Fetch settings and teams when activeTab changes to 'settings'
+  // Fetch settings when activeTab changes to 'settings'
   useEffect(() => {
     if (activeTab === "settings") {
       loadSettings();
-      if (teams.length === 0) fetchAdminTeams();
     }
   }, [activeTab]);
 
@@ -214,16 +229,7 @@ export default function AdminPage() {
     setSettingsLoading(true);
     setSettingsError(null);
     try {
-      const [notifSettings, retention, branding] = await Promise.all([
-        getNotificationSettings(),
-        getRetentionPolicy(),
-        getBrandingSettings(),
-      ]);
-      setEmailEnabled(notifSettings.emailEnabled);
-      setSlackEnabled(notifSettings.slackEnabled);
-      setNotifyOnSubmission(notifSettings.notifyOnSubmission);
-      setSmtpConfigured(notifSettings.smtpConfigured);
-      setRetentionMonths(retention.keepSessionsMonths);
+      const branding = await getBrandingSettings();
       setBrandingCompanyName(branding.companyName || "My Company");
       setBrandingLogoURL(branding.logoURL || "");
     } catch (err) {
@@ -238,18 +244,12 @@ export default function AdminPage() {
     setSettingsError(null);
     setSettingsSuccess(false);
     try {
-      await Promise.all([
-        updateBrandingSettings({
-          companyName: brandingCompanyName,
-          logoURL: brandingLogoURL,
-        }),
-        updateNotificationSettings({
-          emailEnabled,
-          slackEnabled,
-          notifyOnSubmission,
-        }),
-        updateRetentionPolicy({ keepSessionsMonths: retentionMonths }),
-      ]);
+      await updateBrandingSettings({
+        companyName: brandingCompanyName,
+        logoURL: brandingLogoURL,
+      });
+      setBrandingName(brandingCompanyName);
+      setBrandingLogo(brandingLogoURL || null);
       setSettingsSuccess(true);
       setTimeout(() => setSettingsSuccess(false), 3000);
     } catch (err) {
@@ -306,8 +306,8 @@ export default function AdminPage() {
   // Guards against duplicate requests for the same page/filter combination,
   // caches previously loaded pages for this session, and ignores stale
   // responses from a request that's been superseded by a newer one.
-  const loadUsersPage = async (page: number, search: string, role: string) => {
-    const cacheKey = `${page}|${USERS_PAGE_SIZE}|${search}|${role}`;
+  const loadUsersPage = async (page: number, search: string, role: string, status: "" | "active" | "inactive" = "") => {
+    const cacheKey = `${page}|${USERS_PAGE_SIZE}|${search}|${role}|${status}`;
 
     if (usersInFlightKeyRef.current === cacheKey) {
       return; // Already loading this exact page/filter combination
@@ -315,6 +315,11 @@ export default function AdminPage() {
 
     const cached = usersPageCacheRef.current.get(cacheKey);
     if (cached) {
+      // Abort and clear any previous in-flight request before applying the
+      // cached data, so it can't finish later and overwrite these results.
+      usersAbortControllerRef.current?.abort();
+      usersAbortControllerRef.current = null;
+      usersInFlightKeyRef.current = null;
       setUsers(cached.users);
       setUsersPagination(cached.pagination);
       setUsersError(null);
@@ -342,6 +347,7 @@ export default function AdminPage() {
         pageSize: USERS_PAGE_SIZE,
         search: search || undefined,
         role: role || undefined,
+        status: status || undefined,
         signal: controller.signal,
       });
 
@@ -368,13 +374,30 @@ export default function AdminPage() {
     }
   };
 
+  // Drops cached user pages without refetching. A team-membership change makes
+  // every cached page's `teamIds` stale, but the Users list is not on screen
+  // while the members modal is open; the next visit to the tab refetches its
+  // page from the now-empty cache, so no eager refetch is needed.
+  const invalidateUsersPageCache = () => {
+    usersAbortControllerRef.current?.abort();
+    usersAbortControllerRef.current = null;
+    usersInFlightKeyRef.current = null;
+    usersPageCacheRef.current.clear();
+  };
+
   // Clears cached user pages and re-fetches the current page. Call after any
   // mutation (create/update/delete) so the list reflects the change.
   const reloadUsersData = async () => {
+    // Cancel any in-flight request and clear its tracking state first, so a
+    // stale in-flight key doesn't cause loadUsersPage to skip the reload
+    // below and leave the old list on screen.
+    usersAbortControllerRef.current?.abort();
+    usersAbortControllerRef.current = null;
+    usersInFlightKeyRef.current = null;
     usersPageCacheRef.current.clear();
     await Promise.all([
       loadUsersTabMeta(),
-      loadUsersPage(currentUsersPage, debouncedUserSearchQuery, userRoleFilter),
+      loadUsersPage(currentUsersPage, debouncedUserSearchQuery, userRoleFilter, userStatusFilter),
     ]);
   };
 
@@ -514,10 +537,20 @@ export default function AdminPage() {
     }
   };
 
+  // Search and the status filter combine. A team without the flag (an older
+  // API) counts as active, so nothing is hidden by mistake.
+  const filteredTeams = teams.filter((team) => {
+    if (teamStatusFilter === "active" && team.isActive === false) return false;
+    if (teamStatusFilter === "inactive" && team.isActive !== false) return false;
+    if (!teamSearchQuery) return true;
+    const q = teamSearchQuery.toLowerCase();
+    return team.name.toLowerCase().includes(q) || (team.teamLeadName || "").toLowerCase().includes(q);
+  });
+
   const handleDeleteTeam = async (teamId: string) => {
     if (
       !confirm(
-        "Are you sure you want to delete this team? This action cannot be undone.",
+        "Are you sure you want to deactivate this team? It will stay in the system and remain visible as Inactive, its past surveys and history are kept, and it will stop receiving new surveys.",
       )
     ) {
       return;
@@ -531,8 +564,8 @@ export default function AdminPage() {
       clearAdminCache();
       await fetchAdminTeams();
     } catch (err: any) {
-      console.error("Failed to delete team:", err);
-      alert(err.message || "Failed to delete team");
+      console.error("Failed to deactivate team:", err);
+      alert(err.message || "Failed to deactivate team");
     } finally {
       setDeletingTeamId(null);
     }
@@ -674,13 +707,13 @@ export default function AdminPage() {
   const handleDeleteUser = async (userId: string) => {
     // Prevent deleting self or admin user
     if (userId === user?.id) {
-      alert("You cannot delete your own account");
+      alert("You cannot deactivate your own account");
       return;
     }
 
     const userToDelete = users.find((u) => u.id === userId);
     if (userToDelete?.username === "admin") {
-      alert("Cannot delete the admin user");
+      alert("Cannot deactivate the admin user");
       return;
     }
 
@@ -696,8 +729,8 @@ export default function AdminPage() {
       await reloadUsersData();
       setDeleteConfirmUserId(null);
     } catch (err: any) {
-      console.error("Failed to delete user:", err);
-      alert(err.message || "Failed to delete user. Please try again.");
+      console.error("Failed to deactivate user:", err);
+      alert(err.message || "Failed to deactivate user. Please try again.");
     }
   };
 
@@ -728,14 +761,12 @@ export default function AdminPage() {
       <div className="bg-white shadow-sm border-b">
         <div className="container mx-auto px-4 py-4">
           <div className="flex justify-between items-center">
-            <div className="flex items-center gap-3">
-              <Shield className="w-8 h-8 text-indigo-600" />
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900">
-                  Admin Dashboard
-                </h1>
-                <p className="text-gray-500">System Administration</p>
-              </div>
+            <div className="min-w-0">
+              <BrandMark logoUrl={brandingLogo} companyName={brandingName} size="header" className="mb-2" />
+              <h1 className="text-2xl font-bold text-gray-900">
+                Admin Dashboard
+              </h1>
+              <p className="text-gray-500 mt-1">System Administration</p>
             </div>
             <div className="flex items-center gap-4">
               <div className="text-right">
@@ -827,9 +858,29 @@ export default function AdminPage() {
               Settings
             </div>
           </button>
+          <button
+            data-testid="sync-history-tab"
+            onClick={() => setActiveTab("syncHistory")}
+            className={`px-6 py-3 font-medium transition-colors border-b-2 flex-shrink-0 whitespace-nowrap ${
+              activeTab === "syncHistory"
+                ? "text-indigo-600 border-indigo-600"
+                : "text-gray-500 border-transparent hover:text-gray-700"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <History className="w-5 h-5" />
+              Sync History
+            </div>
+          </button>
         </div>
 
         {activeTab === "hierarchy" && <HierarchyConfig />}
+
+        {activeTab === "syncHistory" && (
+          <div className="bg-white rounded-xl shadow-sm border p-6">
+            <SyncHistory />
+          </div>
+        )}
 
         {activeTab === "teams" && (
           <div>
@@ -1001,7 +1052,7 @@ export default function AdminPage() {
             )}
 
             {!teamsLoading && teams.length > 0 && (
-              <div className="mb-4">
+              <div className="mb-4 flex items-center">
                 <input
                   type="text"
                   data-testid="team-search-input"
@@ -1010,6 +1061,17 @@ export default function AdminPage() {
                   className="w-full max-w-md px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                   placeholder="Search teams by name or team lead..."
                 />
+                <select
+                  data-testid="team-status-filter"
+                  aria-label="Filter teams by status"
+                  value={teamStatusFilter}
+                  onChange={(e) => setTeamStatusFilter(e.target.value as "" | "active" | "inactive")}
+                  className="ml-4 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                >
+                  <option value="">All Statuses</option>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
               </div>
             )}
 
@@ -1021,6 +1083,10 @@ export default function AdminPage() {
             ) : teams.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
                 No teams found. Add your first team to get started.
+              </div>
+            ) : filteredTeams.length === 0 ? (
+              <div className="text-center py-8 text-gray-500" data-testid="teams-empty-filtered">
+                No teams match your search or filters.
               </div>
             ) : (
               <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
@@ -1048,14 +1114,15 @@ export default function AdminPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {teams.filter((team) => {
-                      if (!teamSearchQuery) return true;
-                      const q = teamSearchQuery.toLowerCase();
-                      return team.name.toLowerCase().includes(q) || (team.teamLeadName || '').toLowerCase().includes(q);
-                    }).map((team) => (
+                    {filteredTeams.map((team) => (
                       <tr key={team.id} data-testid="team-row">
                         <td className="px-6 py-4">
-                          <div className="font-semibold text-gray-900">
+                          <div
+                            className={`font-semibold ${
+                              team.isActive === false ? "text-gray-500" : "text-gray-900"
+                            }`}
+                          >
+                            <StatusBadge isActive={team.isActive} testId="team-status-badge" />
                             {team.name}
                           </div>
                         </td>
@@ -1111,10 +1178,16 @@ export default function AdminPage() {
                               <GitBranch className="w-4 h-4" />
                             </button>
                             <button
-                              data-testid="delete-team-btn"
+                              data-testid="deactivate-team-btn"
+                              aria-label={`Deactivate ${team.name}`}
+                              title={team.isActive === false ? "Already inactive" : "Deactivate team"}
                               onClick={() => handleDeleteTeam(team.id)}
-                              className="text-red-600 hover:text-red-900 disabled:opacity-50"
-                              disabled={deletingTeamId === team.id}
+                              className={`disabled:opacity-50 ${
+                                team.isActive === false
+                                  ? "text-gray-400 cursor-not-allowed"
+                                  : "text-red-600 hover:text-red-900"
+                              }`}
+                              disabled={team.isActive === false || deletingTeamId === team.id}
                             >
                               {deletingTeamId === team.id ? (
                                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-red-600"></div>
@@ -1145,6 +1218,7 @@ export default function AdminPage() {
               <TeamMembersModal
                 teamId={membersTeam.id}
                 teamName={membersTeam.name}
+                onMembershipChange={invalidateUsersPageCache}
                 onClose={() => {
                   setMembersTeam(null);
                   fetchAdminTeams(); // Refresh member counts
@@ -1597,6 +1671,17 @@ export default function AdminPage() {
                     <option key={level.id} value={level.id}>{level.name}</option>
                   ))}
                 </select>
+                <select
+                  data-testid="user-status-filter"
+                  aria-label="Filter by status"
+                  value={userStatusFilter}
+                  onChange={(e) => setUserStatusFilter(e.target.value as "" | "active" | "inactive")}
+                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                >
+                  <option value="">All Statuses</option>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
                 {usersPageLoading && (
                   <div
                     data-testid="users-page-loading"
@@ -1614,7 +1699,7 @@ export default function AdminPage() {
               </div>
             ) : users.length === 0 ? (
               <div className="text-center py-8 text-gray-500" data-testid="users-empty-state">
-                {userSearchQuery || userRoleFilter
+                {userSearchQuery || userRoleFilter || userStatusFilter
                   ? "No users match your search or filters."
                   : "No users found. Add your first user to get started."}
               </div>
@@ -1650,7 +1735,12 @@ export default function AdminPage() {
                     {users.map((userItem) => (
                       <tr key={userItem.id} data-testid="user-row">
                         <td className="px-6 py-4">
-                          <div className="font-medium text-gray-900">
+                          <div
+                            className={`font-medium ${
+                              userItem.isActive === false ? "text-gray-500" : "text-gray-900"
+                            }`}
+                          >
+                            <StatusBadge isActive={userItem.isActive} />
                             {userItem.fullName}
                           </div>
                         </td>
@@ -1697,13 +1787,21 @@ export default function AdminPage() {
                               <Edit2 className="w-4 h-4" />
                             </button>
                             <button
-                              data-testid="delete-user-btn"
+                              data-testid="deactivate-user-btn"
+                              aria-label={`Deactivate ${userItem.fullName}`}
+                              title={
+                                userItem.isActive === false
+                                  ? "Already inactive"
+                                  : "Deactivate user"
+                              }
                               onClick={() => handleDeleteUser(userItem.id)}
                               disabled={
+                                userItem.isActive === false ||
                                 userItem.id === user?.id ||
                                 userItem.username === "admin"
                               }
                               className={`${
+                                userItem.isActive === false ||
                                 userItem.id === user?.id ||
                                 userItem.username === "admin"
                                   ? "text-gray-400 cursor-not-allowed"
@@ -1762,17 +1860,19 @@ export default function AdminPage() {
               <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
                 <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
                   <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                    Confirm Delete
+                    Confirm Deactivate
                   </h3>
                   <p className="text-gray-600 mb-6">
-                    Are you sure you want to delete user{" "}
+                    Are you sure you want to deactivate user{" "}
                     <strong>
                       {
                         users.find((u) => u.id === deleteConfirmUserId)
                           ?.fullName
                       }
                     </strong>
-                    ? This action cannot be undone.
+                    ? They will stay in the system and remain visible as Inactive,
+                    their past surveys and history are kept, and they will stop
+                    receiving new surveys.
                   </p>
                   <div className="flex gap-4 justify-end">
                     <button
@@ -1782,10 +1882,11 @@ export default function AdminPage() {
                       Cancel
                     </button>
                     <button
+                      data-testid="confirm-deactivate"
                       onClick={confirmDeleteUser}
                       className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
                     >
-                      Delete User
+                      Deactivate User
                     </button>
                   </div>
                 </div>
@@ -1804,6 +1905,7 @@ export default function AdminPage() {
               <div className="space-y-6">
                 <div className="border rounded-lg p-4" data-testid="data-provider-settings">
                   <DataProviderConfig />
+                  <AutoSyncSettings />
                 </div>
 
                 <div data-testid="dimensions-settings">
@@ -1814,56 +1916,59 @@ export default function AdminPage() {
                   <div className="text-center py-4 text-gray-500">Loading settings...</div>
                 ) : (
                   <>
-                <div data-testid="branding-settings">
-                  <h3 className="text-lg font-medium text-gray-900 mb-4">
+                <div data-testid="branding-settings" className="max-w-[680px]">
+                  <h3 className="text-lg font-medium text-gray-900">
                     Company Branding
                   </h3>
+                  <p className="text-sm text-gray-500 mt-1 mb-4">
+                    Manage the organization name and logo displayed across Team Health Check.
+                  </p>
+
                   <div className="space-y-4">
+                    {/* Company Name */}
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                      <label htmlFor="branding-company-name" className="block text-sm font-medium text-gray-700 mb-1.5">
                         Company Name
                       </label>
                       <input
+                        id="branding-company-name"
                         type="text"
                         data-testid="branding-company-name"
                         value={brandingCompanyName}
                         onChange={(e) => setBrandingCompanyName(e.target.value)}
-                        className="w-full max-w-md px-4 py-2 border border-gray-300 rounded-lg text-gray-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                         placeholder="Enter company name"
                         maxLength={100}
                       />
                     </div>
+
+                    {/* Company Logo */}
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                      <span className="block text-sm font-medium text-gray-700 mb-1.5">
                         Company Logo
-                      </label>
-                      <div className="flex items-center gap-4">
-                        {brandingLogoURL ? (
-                          <div className="flex items-center gap-3" data-testid="branding-logo-preview">
+                      </span>
+                      <div className="flex flex-nowrap items-center gap-2 sm:gap-3">
+                        <div
+                          data-testid="branding-logo-preview"
+                          className="w-14 h-14 sm:w-20 sm:h-20 flex-shrink-0 rounded-xl border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden"
+                        >
+                          {brandingLogoURL ? (
+                            // eslint-disable-next-line @next/next/no-img-element -- fixed-size preview of an admin-uploaded data-URI logo
                             <img
                               src={brandingLogoURL}
-                              alt="Company logo"
-                              className="w-12 h-12 object-contain rounded border border-gray-200"
+                              alt="Company logo preview"
+                              className="w-full h-full object-contain p-1.5 sm:p-2"
                             />
-                            <button
-                              type="button"
-                              data-testid="branding-logo-remove"
-                              onClick={() => setBrandingLogoURL("")}
-                              className="text-sm text-red-600 hover:text-red-800"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="w-12 h-12 bg-gray-100 rounded border border-gray-200 flex items-center justify-center">
-                            <Building2 className="w-6 h-6 text-gray-400" />
-                          </div>
-                        )}
+                          ) : (
+                            <Building2 className="w-6 h-6 sm:w-8 sm:h-8 text-gray-400" />
+                          )}
+                        </div>
+
                         <label
                           data-testid="branding-logo-upload"
-                          className="cursor-pointer px-4 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                          className="flex-shrink-0 whitespace-nowrap cursor-pointer px-2.5 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-transparent transition-colors"
                         >
-                          {brandingLogoURL ? "Change Logo" : "Upload Logo"}
+                          {brandingLogoURL ? "Change logo" : "Upload logo"}
                           <input
                             type="file"
                             accept="image/*"
@@ -1871,130 +1976,23 @@ export default function AdminPage() {
                             onChange={handleLogoUpload}
                           />
                         </label>
-                        <span className="text-xs text-gray-500">Max 500KB</span>
+
+                        {brandingLogoURL && (
+                          <button
+                            type="button"
+                            data-testid="branding-logo-remove"
+                            onClick={() => setBrandingLogoURL("")}
+                            className="flex-shrink-0 whitespace-nowrap text-xs sm:text-sm text-gray-500 hover:text-red-600 transition-colors"
+                          >
+                            Remove logo
+                          </button>
+                        )}
                       </div>
+                      <p className="text-xs text-gray-500 mt-1.5">Max 500KB &middot; PNG, JPG, or WebP</p>
+                      <p className="text-xs text-gray-400 mt-0.5">Changes are applied when you save settings.</p>
                     </div>
                   </div>
                 </div>
-
-                {!smtpConfigured && (
-                  <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg">
-                    <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
-                    <div>
-                      <p className="text-sm font-medium text-amber-800">SMTP Not Configured</p>
-                      <p className="text-sm text-amber-700 mt-1">
-                        Email notifications are disabled. Set <code className="bg-amber-100 px-1 rounded">SMTP_HOST</code> and related environment variables to enable email delivery.
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                <div data-testid="team-dl-settings">
-                  <h3 className="text-lg font-medium text-gray-900 mb-4">
-                    Team Distribution Lists
-                  </h3>
-                  <p className="text-sm text-gray-500 mb-3">
-                    Teams with a distribution list email will receive post-workshop survey summaries.
-                  </p>
-                  <div className="border rounded-lg overflow-hidden">
-                    <table className="w-full text-sm">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="text-left px-4 py-2 font-medium text-gray-600">Team</th>
-                          <th className="text-left px-4 py-2 font-medium text-gray-600">Distribution List Email</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y">
-                        {teams.length === 0 ? (
-                          <tr><td colSpan={2} className="px-4 py-3 text-gray-400 text-center">No teams configured</td></tr>
-                        ) : teams.map((t) => (
-                          <tr key={t.id}>
-                            <td className="px-4 py-2 font-medium text-gray-900">{t.name}</td>
-                            <td className="px-4 py-2">
-                              {t.distributionListEmail ? (
-                                <span className="text-gray-700">{t.distributionListEmail}</span>
-                              ) : (
-                                <span className="text-gray-400">Not set</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                <div data-testid="notifications-settings">
-                <h3 className="text-lg font-medium text-gray-900 mb-4">
-                  Notification Settings
-                </h3>
-                <div className="space-y-4">
-                  <label className="flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4 text-indigo-600 rounded"
-                      data-testid="email-enabled-checkbox"
-                      checked={emailEnabled}
-                      onChange={(e) => setEmailEnabled(e.target.checked)}
-                    />
-                    <span className="text-gray-700">Send email reminders for upcoming health checks</span>
-                  </label>
-                  <label className="flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4 text-indigo-600 rounded"
-                      data-testid="slack-enabled-checkbox"
-                      checked={slackEnabled}
-                      onChange={(e) => setSlackEnabled(e.target.checked)}
-                    />
-                    <span className="text-gray-700">Notify managers when team health declines</span>
-                  </label>
-                  <label className="flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4 text-indigo-600 rounded"
-                      data-testid="weekly-digest-checkbox"
-                      checked={notifyOnSubmission}
-                      onChange={(e) => setNotifyOnSubmission(e.target.checked)}
-                    />
-                    <span className="text-gray-700">Send weekly summary reports</span>
-                  </label>
-                </div>
-              </div>
-
-              <div data-testid="retention-settings">
-                <h3 className="text-lg font-medium text-gray-900 mb-4">
-                  Data Retention Policy
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Keep health check data for
-                    </label>
-                    <select
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg text-gray-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                      data-testid="retention-months-select"
-                      value={retentionMonths}
-                      onChange={(e) => setRetentionMonths(Number(e.target.value))}
-                    >
-                      <option value={6}>6 months</option>
-                      <option value={12}>1 year</option>
-                      <option value={24}>2 years</option>
-                      <option value={120}>Forever</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Export format
-                    </label>
-                    <select className="w-full px-4 py-2 border border-gray-300 rounded-lg text-gray-900 focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-                      <option>CSV</option>
-                      <option>JSON</option>
-                      <option>Excel</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
 
               {settingsError && (
                 <div className="text-red-600 text-sm" data-testid="settings-error">{settingsError}</div>

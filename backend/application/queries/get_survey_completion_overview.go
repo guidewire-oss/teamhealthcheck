@@ -367,11 +367,18 @@ func parseSessionDate(raw string) (time.Time, error) {
 // period spanning a year boundary still buckets and orders correctly.
 func buildSurveyCompletionTrend(teams []team.SurveyCompletionRow, eligibleMemberIDs map[string][]string, sessions []*healthcheck.HealthCheckSession) []SurveyCompletionTrendPoint {
 	optedInMembers := 0
-	optedIn := make(map[string]bool)
+	// eligibleByTeam is the per-team eligible set for opted-in teams, built
+	// from the same eligibleMemberIDs the denominator uses, so the numerator
+	// can never count a completion from someone outside that population.
+	eligibleByTeam := make(map[string]map[string]bool)
 	for _, t := range teams {
 		if t.HealthCheckEnabled {
 			optedInMembers += countDistinctEligible(eligibleMemberIDs[t.ID])
-			optedIn[t.ID] = true
+			set := make(map[string]bool, len(eligibleMemberIDs[t.ID]))
+			for _, uid := range eligibleMemberIDs[t.ID] {
+				set[uid] = true
+			}
+			eligibleByTeam[t.ID] = set
 		}
 	}
 	if optedInMembers == 0 {
@@ -387,7 +394,12 @@ func buildSurveyCompletionTrend(teams []team.SurveyCompletionRow, eligibleMember
 	earliest := make(map[completionKey]time.Time)
 
 	for _, s := range sessions {
-		if !s.Completed || s.SurveyType == healthcheck.SurveyTypePostWorkshop || !optedIn[s.TeamID] {
+		if !s.Completed || s.SurveyType == healthcheck.SurveyTypePostWorkshop {
+			continue
+		}
+		// Only an opted-in team's eligible (Level 4/5) members count; a
+		// completed session from anyone else must not inflate the numerator.
+		if !eligibleByTeam[s.TeamID][s.UserID] {
 			continue
 		}
 		d, err := parseSessionDate(s.Date)

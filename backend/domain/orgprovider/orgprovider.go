@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/agopalakrishnan/teams360/backend/pkg/orgsnapshot"
 )
@@ -88,6 +89,67 @@ func ProtectedTeamIDs() []string {
 	return ids
 }
 
+// How a person's level reaches THC takes two mappings, applied in this order.
+//
+// Mapping 1 (provider, not in this repo): the provider derives hierarchyLevelId
+// from the seniority grade (Okta managementLevel) as level-(grade - 3). Grades
+// 1-3 are never sent. THC receives only the finished level.
+//
+// Mapping 2 (THC only): a user who leads an active team and is an active member
+// of it, and whom the provider sent as PodLeadSourceLevelID ("Team Member"), is
+// stored as PodLeadLevelID ("Team Lead"). THC grants the Dashboard and Export on level-4, and a senior
+// engineer who leads a pod would otherwise never get it. It runs inside the
+// apply transaction, once every other write is done, so it sees the teams and
+// leads exactly as they will be committed.
+//
+//	grade   provider level   pod lead stored as   non-lead stored as
+//	  4     level-1          level-1              level-1
+//	  5     level-2          level-2              level-2
+//	  6     level-3          level-3              level-3
+//	  7     level-4          level-4              level-4
+//	  8     level-5          level-4  (promoted)  level-5
+//	  9+    level-6 and up   skipped: THC has no such level (see FilterSnapshot)
+//
+// Both ids live here so mapping 2 is defined in exactly one place.
+const (
+	PodLeadSourceLevelID = "level-5"
+	PodLeadLevelID       = "level-4"
+)
+
+// PodIQRoleLevelID is the level a contract v1.1 podiqRole is stored at:
+// L2 -> level-3, L1 -> level-4, Developer -> level-5. It is the final level
+// decision for a role-mapped user and overrides the provider's hierarchyLevelId
+// and the pod-lead mapping above. The second result is false for a value that
+// is not a valid podiqRole.
+func PodIQRoleLevelID(role string) (string, bool) {
+	level, ok := podIQRoleLevels[role]
+	return level, ok
+}
+
+// podIQRoleLevels is the single source of the role -> level mapping. Both
+// PodIQRoleLevelID and PodIQRoleLevelIDs read it, so they cannot drift apart.
+var podIQRoleLevels = map[string]string{
+	orgsnapshot.PodIQRoleL2:        "level-3",
+	orgsnapshot.PodIQRoleL1:        "level-4",
+	orgsnapshot.PodIQRoleDeveloper: "level-5",
+}
+
+// PodIQRoleLevelIDs lists every level PodIQRoleLevelID can return, each once and
+// in sorted order. A deployment missing any of them cannot store a role-mapped
+// user (foreign key on users.hierarchy_level_id).
+func PodIQRoleLevelIDs() []string {
+	seen := make(map[string]bool, len(podIQRoleLevels))
+	ids := make([]string, 0, len(podIQRoleLevels))
+	for _, level := range podIQRoleLevels {
+		if !seen[level] {
+			seen[level] = true
+			ids = append(ids, level)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // SkipReasons reported when a snapshot record cannot be imported for this sync.
 const (
 	SkipReasonMissingLevel = "missing_hierarchy_level"
@@ -110,6 +172,21 @@ type SkippedUser struct {
 type ApplyInput struct {
 	// Snapshot contains only importable records.
 	Snapshot *orgsnapshot.Snapshot
+
+	// SnapshotType gates reconciliation of absent records. The zero value is
+	// treated as PARTIAL: completeness must be asserted, never assumed.
+	SnapshotType SnapshotType
+
+	// RunID, when set, names the org_sync_runs row ApplySnapshot marks SUCCESS
+	// inside the same transaction as the data writes. SUCCESS therefore exists
+	// if and only if the commit did, and a run another worker already failed
+	// cannot be overwritten (the guarded UPDATE affects no row and the apply
+	// rolls back).
+	RunID string
+
+	// OnStage, when set, is told which step is starting. It must not block and
+	// its failures must not affect the apply; progress reporting is best-effort.
+	OnStage func(stage string)
 
 	// IncomingUsers/IncomingTeams/IncomingMemberships are the RAW provider
 	// payload's own record counts, before FilterSnapshot drops anything --
@@ -155,6 +232,13 @@ type ApplyInput struct {
 	// report) is treated exactly like no override at all -- the sync is held
 	// again, with the current counts, for a fresh confirmation.
 	ConfirmedMassDeletion *ConfirmedMassDeletion
+
+	// MapPodLeads turns on the THC-only pod-lead mapping (see PodLeadLevelID).
+	// The caller sets it only when this deployment has both levels configured,
+	// because storing a level that does not exist would violate the foreign key
+	// on users.hierarchy_level_id. The zero value leaves every level exactly as
+	// the provider sent it.
+	MapPodLeads bool
 }
 
 // ConfirmedMassDeletion is the counts an administrator actually reviewed
@@ -185,26 +269,61 @@ type ApplyResult struct {
 	HealthChecksDisabled int `json:"healthChecksDisabled"`
 	HealthChecksEnabled  int `json:"healthChecksEnabled"`
 
-	// UsersDeleted/TeamsDeleted count non-protected records absent from the
-	// snapshot that were hard-deleted, per the approved "the data provider is authoritative"
-	// rule -- deletion is never skipped or held back for these records.
-	UsersDeleted int `json:"usersDeleted"`
-	TeamsDeleted int `json:"teamsDeleted"`
+	// UsersDeactivated/TeamsDeactivated count non-protected records marked
+	// inactive by this sync. That covers records absent from a verified COMPLETE
+	// snapshot, and (for users, in any snapshot type) people the snapshot still
+	// lists but who ended up with no active membership.
+	//
+	// A sync never removes a person or team because they are missing: survey
+	// sessions, responses and action items keep resolving, and a record the
+	// provider sends again is reactivated. The one hard delete is the SSO rekey,
+	// which replaces a user's old id with the provider's id: it inserts the new
+	// row and repoints every reference first, then deletes the old row, so no
+	// history is lost.
+	UsersDeactivated int `json:"usersDeactivated"`
+	TeamsDeactivated int `json:"teamsDeactivated"`
 
-	// ActionItemsDeleted counts action_items rows removed as a side effect of
-	// the deletions above (action_items.created_by/team_id are NOT NULL with
-	// ON DELETE CASCADE -- see migrations/000020_create_action_items -- so a
-	// deleted user's/team's action items are cascade-deleted along with them).
-	// This is visibility into a required cascade, not an optional retention: it
-	// is reported so an admin can see what a sync actually removed, not a gate
-	// that blocks the user/team deletion itself.
-	ActionItemsDeleted int `json:"actionItemsDeleted"`
+	// PodLeadsPromoted counts users whose level this sync changed to
+	// PodLeadLevelID because they lead an active team, and PodLeadsReturned
+	// counts users it returned to the provider's level because they no longer do.
+	// Both are also part of Updated, but are reported separately so the effect
+	// of the pod-lead mapping on a sync can be checked.
+	PodLeadsPromoted int `json:"podLeadsPromoted"`
+	PodLeadsReturned int `json:"podLeadsReturned"`
+
+	// Added/updated/unchanged are committed changes, not records merely read.
+	// Added = newly inserted. Updated = an existing record whose normalized
+	// business fields (or manager, or active state) actually changed. Unchanged =
+	// an existing record that was identical, which never counts as updated, so
+	// re-syncing identical data reports zero added and zero updated.
+	InsertedUsers  int `json:"insertedUsers"`
+	UpdatedUsers   int `json:"updatedUsers"`
+	UnchangedUsers int `json:"unchangedUsers"`
+	InsertedTeams  int `json:"insertedTeams"`
+	UpdatedTeams   int `json:"updatedTeams"`
+	UnchangedTeams int `json:"unchangedTeams"`
+
+	// MembershipsAdded counts memberships inserted or reactivated.
+	MembershipsAdded int `json:"membershipsAdded"`
 
 	// MassDeletionOverride is set only when the guard tripped and an
 	// administrator's explicit override let the sync proceed anyway. It carries
 	// the counts that were waived, so the service can audit-log them.
 	MassDeletionOverride *MassDeletionReport `json:"massDeletionOverride,omitempty"`
 }
+
+// SnapshotType says whether a payload is the full source population. Only a
+// COMPLETE snapshot may deactivate records that are absent from it.
+type SnapshotType string
+
+const (
+	SnapshotComplete SnapshotType = "COMPLETE"
+	SnapshotPartial  SnapshotType = "PARTIAL"
+)
+
+// ErrStaleSnapshot means a newer snapshot has already been committed, so this
+// older one must not overwrite it.
+var ErrStaleSnapshot = errors.New("snapshot is older than the last applied snapshot")
 
 // ErrMassDeletionBlocked is returned when a sync's calculated deletions exceed
 // the configured safety threshold. Nothing is written when this is returned.
@@ -399,10 +518,10 @@ type Repository interface {
 
 	// ApplySnapshot writes the snapshot in a single transaction. Protected users
 	// and teams (IsProtectedUser/IsProtectedTeam) are never created, updated, or
-	// deleted. Every other user/team present in the snapshot is upserted; every
-	// other user/team absent from the snapshot is a hard-delete candidate,
-	// subject to EvaluateMassDeletionGuard (unless ApplyInput.OverrideMassDeletion
-	// waives that one check) and the action-items retention check documented on
-	// ApplyResult. On any error, nothing is committed.
+	// deactivated. Every other user/team present in the snapshot is upserted (and
+	// reactivated). Only when ApplyInput.SnapshotType is COMPLETE are absent
+	// users/teams and memberships marked inactive -- never deleted -- subject to
+	// EvaluateMassDeletionGuard (unless ApplyInput.OverrideMassDeletion waives
+	// that one check). On any error, nothing is committed.
 	ApplySnapshot(ctx context.Context, in ApplyInput) (*ApplyResult, error)
 }

@@ -29,31 +29,26 @@ export function getPodCompletionPercent(team: SurveyCompletionTeam): number {
 
 /**
  * A pod's EFFECTIVE display status -- scoped to individual pods only,
- * never applied to a Director/Manager (leadership) row. Only ever differs
- * from team.status for a pod that's in_progress or complete: rounding a
- * pod's completed/total ratio can make it read 100% (e.g. 199 of 200
- * members) while the backend still considers it "in_progress" (completed
- * < total). Showing "100% completed" next to an "In Progress" badge would
- * look like a contradiction, so once a pod's own rounded percentage
- * reaches 100 it always displays as the existing "complete" status
- * instead -- never a new status. not_started and opted_out pods are left
- * completely alone, since the 100%-vs-partial distinction this exists for
- * doesn't apply to them.
+ * never applied to a Director/Manager (leadership) row. For a pod that's
+ * in_progress or complete, the status follows isPodFullyCompleted (a
+ * submitted post-workshop survey), the same rule the backend uses.
+ * not_started and opted_out pods are left completely alone.
  */
 export function getPodDisplayStatus(team: SurveyCompletionTeam): SurveyStatus {
   if (team.status !== 'in_progress' && team.status !== 'complete') return team.status;
-  return getPodCompletionPercent(team) >= 100 ? 'complete' : 'in_progress';
+  return isPodFullyCompleted(team) ? 'complete' : 'in_progress';
 }
 
 /**
- * A pod is fully completed when its own normalized completion percentage
- * is exactly 100%. Reuses getPodCompletionPercent -- the SAME rounding and
- * missing/invalid-data handling already used for a pod's own displayed
- * status -- so a pod's Fully-Completed classification and what its Status
- * column actually shows can never disagree.
+ * A pod is fully completed when its post-workshop session is complete for
+ * the period. Individual participation is a separate value: a pod at 4/5
+ * with a submitted post-workshop survey is fully completed and still
+ * displays 4/5. Mirrors the backend's deriveSurveyCompletionStatus so a
+ * pod's Fully-Completed classification and its Status column never
+ * disagree. Pods with no eligible members are never complete.
  */
 export function isPodFullyCompleted(team: SurveyCompletionTeam): boolean {
-  return getPodCompletionPercent(team) >= 100;
+  return team.total > 0 && team.postWorkshopCompleted === true;
 }
 
 /**
@@ -221,19 +216,29 @@ function aggregatePodPercentages(
   const percentSum = pods.reduce((sum, pod) => sum + getPodCompletionPercent(pod), 0);
   const percent = Math.round(percentSum / pods.length);
 
-  // Mirrors the backend's own deriveSurveyCompletionStatus ordering for a
-  // canonical status, applied to the AVERAGED percentage rather than one
-  // pod's own counts: no completion anywhere yet -> not_started; every pod
-  // averaging out to 100% -> complete (via getPodDisplayStatus below);
-  // otherwise in_progress.
-  const canonicalStatus: SurveyStatus = percent === 0 ? 'not_started' : 'in_progress';
+  // Canonical status comes from the SOURCE pods, never from the rounded
+  // average: a pod at 1 of 201 is genuinely in_progress, yet its percentage
+  // rounds to 0, so testing `percent === 0` would misclassify the aggregate
+  // as not_started and drop it from the In Progress filter. It is
+  // not_started only when every pod is itself not_started (using the same
+  // getPodDisplayStatus a pod's own Status column uses); any started or
+  // completed pod makes the aggregate in_progress. Full completion is
+  // decided separately below, via getPodDisplayStatus on the synthetic pod.
+  const anyPodStarted = pods.some((pod) => getPodDisplayStatus(pod) !== 'not_started');
+  const canonicalStatus: SurveyStatus = anyPodStarted ? 'in_progress' : 'not_started';
+
+  // The aggregate only reads as "complete" when every underlying pod is
+  // itself fully completed -- 100% survey completion AND a completed
+  // post-workshop session -- not merely when the averaged percentage
+  // rounds up to 100.
+  const allPodsFullyCompleted = pods.every(isPodFullyCompleted);
 
   const syntheticPod: SurveyCompletionTeam = {
     teamId: `hierarchy:${id}`,
     teamName: name,
     completed: percent,
     total: 100,
-    postWorkshopCompleted: null,
+    postWorkshopCompleted: allPodsFullyCompleted,
     status: canonicalStatus,
   };
 
@@ -328,6 +333,11 @@ export type VisibleGroup =
       remindCount: number;
       visibleDirectTeams: SurveyCompletionTeam[];
       visibleChildren: VisibleGroup[];
+      // True only on a leader listed under the Fully Completed filter just for
+      // their own fully completed pods, while their whole subtree is NOT
+      // complete (an owner with other incomplete pods). Such a row must not
+      // show a "Completed" badge for the leader.
+      subtreeIncomplete?: boolean;
     }
   | {
       type: 'other';
@@ -578,9 +588,10 @@ function wholeSubtreeToVisibleGroup(group: SurveyCompletionPersonGroup): Visible
 /**
  * Walks down from `group`, emitting one VisibleGroup entry per subtree
  * that independently qualifies as fully completed (isPersonSubtreeFullyCompleted).
- * A node that does NOT qualify is never emitted itself -- per requirement
- * 3, a parent with even one incomplete descendant must not appear -- but
- * its children are still checked independently and promoted to top-level
+ * A node that does NOT qualify is never emitted with its whole subtree -- a
+ * parent with an incomplete descendant never lists that descendant -- but it
+ * is still shown with just its own fully-completed direct pods, so the list
+ * matches the Fully complete card's pod count. Its children are checked independently and promoted to top-level
  * entries in `out` if THEY qualify on their own, even though their real
  * parent didn't. This is what lets e.g. a fully-completed manager surface
  * even when their director's own subtree has some other, unrelated,
@@ -595,6 +606,38 @@ function collectFullyCompletedGroups(
     if (query && !fullyCompletedSubtreeMatchesSearch(group, query)) return;
     out.push(wholeSubtreeToVisibleGroup(group));
     return;
+  }
+  // This leader's subtree is not fully complete, so the leader is not itself a
+  // "fully completed" result. Their OWN fully-completed pods are still
+  // fully-completed pods though -- the Fully complete card counts every such
+  // pod -- so list them under their owner, with only those pods and no children
+  // (an incomplete sibling pod or subordinate is never shown). Without this a
+  // complete pod vanishes from the list whenever its owner has any other pod
+  // that is in progress, not started or opted out.
+  const completePods = (group.directTeams ?? []).filter(
+    (t) =>
+      // The backend's own "complete" status -- exactly what the Fully complete
+      // card counts -- not the rounded-percent display rule, so a 199/200 pod
+      // that is still in progress is never listed here.
+      t.status === 'complete' &&
+      (!query || group.person.name.toLowerCase().includes(query) || t.teamName.toLowerCase().includes(query)),
+  );
+  if (completePods.length > 0) {
+    const stats = countVisibleTeamStats(completePods);
+    out.push({
+      type: 'person',
+      key: `person:${group.person.id}`,
+      id: group.person.id,
+      name: group.person.name,
+      level: group.person.level,
+      totalTeams: stats.total,
+      optedInTeams: stats.optedIn,
+      completionPercent: group.completionPercent,
+      remindCount: stats.remind,
+      visibleDirectTeams: completePods,
+      visibleChildren: [],
+      subtreeIncomplete: true,
+    });
   }
   for (const child of group.children ?? []) {
     collectFullyCompletedGroups(child, query, out);

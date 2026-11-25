@@ -158,6 +158,7 @@ describe('Member Home: Take Survey flow', () => {
       surveyType: 'individual',
       assessmentPeriod: '2026 H2',
       userId: 'user-1',
+      teamId: 'team-1',
     });
     expect(screen.queryByTestId('duplicate-submission-modal')).not.toBeInTheDocument();
   });
@@ -175,6 +176,7 @@ describe('Member Home: Take Survey flow', () => {
       surveyType: 'individual',
       assessmentPeriod: '2026 H1',
       userId: 'user-1',
+      teamId: 'team-1',
     });
   });
 
@@ -250,6 +252,22 @@ describe('Member Home: Take Survey flow', () => {
       expect(screen.getByTestId('duplicate-submission-modal')).toHaveTextContent('Period Not Available');
       expect(screen.getByTestId('duplicate-submission-message')).not.toHaveTextContent('already submitted');
       expect(screen.getByTestId('duplicate-submission-message')).toHaveTextContent('not open for submission');
+      expect(push).not.toHaveBeenCalled();
+    });
+
+    it('tells a member their team is not opted in, never "already submitted" or "not open"', async () => {
+      checkSurveyEligibility.mockResolvedValue({ eligible: false, reason: 'participation_disabled' });
+      const user = userEvent.setup({ delay: null });
+      render(<MemberHomePage />);
+
+      await waitFor(() => expect(screen.getByTestId('take-survey-btn')).toBeInTheDocument());
+      await user.click(screen.getByTestId('take-survey-btn'));
+
+      await waitFor(() => expect(screen.getByTestId('duplicate-submission-modal')).toBeInTheDocument());
+      expect(screen.getByTestId('duplicate-submission-modal')).toHaveTextContent('Team Not Opted In');
+      expect(screen.getByTestId('not-enrolled-message')).toHaveTextContent('not opted in to Team Health Check');
+      expect(screen.getByTestId('duplicate-submission-message')).not.toHaveTextContent('already submitted');
+      expect(screen.getByTestId('duplicate-submission-message')).not.toHaveTextContent('not open for submission');
       expect(push).not.toHaveBeenCalled();
     });
 
@@ -369,6 +387,7 @@ describe('Member Home: Take Survey flow', () => {
         surveyType: 'individual',
         assessmentPeriod: period,
         userId: 'user-1',
+        teamId: 'team-1',
       });
       expect(screen.queryByTestId('duplicate-submission-modal')).not.toBeInTheDocument();
     });

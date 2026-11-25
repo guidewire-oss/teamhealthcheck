@@ -85,7 +85,7 @@ describe('MassDeletionThresholdSettings', () => {
     render(<MassDeletionThresholdSettings />);
     await waitFor(() => expect(input().value).toBe('20'));
 
-    for (const bad of ['', '0', '101', '-5', '2.5']) {
+    for (const bad of ['', '0', '0.99', '100.5', '101', '-5', 'abc', 'Infinity', 'NaN', '.5']) {
       await user.clear(input());
       if (bad !== '') await user.type(input(), bad);
       expect(screen.getByTestId('threshold-validation-error')).toBeTruthy();
@@ -236,6 +236,232 @@ describe('MassDeletionThresholdSettings', () => {
       window.dispatchEvent(new Event('focus'));
 
       await waitFor(() => expect(input().disabled).toBe(true));
+    });
+  });
+
+  describe('decimal thresholds (the backend accepts any finite value in range)', () => {
+    it('accepts 12.5, saves it, and shows it back', async () => {
+      const user = userEvent.setup();
+      render(<MassDeletionThresholdSettings />);
+      await waitFor(() => expect(input().value).toBe('20'));
+
+      await user.clear(input());
+      await user.type(input(), '12.5');
+
+      expect(screen.queryByTestId('threshold-validation-error')).toBeNull();
+      expect(saveBtn().disabled).toBe(false);
+      await user.click(saveBtn());
+
+      await waitFor(() => expect(updateThreshold).toHaveBeenCalledWith(12.5));
+      await waitFor(() => expect(input().value).toBe('12.5'));
+    });
+
+    it('accepts the inclusive boundaries 1 and 100, and 1.5 / 99.5 just inside them', async () => {
+      const user = userEvent.setup();
+      render(<MassDeletionThresholdSettings />);
+      await waitFor(() => expect(input().value).toBe('20'));
+
+      for (const ok of ['1', '1.5', '99.5', '100']) {
+        await user.clear(input());
+        await user.type(input(), ok);
+        expect(screen.queryByTestId('threshold-validation-error')).toBeNull();
+      }
+    });
+
+    it('renders a server-returned decimal in both the field and the slider', async () => {
+      getThreshold.mockResolvedValue(threshold({ maxDeletePercent: 12.5, source: 'admin' }));
+      render(<MassDeletionThresholdSettings />);
+
+      await waitFor(() => expect(input().value).toBe('12.5'));
+      expect(slider().value).toBe('12.5');
+      expect(screen.getByTestId('threshold-save-btn')).toBeDisabled(); // nothing to save yet
+    });
+
+    it('rejects values the backend would reject without calling it', async () => {
+      const user = userEvent.setup();
+      render(<MassDeletionThresholdSettings />);
+      await waitFor(() => expect(input().value).toBe('20'));
+
+      for (const bad of ['0.99', '100.01', '-12.5']) {
+        await user.clear(input());
+        await user.type(input(), bad);
+        expect(screen.getByTestId('threshold-validation-error')).toBeTruthy();
+      }
+      expect(updateThreshold).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('focus refresh and unsaved edits', () => {
+    const refocus = () => window.dispatchEvent(new Event('focus'));
+
+    it('refreshes a clean field from the server on focus', async () => {
+      render(<MassDeletionThresholdSettings />);
+      await waitFor(() => expect(input().value).toBe('20'));
+
+      getThreshold.mockResolvedValue(threshold({ maxDeletePercent: 35, source: 'admin' }));
+      refocus();
+
+      await waitFor(() => expect(input().value).toBe('35'));
+      expect(screen.queryByTestId('threshold-external-change')).toBeNull();
+    });
+
+    it('keeps a dirty draft on focus while still refreshing the lock state', async () => {
+      const user = userEvent.setup();
+      render(<MassDeletionThresholdSettings />);
+      await waitFor(() => expect(input().value).toBe('20'));
+      await user.clear(input());
+      await user.type(input(), '42');
+
+      getThreshold.mockResolvedValue(threshold({ maxDeletePercent: 20, locked: true, lockReason: 'syncing' }));
+      refocus();
+
+      await waitFor(() => expect(screen.getByTestId('threshold-locked-notice')).toBeTruthy());
+      expect(input().value).toBe('42'); // edit survives
+      expect(screen.queryByTestId('threshold-external-change')).toBeNull(); // saved value did not change
+    });
+
+    it('keeps a dirty draft and flags a saved value that changed elsewhere', async () => {
+      const user = userEvent.setup();
+      render(<MassDeletionThresholdSettings />);
+      await waitFor(() => expect(input().value).toBe('20'));
+      await user.clear(input());
+      await user.type(input(), '42');
+
+      getThreshold.mockResolvedValue(threshold({ maxDeletePercent: 60, source: 'admin' }));
+      refocus();
+
+      const notice = await screen.findByTestId('threshold-external-change');
+      expect(notice.textContent).toContain('60%');
+      expect(input().value).toBe('42');
+    });
+
+    it('"Use the saved value" is the explicit reset that adopts the other value', async () => {
+      const user = userEvent.setup();
+      render(<MassDeletionThresholdSettings />);
+      await waitFor(() => expect(input().value).toBe('20'));
+      await user.clear(input());
+      await user.type(input(), '42');
+      getThreshold.mockResolvedValue(threshold({ maxDeletePercent: 60, source: 'admin' }));
+      refocus();
+
+      await user.click(await screen.findByTestId('threshold-use-saved'));
+
+      expect(input().value).toBe('60');
+      expect(screen.queryByTestId('threshold-external-change')).toBeNull();
+    });
+
+    it('resyncs the draft after a successful save', async () => {
+      const user = userEvent.setup();
+      render(<MassDeletionThresholdSettings />);
+      await waitFor(() => expect(input().value).toBe('20'));
+      await user.clear(input());
+      await user.type(input(), '42');
+      await user.click(saveBtn());
+      await waitFor(() => expect(screen.getByTestId('threshold-save-success')).toBeTruthy());
+
+      getThreshold.mockResolvedValue(threshold({ maxDeletePercent: 55, source: 'admin' }));
+      refocus();
+
+      await waitFor(() => expect(input().value).toBe('55')); // clean again, so it follows the server
+    });
+  });
+
+  describe('overlapping reads resolve in the wrong order', () => {
+    const deferred = <T,>() => {
+      let resolve!: (v: T) => void;
+      let reject!: (e: unknown) => void;
+      const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+      promise.catch(() => {}); // a rejected-but-ignored deferred must not raise an unhandled rejection
+      return { promise, resolve, reject };
+    };
+
+    it('ignores an older response that arrives after a newer one', async () => {
+      const older = deferred<OrgSyncDeletionThreshold>();
+      const newer = deferred<OrgSyncDeletionThreshold>();
+      getThreshold.mockReset();
+      getThreshold.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+
+      render(<MassDeletionThresholdSettings />); // read #1 (mount), still pending
+      window.dispatchEvent(new Event('focus')); // read #2, started after #1
+
+      // The newer read answers first: 30%, locked.
+      newer.resolve(threshold({ maxDeletePercent: 30, source: 'admin', locked: true, lockReason: 'syncing' }));
+      await waitFor(() => expect(input().value).toBe('30'));
+      expect(screen.getByTestId('threshold-locked-notice')).toBeTruthy();
+
+      // The older read lands late with a stale 20%, unlocked. It must change nothing.
+      older.resolve(threshold({ maxDeletePercent: 20, source: 'default', locked: false }));
+      await new Promise((r) => setTimeout(r, 30));
+
+      expect(input().value).toBe('30');
+      expect(slider().value).toBe('30');
+      expect(screen.getByTestId('threshold-locked-notice')).toBeTruthy();
+      expect(input().disabled).toBe(true);
+    });
+
+    it('does not reset the saved baseline to a stale value, so a dirty draft stays dirty', async () => {
+      const user = userEvent.setup();
+      render(<MassDeletionThresholdSettings />);
+      await waitFor(() => expect(input().value).toBe('20'));
+      await user.clear(input());
+      await user.type(input(), '42');
+
+      const older = deferred<OrgSyncDeletionThreshold>();
+      const newer = deferred<OrgSyncDeletionThreshold>();
+      getThreshold.mockReset();
+      getThreshold.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+      window.dispatchEvent(new Event('focus')); // read A
+      window.dispatchEvent(new Event('focus')); // read B (newest)
+
+      newer.resolve(threshold({ maxDeletePercent: 60, source: 'admin' }));
+      await screen.findByTestId('threshold-external-change');
+      older.resolve(threshold({ maxDeletePercent: 20, source: 'default' }));
+      await new Promise((r) => setTimeout(r, 30));
+
+      // Still reports the newest saved value, and the edit survives.
+      expect(screen.getByTestId('threshold-external-change').textContent).toContain('60%');
+      expect(input().value).toBe('42');
+    });
+
+    it('a save result is not overwritten by a read that was already in flight', async () => {
+      const user = userEvent.setup();
+      render(<MassDeletionThresholdSettings />);
+      await waitFor(() => expect(input().value).toBe('20'));
+
+      const slow = deferred<OrgSyncDeletionThreshold>();
+      getThreshold.mockReset();
+      getThreshold.mockReturnValueOnce(slow.promise);
+      window.dispatchEvent(new Event('focus')); // read starts before the save...
+
+      await user.clear(input());
+      await user.type(input(), '42');
+      await user.click(saveBtn()); // ...and the save finishes first
+      await waitFor(() => expect(screen.getByTestId('threshold-save-success')).toBeTruthy());
+
+      slow.resolve(threshold({ maxDeletePercent: 20, source: 'default' })); // stale pre-save value
+      await new Promise((r) => setTimeout(r, 30));
+
+      expect(input().value).toBe('42');
+      expect(screen.getByTestId('threshold-source').textContent).toContain('saved here');
+    });
+
+    it('a late failure from an older read does not show an error over newer good data', async () => {
+      const older = deferred<OrgSyncDeletionThreshold>();
+      const newer = deferred<OrgSyncDeletionThreshold>();
+      getThreshold.mockReset();
+      getThreshold.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+
+      render(<MassDeletionThresholdSettings />);
+      window.dispatchEvent(new Event('focus'));
+      newer.resolve(threshold({ maxDeletePercent: 35, source: 'admin' }));
+      await waitFor(() => expect(input().value).toBe('35'));
+
+      getThreshold.mockReset();
+      older.reject(new Error('stale read failed')); // fails late but is stale -- must not surface
+      await new Promise((r) => setTimeout(r, 30));
+
+      expect(screen.queryByTestId('threshold-load-error')).toBeNull();
+      expect(input().value).toBe('35');
     });
   });
 });
