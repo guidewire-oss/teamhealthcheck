@@ -8,34 +8,31 @@ import (
 	"fmt"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/orgsyncrun"
+	"github.com/agopalakrishnan/teams360/backend/infrastructure/persistence/postgres/sqlcgen"
 )
 
 // OrgSyncHoldRepository implements orgsyncrun.HoldStore on PostgreSQL.
 type OrgSyncHoldRepository struct {
-	db *sql.DB
+	db      *sql.DB
+	queries *sqlcgen.Queries
 }
 
 // NewOrgSyncHoldRepository creates the store.
 func NewOrgSyncHoldRepository(db *sql.DB) *OrgSyncHoldRepository {
-	return &OrgSyncHoldRepository{db: db}
+	return &OrgSyncHoldRepository{db: db, queries: sqlcgen.New(db)}
 }
 
 // GetHold returns the current hold, or nil, nil when there is none.
 func (r *OrgSyncHoldRepository) GetHold(ctx context.Context) (*orgsyncrun.Hold, error) {
-	var (
-		h      orgsyncrun.Hold
-		report []byte
-	)
-	err := r.db.QueryRowContext(ctx,
-		`SELECT threshold, report, held_at FROM org_sync_hold WHERE id = 1`,
-	).Scan(&h.Threshold, &report, &h.HeldAt)
+	row, err := r.queries.GetOrgSyncHold(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read sync hold: %w", err)
 	}
-	if err := json.Unmarshal(report, &h.Report); err != nil {
+	h := orgsyncrun.Hold{Threshold: row.Threshold, HeldAt: row.HeldAt}
+	if err := json.Unmarshal(row.Report, &h.Report); err != nil {
 		return nil, fmt.Errorf("decode sync hold report: %w", err)
 	}
 	h.HeldAt = h.HeldAt.UTC()
@@ -48,12 +45,11 @@ func (r *OrgSyncHoldRepository) SaveHold(ctx context.Context, h orgsyncrun.Hold)
 	if err != nil {
 		return fmt.Errorf("encode sync hold report: %w", err)
 	}
-	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO org_sync_hold (id, threshold, report, held_at)
-		VALUES (1, $1, $2, $3)
-		ON CONFLICT (id) DO UPDATE
-		SET threshold = EXCLUDED.threshold, report = EXCLUDED.report, held_at = EXCLUDED.held_at`,
-		h.Threshold, report, h.HeldAt.UTC())
+	err = r.queries.UpsertOrgSyncHold(ctx, sqlcgen.UpsertOrgSyncHoldParams{
+		Threshold: h.Threshold,
+		Report:    report,
+		HeldAt:    h.HeldAt.UTC(),
+	})
 	if err != nil {
 		return fmt.Errorf("save sync hold: %w", err)
 	}
@@ -73,18 +69,13 @@ func (r *OrgSyncHoldRepository) ClearHold(ctx context.Context) (bool, error) {
 	}
 	defer tx.Rollback()
 
-	res, err := tx.ExecContext(ctx, `DELETE FROM org_sync_hold WHERE id = 1`)
+	qtx := r.queries.WithTx(tx)
+
+	n, err := qtx.DeleteOrgSyncHold(ctx)
 	if err != nil {
 		return false, fmt.Errorf("clear sync hold: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("clear sync hold: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE org_sync_runs SET hold_report = NULL
-		 WHERE id = (SELECT id FROM org_sync_runs WHERE hold_report IS NOT NULL
-		             ORDER BY created_at DESC, id DESC LIMIT 1)`); err != nil {
+	if err := qtx.ClearLatestOrgSyncRunHoldReport(ctx); err != nil {
 		return false, fmt.Errorf("clear sync run hold reports: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

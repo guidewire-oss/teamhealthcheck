@@ -1,0 +1,62 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    # NOTE: only *.up.sql files are listed, in migration order. The migrations
+    # directory also contains *.down.sql files (DROP TABLE / column-removal
+    # statements) which must NOT be fed to sqlc together with the up files -
+    # doing so would corrupt schema inference (e.g. a down migration dropping
+    # a column before the corresponding up migration ever adds it).
+    schema:
+      - "infrastructure/persistence/postgres/migrations/000001_create_health_dimensions.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000002_create_health_check_sessions.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000003_create_health_check_responses.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000004_seed_health_dimensions.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000005_create_users_and_teams.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000006_add_password_hash.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000007_seed_demo_users.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000008_add_team_cadence.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000009_create_hierarchy_levels.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000010_add_hierarchy_level_color.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000011_add_hierarchy_permissions.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000012_create_password_reset_tokens.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000013_add_security_constraints.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000014_add_survey_type.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000015_create_app_settings.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000016_update_cadence_values.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000017_add_auth_type.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000018_add_branding_settings.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000019_add_team_distribution_list_email.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000020_create_action_items.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000021_add_health_check_enabled.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000022_add_org_sync_delete_threshold.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000023_add_users_lower_email_index.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000024_widen_user_id_references.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000025_half_year_period_uniqueness.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000026_add_dimension_display_order.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000027_org_sync_soft_deactivation_and_runs.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000028_org_sync_runs_unchanged_counts.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000029_org_sync_hold.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000030_org_sync_runs_health_checks_and_override.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000031_org_sync_schedule.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000032_add_action_item_on_hold_status.up.sql"
+      - "infrastructure/persistence/postgres/migrations/000033_org_sync_runs_unchanged_recorded.up.sql"
+    queries: "infrastructure/persistence/postgres/queries"
+    gen:
+      go:
+        package: "sqlcgen"
+        out: "infrastructure/persistence/postgres/sqlcgen"
+        sql_package: "database/sql"
+        emit_json_tags: false
+        emit_interface: true
+        # Targeted overrides to preserve exact pre-existing nullable-value
+        # handling (matching the sql.Null* / plain types the hand-written
+        # repositories used for these two columns).
+        overrides:
+          - column: "health_check_sessions.date"
+            go_type: "string"
+          - column: "health_check_sessions.completed"
+            go_type: "bool"
+          - column: "team_overall.overall_health"
+            go_type: "database/sql.NullFloat64"
+          - column: "health_dimensions.weight"
+            go_type: "database/sql.NullFloat64"

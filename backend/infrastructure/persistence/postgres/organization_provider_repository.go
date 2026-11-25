@@ -9,38 +9,31 @@ import (
 
 	"github.com/agopalakrishnan/teams360/backend/domain/orgprovider"
 	"github.com/agopalakrishnan/teams360/backend/domain/orgsyncrun"
+	"github.com/agopalakrishnan/teams360/backend/infrastructure/persistence/postgres/sqlcgen"
 	"github.com/agopalakrishnan/teams360/backend/pkg/orgsnapshot"
-	"github.com/lib/pq"
 )
 
 // OrganizationProviderRepository implements orgprovider.Repository.
 type OrganizationProviderRepository struct {
-	db *sql.DB
+	db      *sql.DB
+	queries *sqlcgen.Queries
 }
 
 // NewOrganizationProviderRepository creates a new repository instance.
 func NewOrganizationProviderRepository(db *sql.DB) orgprovider.Repository {
-	return &OrganizationProviderRepository{db: db}
+	return &OrganizationProviderRepository{db: db, queries: sqlcgen.New(db)}
 }
 
 // KnownHierarchyLevelIDs returns the level IDs configured in this deployment.
 func (r *OrganizationProviderRepository) KnownHierarchyLevelIDs(ctx context.Context) (map[string]bool, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id FROM hierarchy_levels`)
+	ids, err := r.queries.GetHierarchyLevelIDs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query hierarchy levels: %w", err)
 	}
-	defer rows.Close()
 
-	levels := make(map[string]bool)
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("failed to scan hierarchy level: %w", err)
-		}
+	levels := make(map[string]bool, len(ids))
+	for _, id := range ids {
 		levels[id] = true
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error reading hierarchy levels: %w", err)
 	}
 
 	return levels, nil
@@ -63,13 +56,14 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	qtx := r.queries.WithTx(tx)
 
 	result := &orgprovider.ApplyResult{}
 
 	// Newest-wins: the singleton settings row is locked for the rest of the
 	// transaction, so two applies serialize here and an older snapshot cannot
 	// overwrite a newer one that committed first.
-	if err := rejectStaleSnapshot(ctx, tx, in.Snapshot.GeneratedAt); err != nil {
+	if err := rejectStaleSnapshot(ctx, qtx, in.Snapshot.GeneratedAt); err != nil {
 		return nil, err
 	}
 
@@ -97,7 +91,7 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 	// Rollback discards these re-keys along with everything else. Only the
 	// snapshot and preserved ids are in the set so far; the supervisor
 	// exemptions below apply to deletion only.
-	if err := rekeyUsersToProviderIDs(ctx, tx, in, deletionExemptUserIDs); err != nil {
+	if err := rekeyUsersToProviderIDs(ctx, qtx, in, deletionExemptUserIDs); err != nil {
 		return nil, err
 	}
 
@@ -111,7 +105,7 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 	// Without this, the guard would count these users as deletions it will
 	// never actually perform, producing false holds and override
 	// confirmations that don't match the sync's real effect.
-	supervisorExemptUserIDs, err := protectedTeamSupervisorUserIDs(ctx, tx)
+	supervisorExemptUserIDs, err := protectedTeamSupervisorUserIDs(ctx, qtx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to evaluate protected supervisor chains: %w", err)
 	}
@@ -147,11 +141,11 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 	// sure a protected user's team_members rows survive reconciliation for a
 	// *non*-protected team too -- protected status must hold everywhere the
 	// user appears, not only on their own users row.
-	missingUserIDs, currentUserCount, currentProtectedUserIDs, err := nonProtectedMissingIDs(ctx, tx, "users", deletionExemptUserIDs, isProtectedUserRow)
+	missingUserIDs, currentUserCount, currentProtectedUserIDs, err := nonProtectedMissingUserIDs(ctx, qtx, deletionExemptUserIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to evaluate user deactivation scope: %w", err)
 	}
-	missingTeamIDs, currentTeamCount, _, err := nonProtectedMissingIDs(ctx, tx, "teams", snapshotTeamIDs, isProtectedTeamRow)
+	missingTeamIDs, currentTeamCount, _, err := nonProtectedMissingTeamIDs(ctx, qtx, snapshotTeamIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to evaluate team deactivation scope: %w", err)
 	}
@@ -176,7 +170,7 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 		// only and informational: memberships never contribute to the hold (see
 		// DeletionMetric.ContributesToHold), so measuring them cannot change the
 		// verdict already reached above.
-		memberships, mErr := membershipCascadeMetric(ctx, tx, missingUserIDs, missingTeamIDs, reconciledTeamIDs, in.MaxDeletePercent)
+		memberships, mErr := membershipCascadeMetric(ctx, qtx, missingUserIDs, missingTeamIDs, reconciledTeamIDs, in.MaxDeletePercent)
 		if mErr != nil {
 			return nil, fmt.Errorf("failed to measure membership cascade: %w", mErr)
 		}
@@ -213,7 +207,7 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 		currentProtectedUserIDSet[id] = true
 	}
 
-	if err := countHealthCheckTransitions(ctx, tx, in, result); err != nil {
+	if err := countHealthCheckTransitions(ctx, qtx, in, result); err != nil {
 		return nil, err
 	}
 	stage := func(name string) {
@@ -225,43 +219,43 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 	track := newChangeTracker()
 
 	stage(string(orgsyncrun.StageUpsertingUsers))
-	if err := upsertSnapshotUsers(ctx, tx, in, currentProtectedUserIDSet, track); err != nil {
+	if err := upsertSnapshotUsers(ctx, qtx, in, currentProtectedUserIDSet, track); err != nil {
 		return nil, err
 	}
-	if err := applySnapshotReportsTo(ctx, tx, in, currentProtectedUserIDSet, track); err != nil {
+	if err := applySnapshotReportsTo(ctx, qtx, in, currentProtectedUserIDSet, track); err != nil {
 		return nil, err
 	}
 	stage(string(orgsyncrun.StageUpsertingTeams))
-	if err := upsertSnapshotTeams(ctx, tx, in, track); err != nil {
+	if err := upsertSnapshotTeams(ctx, qtx, in, track); err != nil {
 		return nil, err
 	}
 	stage(string(orgsyncrun.StageSyncingMemberships))
-	if err := reconcileSnapshotMemberships(ctx, tx, in, currentProtectedUserIDSet, complete, result); err != nil {
+	if err := reconcileSnapshotMemberships(ctx, qtx, in, currentProtectedUserIDSet, complete, result); err != nil {
 		return nil, err
 	}
 	stage(string(orgsyncrun.StageReconcilingRemovals))
 	if complete {
-		if err := deactivateMissingTeams(ctx, tx, missingTeamIDs, result); err != nil {
+		if err := deactivateMissingTeams(ctx, qtx, missingTeamIDs, result); err != nil {
 			return nil, err
 		}
-		if err := deactivateMissingUsers(ctx, tx, missingUserIDs, result); err != nil {
+		if err := deactivateMissingUsers(ctx, qtx, missingUserIDs, result); err != nil {
 			return nil, err
 		}
 	}
-	if err := reconcileActiveStates(ctx, tx, in, currentProtectedUserIDSet, track, result); err != nil {
+	if err := reconcileActiveStates(ctx, qtx, in, currentProtectedUserIDSet, track, result); err != nil {
 		return nil, err
 	}
 	// Last write: the THC-only pod-lead mapping reads the teams as they are now
 	// that everything else is in place. See applyPodLeadLevels.
-	if err := applyPodLeadLevels(ctx, tx, in, currentProtectedUserIDSet, track, result); err != nil {
+	if err := applyPodLeadLevels(ctx, qtx, in, currentProtectedUserIDSet, track, result); err != nil {
 		return nil, err
 	}
 	// Truly last: a valid podiqRole is the final level decision for its user.
-	if err := applyPodIQRoleLevels(ctx, tx, in, currentProtectedUserIDSet, track); err != nil {
+	if err := applyPodIQRoleLevels(ctx, qtx, in, currentProtectedUserIDSet, track); err != nil {
 		return nil, err
 	}
 	track.finish(result)
-	if err := recordAppliedSnapshot(ctx, tx, in.Snapshot.GeneratedAt); err != nil {
+	if err := recordAppliedSnapshot(ctx, qtx, in.Snapshot.GeneratedAt); err != nil {
 		return nil, err
 	}
 
@@ -271,7 +265,7 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 	// transaction waits for the announcement: a self-deadlock.
 	stage(string(orgsyncrun.StageCommitting))
 	if in.RunID != "" {
-		if err := markRunSucceeded(ctx, tx, in, result); err != nil {
+		if err := markRunSucceeded(ctx, qtx, in, result); err != nil {
 			return nil, err
 		}
 	}
@@ -286,47 +280,41 @@ func (r *OrganizationProviderRepository) ApplySnapshot(ctx context.Context, in o
 	return result, nil
 }
 
-// isProtectedUserRow/isProtectedTeamRow adapt orgprovider's protection rules
-// to the row shape read back from the database, so the protection rule is
-// defined exactly once (in the orgprovider package) and reused here.
-func isProtectedUserRow(id string, hierarchyLevelID sql.NullString) bool {
-	return orgprovider.IsProtectedUser(id, hierarchyLevelID.String)
-}
-
-func isProtectedTeamRow(id string, _ sql.NullString) bool {
-	return orgprovider.IsProtectedTeam(id)
-}
-
-// nonProtectedMissingIDs reads every id (and, for users, hierarchy_level_id)
-// currently in the given table, and returns: the non-protected ids absent
+// nonProtectedMissingUserIDs / nonProtectedMissingTeamIDs read every active id
+// (and, for users, hierarchy_level_id) and return: the non-protected ids absent
 // from the snapshot's id set, the total count of non-protected rows (the
 // denominator for the mass-deletion guard), and the ids that ARE protected
 // (so callers can shield a protected user's other references, e.g. team
-// memberships, not just their own row).
-func nonProtectedMissingIDs(
-	ctx context.Context, tx *sql.Tx, table string, snapshotIDs map[string]bool,
-	isProtected func(id string, hierarchyLevelID sql.NullString) bool,
-) (missing []string, nonProtectedCount int, protected []string, err error) {
-	// Already-inactive rows are neither candidates nor part of the denominator:
-	// deactivating them again is a no-op and must not skew the guard.
-	query := "SELECT id, NULL::text FROM " + table + " WHERE is_active"
-	if table == "users" {
-		query = "SELECT id, hierarchy_level_id FROM users WHERE is_active"
-	}
-
-	rows, err := tx.QueryContext(ctx, query)
+// memberships, not just their own row). The protection rules are defined once,
+// in the orgprovider package, and reused here.
+//
+// Already-inactive rows are neither candidates nor part of the denominator:
+// deactivating them again is a no-op and must not skew the guard.
+func nonProtectedMissingUserIDs(ctx context.Context, q *sqlcgen.Queries, snapshotIDs map[string]bool) (missing []string, nonProtectedCount int, protected []string, err error) {
+	rows, err := q.FindActiveUserIDsAndLevels(ctx)
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var id string
-		var levelID sql.NullString
-		if err := rows.Scan(&id, &levelID); err != nil {
-			return nil, 0, nil, err
+	for _, row := range rows {
+		if orgprovider.IsProtectedUser(row.ID, row.HierarchyLevelID) {
+			protected = append(protected, row.ID)
+			continue
 		}
-		if isProtected(id, levelID) {
+		nonProtectedCount++
+		if !snapshotIDs[row.ID] {
+			missing = append(missing, row.ID)
+		}
+	}
+	return missing, nonProtectedCount, protected, nil
+}
+
+func nonProtectedMissingTeamIDs(ctx context.Context, q *sqlcgen.Queries, snapshotIDs map[string]bool) (missing []string, nonProtectedCount int, protected []string, err error) {
+	ids, err := q.FindActiveTeamIDs(ctx)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	for _, id := range ids {
+		if orgprovider.IsProtectedTeam(id) {
 			protected = append(protected, id)
 			continue
 		}
@@ -335,10 +323,6 @@ func nonProtectedMissingIDs(
 			missing = append(missing, id)
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, nil, err
-	}
-
 	return missing, nonProtectedCount, protected, nil
 }
 
@@ -363,31 +347,32 @@ func nonProtectedMissingIDs(
 // otherwise that row is removed by the explicit DELETE, not by cascade, and
 // counting it here would double-label a pruned row as cascaded.
 func membershipCascadeMetric(
-	ctx context.Context, tx *sql.Tx, missingUserIDs, missingTeamIDs, reconciledTeamIDs []string, maxPercent float64,
+	ctx context.Context, q *sqlcgen.Queries, missingUserIDs, missingTeamIDs, reconciledTeamIDs []string, maxPercent float64,
 ) (*orgprovider.DeletionMetric, error) {
-	var existing int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM team_members`).Scan(&existing); err != nil {
+	existing, err := q.CountAllTeamMemberships(ctx)
+	if err != nil {
 		return nil, err
 	}
 
-	var cascaded int
+	var cascaded int64
 	if len(missingUserIDs) > 0 || len(missingTeamIDs) > 0 {
-		if err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM team_members
-			WHERE team_id = ANY($1)
-			   OR (user_id = ANY($2) AND team_id <> ALL($3))
-		`, pq.Array(missingTeamIDs), pq.Array(missingUserIDs), pq.Array(reconciledTeamIDs)).Scan(&cascaded); err != nil {
+		cascaded, err = q.CountCascadedTeamMemberships(ctx, sqlcgen.CountCascadedTeamMembershipsParams{
+			MissingTeamIds:    missingTeamIDs,
+			MissingUserIds:    missingUserIDs,
+			ReconciledTeamIds: reconciledTeamIDs,
+		})
+		if err != nil {
 			return nil, err
 		}
 	}
 
-	metric := orgprovider.NewDeletionMetric(orgprovider.DeletionKindCascaded, existing, cascaded, maxPercent, false)
+	metric := orgprovider.NewDeletionMetric(orgprovider.DeletionKindCascaded, int(existing), int(cascaded), maxPercent, false)
 	return &metric, nil
 }
 
 // countHealthCheckTransitions measures how many teams actually change state, so
 // the sync can report "N teams disabled" rather than leaving it to be discovered.
-func countHealthCheckTransitions(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, result *orgprovider.ApplyResult) error {
+func countHealthCheckTransitions(ctx context.Context, q *sqlcgen.Queries, in orgprovider.ApplyInput, result *orgprovider.ApplyResult) error {
 	var disabling, enabling []string
 	for _, t := range in.Snapshot.Teams {
 		if orgprovider.IsProtectedTeam(t.ID) {
@@ -404,19 +389,19 @@ func countHealthCheckTransitions(ctx context.Context, tx *sql.Tx, in orgprovider
 	}
 
 	if len(disabling) > 0 {
-		if err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM teams WHERE id = ANY($1) AND health_check_enabled = true
-		`, pq.Array(disabling)).Scan(&result.HealthChecksDisabled); err != nil {
+		n, err := q.CountTeamsDisablingHealthCheck(ctx, disabling)
+		if err != nil {
 			return fmt.Errorf("failed to count health check transitions: %w", err)
 		}
+		result.HealthChecksDisabled = int(n)
 	}
 
 	if len(enabling) > 0 {
-		if err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM teams WHERE id = ANY($1) AND health_check_enabled = false
-		`, pq.Array(enabling)).Scan(&result.HealthChecksEnabled); err != nil {
+		n, err := q.CountTeamsEnablingHealthCheck(ctx, enabling)
+		if err != nil {
 			return fmt.Errorf("failed to count health check transitions: %w", err)
 		}
+		result.HealthChecksEnabled = int(n)
 	}
 
 	return nil
@@ -428,15 +413,40 @@ func countHealthCheckTransitions(ctx context.Context, tx *sql.Tx, in orgprovider
 // would silently drop the user's memberships and action items.
 // health_check_sessions.user_id has no foreign key but identifies the
 // submitter, so it moves with the user too.
-var userIDReferences = []struct{ table, column string }{
-	{"team_members", "user_id"},
-	{"team_supervisors", "user_id"},
-	{"action_items", "created_by"},
-	{"action_items", "assigned_to"},
-	{"password_reset_tokens", "user_id"},
-	{"teams", "team_lead_id"},
-	{"users", "reports_to"},
-	{"health_check_sessions", "user_id"},
+var userIDReferences = []struct {
+	table, column string
+	repoint       func(ctx context.Context, q *sqlcgen.Queries, oldID, newID string) error
+}{
+	{"team_members", "user_id", func(ctx context.Context, q *sqlcgen.Queries, oldID, newID string) error {
+		return q.RepointTeamMembersUser(ctx, sqlcgen.RepointTeamMembersUserParams{OldID: oldID, NewID: newID})
+	}},
+	{"team_supervisors", "user_id", func(ctx context.Context, q *sqlcgen.Queries, oldID, newID string) error {
+		return q.RepointTeamSupervisorsUser(ctx, sqlcgen.RepointTeamSupervisorsUserParams{OldID: oldID, NewID: newID})
+	}},
+	{"action_items", "created_by", func(ctx context.Context, q *sqlcgen.Queries, oldID, newID string) error {
+		return q.RepointActionItemsCreatedBy(ctx, sqlcgen.RepointActionItemsCreatedByParams{OldID: oldID, NewID: newID})
+	}},
+	{"action_items", "assigned_to", func(ctx context.Context, q *sqlcgen.Queries, oldID, newID string) error {
+		return q.RepointActionItemsAssignedTo(ctx, sqlcgen.RepointActionItemsAssignedToParams{
+			OldID: sql.NullString{String: oldID, Valid: true}, NewID: sql.NullString{String: newID, Valid: true},
+		})
+	}},
+	{"password_reset_tokens", "user_id", func(ctx context.Context, q *sqlcgen.Queries, oldID, newID string) error {
+		return q.RepointPasswordResetTokensUser(ctx, sqlcgen.RepointPasswordResetTokensUserParams{OldID: oldID, NewID: newID})
+	}},
+	{"teams", "team_lead_id", func(ctx context.Context, q *sqlcgen.Queries, oldID, newID string) error {
+		return q.RepointTeamsLead(ctx, sqlcgen.RepointTeamsLeadParams{
+			OldID: sql.NullString{String: oldID, Valid: true}, NewID: sql.NullString{String: newID, Valid: true},
+		})
+	}},
+	{"users", "reports_to", func(ctx context.Context, q *sqlcgen.Queries, oldID, newID string) error {
+		return q.RepointUsersReportsTo(ctx, sqlcgen.RepointUsersReportsToParams{
+			OldID: sql.NullString{String: oldID, Valid: true}, NewID: sql.NullString{String: newID, Valid: true},
+		})
+	}},
+	{"health_check_sessions", "user_id", func(ctx context.Context, q *sqlcgen.Queries, oldID, newID string) error {
+		return q.RepointHealthCheckSessionsUser(ctx, sqlcgen.RepointHealthCheckSessionsUserParams{OldID: oldID, NewID: newID})
+	}},
 }
 
 // UserIDReferenceColumns lists the "table.column" pairs re-keying repoints, so a
@@ -460,8 +470,8 @@ func UserIDReferenceColumns() []string {
 // their history stays with them. A match on more than one row aborts the sync.
 // Administrators are re-keyed too and keep their level, because the row is
 // protected from the upsert afterwards.
-func rekeyUsersToProviderIDs(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, stillPresent map[string]bool) error {
-	existing, err := existingUserIDs(ctx, tx, in.Snapshot.Users)
+func rekeyUsersToProviderIDs(ctx context.Context, q *sqlcgen.Queries, in orgprovider.ApplyInput, stillPresent map[string]bool) error {
+	existing, err := existingUserIDs(ctx, q, in.Snapshot.Users)
 	if err != nil {
 		return err
 	}
@@ -471,7 +481,7 @@ func rekeyUsersToProviderIDs(ctx context.Context, tx *sql.Tx, in orgprovider.App
 			continue
 		}
 
-		oldIDs, err := findRekeyCandidates(ctx, tx, u.Email, u.Username, stillPresent)
+		oldIDs, err := findRekeyCandidates(ctx, q, u.Email, u.Username, stillPresent)
 		if err != nil {
 			return fmt.Errorf("failed to look up existing user for %q (%s): %w", u.Username, u.ID, err)
 		}
@@ -479,7 +489,7 @@ func rekeyUsersToProviderIDs(ctx context.Context, tx *sql.Tx, in orgprovider.App
 			return fmt.Errorf("provider user %q (%s) matches several existing users %v by email or username; resolve the duplicates before syncing", u.Username, u.ID, oldIDs)
 		}
 		if len(oldIDs) == 1 {
-			if err := rekeyUser(ctx, tx, oldIDs[0], u); err != nil {
+			if err := rekeyUser(ctx, q, oldIDs[0], u); err != nil {
 				return fmt.Errorf("failed to re-key user %q from %q to %q: %w", u.Username, oldIDs[0], u.ID, err)
 			}
 		}
@@ -489,26 +499,21 @@ func rekeyUsersToProviderIDs(ctx context.Context, tx *sql.Tx, in orgprovider.App
 
 // existingUserIDs returns which of the snapshot users already have a row under
 // the id the provider sends, in one query.
-func existingUserIDs(ctx context.Context, tx *sql.Tx, users []orgsnapshot.User) (map[string]bool, error) {
+func existingUserIDs(ctx context.Context, q *sqlcgen.Queries, users []orgsnapshot.User) (map[string]bool, error) {
 	ids := make([]string, len(users))
 	for i, u := range users {
 		ids[i] = u.ID
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM users WHERE id = ANY($1)`, pq.Array(ids))
+	found, err := q.FindExistingUserIDs(ctx, ids)
 	if err != nil {
 		return nil, fmt.Errorf("failed to look up existing users: %w", err)
 	}
-	defer rows.Close()
 
-	existing := make(map[string]bool, len(ids))
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
+	existing := make(map[string]bool, len(found))
+	for _, id := range found {
 		existing[id] = true
 	}
-	return existing, rows.Err()
+	return existing, nil
 }
 
 // findRekeyCandidates returns the ids of SSO users that share the given email
@@ -517,28 +522,20 @@ func existingUserIDs(ctx context.Context, tx *sql.Tx, users []orgsnapshot.User) 
 // demo/test fixtures and any row whose id is still in the snapshot
 // (stillPresent) are excluded. Passing an empty level to IsProtectedUser checks
 // the id only.
-func findRekeyCandidates(ctx context.Context, tx *sql.Tx, email, username string, stillPresent map[string]bool) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id FROM users
-		WHERE auth_type = 'sso' AND (lower(email) = lower($1) OR username = $2)
-	`, email, username)
+func findRekeyCandidates(ctx context.Context, q *sqlcgen.Queries, email, username string, stillPresent map[string]bool) ([]string, error) {
+	found, err := q.FindSSOUserIDsByEmailOrUsername(ctx, sqlcgen.FindSSOUserIDsByEmailOrUsernameParams{Email: email, Username: username})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
+	for _, id := range found {
 		if stillPresent[id] || orgprovider.IsProtectedUser(id, "") {
 			continue
 		}
 		ids = append(ids, id)
 	}
-	return ids, rows.Err()
+	return ids, nil
 }
 
 // rekeyUser gives the user stored under oldID the provider's id. users.id is
@@ -547,29 +544,21 @@ func findRekeyCandidates(ctx context.Context, tx *sql.Tx, email, username string
 // (keeping the stored hierarchy level, password_hash, auth_type and
 // created_at), repoint every reference, then delete the old row, which nothing
 // points at by then.
-func rekeyUser(ctx context.Context, tx *sql.Tx, oldID string, u orgsnapshot.User) error {
-	// The placeholders must satisfy chk_users_username_format and
-	// chk_users_email_format (migration 000013), and ids can be too long or
-	// contain characters those checks reject, so derive them from a hash.
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE users SET username = 'rk_' || left(md5(id), 20), email = 'rk_' || md5(id) || '@rekey.invalid' WHERE id = $1
-	`, oldID); err != nil {
+func rekeyUser(ctx context.Context, q *sqlcgen.Queries, oldID string, u orgsnapshot.User) error {
+	if err := q.FreeUserCredentialsForRekey(ctx, oldID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO users (id, username, email, full_name, hierarchy_level_id, reports_to, password_hash, auth_type, created_at, updated_at)
-		SELECT $2, $3, $4, $5, hierarchy_level_id, reports_to, password_hash, auth_type, created_at, CURRENT_TIMESTAMP
-		FROM users WHERE id = $1
-	`, oldID, u.ID, u.Username, u.Email, u.DisplayName); err != nil {
+	if err := q.CopyUserUnderNewID(ctx, sqlcgen.CopyUserUnderNewIDParams{
+		OldID: oldID, NewID: u.ID, Username: u.Username, Email: u.Email, FullName: u.DisplayName,
+	}); err != nil {
 		return err
 	}
 	for _, ref := range userIDReferences {
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE "+ref.table+" SET "+ref.column+" = $2 WHERE "+ref.column+" = $1", oldID, u.ID); err != nil {
+		if err := ref.repoint(ctx, q, oldID, u.ID); err != nil {
 			return fmt.Errorf("failed to repoint %s.%s: %w", ref.table, ref.column, err)
 		}
 	}
-	_, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, oldID)
+	_, err := q.DeleteUser(ctx, oldID)
 	return err
 }
 
@@ -644,7 +633,7 @@ func (t *changeTracker) finish(r *orgprovider.ApplyResult) {
 // written to level-5 here and back to level-4 there, and show up as an updated
 // user on every sync. With the mapping off both ids are empty strings, which
 // match no real level, so the statement behaves exactly as before.
-func upsertSnapshotUsers(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker) error {
+func upsertSnapshotUsers(ctx context.Context, q *sqlcgen.Queries, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker) error {
 	sourceLevel, leadLevel := "", ""
 	if in.MapPodLeads {
 		sourceLevel, leadLevel = orgprovider.PodLeadSourceLevelID, orgprovider.PodLeadLevelID
@@ -665,26 +654,15 @@ func upsertSnapshotUsers(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyIn
 			level, userSourceLevel, userLeadLevel = roleLevel, "", ""
 		}
 
-		var inserted bool
-		err := tx.QueryRowContext(ctx, `
-			INSERT INTO users (id, username, email, full_name, hierarchy_level_id, reports_to, password_hash, auth_type, updated_at)
-			VALUES ($1, btrim($2), btrim($3), btrim($4), $5, NULL, '', 'sso', CURRENT_TIMESTAMP)
-			ON CONFLICT (id) DO UPDATE SET
-				username = EXCLUDED.username,
-				email = EXCLUDED.email,
-				full_name = EXCLUDED.full_name,
-				hierarchy_level_id = CASE
-					WHEN users.hierarchy_level_id = $7 AND EXCLUDED.hierarchy_level_id = $6 THEN users.hierarchy_level_id
-					ELSE EXCLUDED.hierarchy_level_id
-				END,
-				updated_at = CURRENT_TIMESTAMP
-			WHERE btrim(users.username) IS DISTINCT FROM EXCLUDED.username
-			   OR lower(btrim(users.email)) IS DISTINCT FROM lower(EXCLUDED.email)
-			   OR btrim(users.full_name) IS DISTINCT FROM EXCLUDED.full_name
-			   OR (users.hierarchy_level_id IS DISTINCT FROM EXCLUDED.hierarchy_level_id
-			       AND NOT (users.hierarchy_level_id = $7 AND EXCLUDED.hierarchy_level_id = $6))
-			RETURNING (xmax = 0)
-		`, u.ID, u.Username, u.Email, u.DisplayName, level, userSourceLevel, userLeadLevel).Scan(&inserted)
+		inserted, err := q.UpsertSnapshotUser(ctx, sqlcgen.UpsertSnapshotUserParams{
+			ID:             u.ID,
+			Username:       u.Username,
+			Email:          u.Email,
+			FullName:       u.DisplayName,
+			Level:          level,
+			PodLeadLevel:   userLeadLevel,
+			PodSourceLevel: userSourceLevel,
+		})
 		if errors.Is(err, sql.ErrNoRows) {
 			continue // existing row, identical business fields: unchanged
 		}
@@ -702,16 +680,6 @@ func upsertSnapshotUsers(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyIn
 	}
 	return nil
 }
-
-// activePodLeadsSubquery selects the users who lead an active team and are
-// active members of it, read from the teams exactly as this transaction has left
-// them. An inactive membership row is history (a person who moved on keeps one),
-// so it does not make someone a lead.
-const activePodLeadsSubquery = `
-	SELECT t.team_lead_id
-	FROM teams t
-	JOIN team_members tm ON tm.team_id = t.id AND tm.user_id = t.team_lead_id AND tm.is_active
-	WHERE t.is_active AND t.team_lead_id IS NOT NULL`
 
 // applyPodLeadLevels is the THC-only pod-lead mapping (orgprovider.PodLeadLevelID),
 // the last write of the apply. Among the snapshot users the provider sent as
@@ -732,7 +700,7 @@ const activePodLeadsSubquery = `
 // already made the stored id. Protected users are never touched. Only rows that
 // actually change are written, and each is recorded as updated, so a sync with
 // nothing to change still reports nothing changed.
-func applyPodLeadLevels(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker, result *orgprovider.ApplyResult) error {
+func applyPodLeadLevels(ctx context.Context, q *sqlcgen.Queries, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker, result *orgprovider.ApplyResult) error {
 	if !in.MapPodLeads {
 		return nil
 	}
@@ -754,25 +722,27 @@ func applyPodLeadLevels(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInp
 		return nil
 	}
 
-	promoted, err := setUserLevels(ctx, tx, track, `
-		UPDATE users SET hierarchy_level_id = $2, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ANY($1) AND hierarchy_level_id = $3
-		  AND id IN (`+activePodLeadsSubquery+`)
-		RETURNING id
-	`, pq.Array(sourceIDs), orgprovider.PodLeadLevelID, orgprovider.PodLeadSourceLevelID)
+	// Promotes users who lead an active team they are an active member of (an
+	// inactive membership row is history, so it does not make someone a lead).
+	promotedIDs, err := q.PromotePodLeads(ctx, sqlcgen.PromotePodLeadsParams{
+		SourceIds:   sourceIDs,
+		LeadLevel:   orgprovider.PodLeadLevelID,
+		SourceLevel: orgprovider.PodLeadSourceLevelID,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to promote pod leads: %w", err)
 	}
+	promoted := markUsersChanged(track, promotedIDs)
 
-	returned, err := setUserLevels(ctx, tx, track, `
-		UPDATE users SET hierarchy_level_id = $3, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ANY($1) AND hierarchy_level_id = $2
-		  AND id NOT IN (`+activePodLeadsSubquery+`)
-		RETURNING id
-	`, pq.Array(sourceIDs), orgprovider.PodLeadLevelID, orgprovider.PodLeadSourceLevelID)
+	returnedIDs, err := q.ReturnFormerPodLeads(ctx, sqlcgen.ReturnFormerPodLeadsParams{
+		SourceIds:   sourceIDs,
+		LeadLevel:   orgprovider.PodLeadLevelID,
+		SourceLevel: orgprovider.PodLeadSourceLevelID,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to return former pod leads to their provider level: %w", err)
 	}
+	returned := markUsersChanged(track, returnedIDs)
 
 	result.PodLeadsPromoted = promoted
 	result.PodLeadsReturned = returned
@@ -794,7 +764,7 @@ func podIQRoleLevel(u orgsnapshot.User) (string, bool) {
 // applyPodLeadLevels skips these users entirely. Users without a role are not
 // touched. Protected users are never touched. Only rows whose level differs are
 // written, so an identical second sync reports no change.
-func applyPodIQRoleLevels(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker) error {
+func applyPodIQRoleLevels(ctx context.Context, q *sqlcgen.Queries, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker) error {
 	idsByLevel := make(map[string][]string)
 	for _, u := range in.Snapshot.Users {
 		level, ok := podIQRoleLevel(u)
@@ -811,45 +781,29 @@ func applyPodIQRoleLevels(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyI
 		if len(ids) == 0 {
 			continue
 		}
-		if _, err := setUserLevels(ctx, tx, track, `
-			UPDATE users SET hierarchy_level_id = $2, updated_at = CURRENT_TIMESTAMP
-			WHERE id = ANY($1) AND hierarchy_level_id IS DISTINCT FROM $2
-			RETURNING id
-		`, pq.Array(ids), level); err != nil {
+		changed, err := q.SetUserLevelForIDs(ctx, sqlcgen.SetUserLevelForIDsParams{Level: level, Ids: ids})
+		if err != nil {
 			return fmt.Errorf("failed to apply podiqRole level %s: %w", level, err)
 		}
+		markUsersChanged(track, changed)
 	}
 	return nil
 }
 
-// setUserLevels runs one level UPDATE ... RETURNING id, records every returned
-// user as changed, and returns how many there were. The rows are drained and
-// closed before it returns, so the transaction's connection is free for the
-// next statement.
-func setUserLevels(ctx context.Context, tx *sql.Tx, track *changeTracker, query string, args ...interface{}) (int, error) {
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-
-	n := 0
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return 0, err
-		}
+// markUsersChanged records every id returned by a level UPDATE ... RETURNING id
+// as a changed user, and returns how many there were.
+func markUsersChanged(track *changeTracker, ids []string) int {
+	for _, id := range ids {
 		markChanged(track.changedUsers, track.insertedUsers, id)
-		n++
 	}
-	return n, rows.Err()
+	return len(ids)
 }
 
 // applySnapshotReportsTo writes manager links now that every snapshot user exists.
 // See upsertSnapshotUsers for why currentProtectedUserIDs is checked alongside
 // IsProtectedUser: protection must survive a snapshot that relabels a
 // currently-protected user's hierarchy level.
-func applySnapshotReportsTo(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker) error {
+func applySnapshotReportsTo(ctx context.Context, q *sqlcgen.Queries, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker) error {
 	for _, u := range in.Snapshot.Users {
 		if orgprovider.IsProtectedUser(u.ID, u.HierarchyLevelID) || currentProtectedUserIDs[u.ID] {
 			continue
@@ -861,20 +815,17 @@ func applySnapshotReportsTo(ctx context.Context, tx *sql.Tx, in orgprovider.Appl
 			continue
 		}
 
-		var reportsTo interface{}
+		var reportsTo sql.NullString
 		if u.ReportsToID != nil {
-			reportsTo = *u.ReportsToID
+			reportsTo = sql.NullString{String: *u.ReportsToID, Valid: true}
 		}
 
 		// Only a real manager change writes (and bumps updated_at).
-		res, err := tx.ExecContext(ctx, `
-			UPDATE users SET reports_to = $2, updated_at = CURRENT_TIMESTAMP
-			WHERE id = $1 AND reports_to IS DISTINCT FROM $2::varchar
-		`, u.ID, reportsTo)
+		n, err := q.SetUserReportsToIfChanged(ctx, sqlcgen.SetUserReportsToIfChangedParams{ID: u.ID, ReportsTo: reportsTo})
 		if err != nil {
 			return fmt.Errorf("failed to set manager for user %q: %w", u.ID, err)
 		}
-		if n, err := res.RowsAffected(); err == nil && n > 0 {
+		if n > 0 {
 			markChanged(track.changedUsers, track.insertedUsers, u.ID)
 		}
 	}
@@ -887,36 +838,28 @@ func applySnapshotReportsTo(ctx context.Context, tx *sql.Tx, in orgprovider.Appl
 // rule. As with users, an existing team is only written when a business field
 // really differs, so an identical re-sync counts the team as unchanged.
 // is_active is decided afterwards in reconcileActiveStates.
-func upsertSnapshotTeams(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, track *changeTracker) error {
+func upsertSnapshotTeams(ctx context.Context, q *sqlcgen.Queries, in orgprovider.ApplyInput, track *changeTracker) error {
 	for _, t := range in.Snapshot.Teams {
 		if orgprovider.IsProtectedTeam(t.ID) {
 			continue
 		}
 		track.processedTeams++
 
-		var teamLead interface{}
+		var teamLead sql.NullString
 		if t.TeamLeadID != nil {
-			teamLead = *t.TeamLeadID
+			teamLead = sql.NullString{String: *t.TeamLeadID, Valid: true}
 		}
-		var healthCheck interface{}
+		var healthCheck sql.NullBool
 		if t.HealthCheckEnabled != nil {
-			healthCheck = *t.HealthCheckEnabled
+			healthCheck = sql.NullBool{Bool: *t.HealthCheckEnabled, Valid: true}
 		}
 
-		var inserted bool
-		err := tx.QueryRowContext(ctx, `
-			INSERT INTO teams (id, name, team_lead_id, health_check_enabled, updated_at)
-			VALUES ($1, btrim($2), $3, COALESCE($4::boolean, true), CURRENT_TIMESTAMP)
-			ON CONFLICT (id) DO UPDATE SET
-				name = EXCLUDED.name,
-				team_lead_id = COALESCE($3::varchar, teams.team_lead_id),
-				health_check_enabled = COALESCE($4::boolean, teams.health_check_enabled),
-				updated_at = CURRENT_TIMESTAMP
-			WHERE btrim(teams.name) IS DISTINCT FROM EXCLUDED.name
-			   OR teams.team_lead_id IS DISTINCT FROM COALESCE($3::varchar, teams.team_lead_id)
-			   OR teams.health_check_enabled IS DISTINCT FROM COALESCE($4::boolean, teams.health_check_enabled)
-			RETURNING (xmax = 0)
-		`, t.ID, t.Name, teamLead, healthCheck).Scan(&inserted)
+		inserted, err := q.UpsertSnapshotTeam(ctx, sqlcgen.UpsertSnapshotTeamParams{
+			ID:                 t.ID,
+			Name:               t.Name,
+			TeamLeadID:         teamLead,
+			HealthCheckEnabled: healthCheck,
+		})
 		if errors.Is(err, sql.ErrNoRows) {
 			continue // unchanged
 		}
@@ -956,7 +899,7 @@ func upsertSnapshotTeams(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyIn
 // Protected users keep whatever membership they already have -- the keep
 // list below still carries currentProtectedUserIDs -- this only stops the
 // sync from trying to insert a *new* row for one.
-func reconcileSnapshotMemberships(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, complete bool, result *orgprovider.ApplyResult) error {
+func reconcileSnapshotMemberships(ctx context.Context, q *sqlcgen.Queries, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, complete bool, result *orgprovider.ApplyResult) error {
 	skipMembershipUserIDs := make(map[string]bool, len(currentProtectedUserIDs))
 	for id := range currentProtectedUserIDs {
 		skipMembershipUserIDs[id] = true
@@ -994,34 +937,21 @@ func reconcileSnapshotMemberships(ctx context.Context, tx *sql.Tx, in orgprovide
 				keep = append(keep, id)
 			}
 
-			res, err := tx.ExecContext(ctx, `
-				UPDATE team_members SET is_active = false, deactivated_at = CURRENT_TIMESTAMP
-				WHERE team_id = $1 AND is_active AND user_id <> ALL($2)
-			`, teamID, pq.Array(keep))
+			n, err := q.DeactivateTeamMembersNotKept(ctx, sqlcgen.DeactivateTeamMembersNotKeptParams{TeamID: teamID, KeepUserIds: keep})
 			if err != nil {
 				return fmt.Errorf("failed to deactivate members of team %q: %w", teamID, err)
 			}
-			if n, err := res.RowsAffected(); err == nil {
-				result.MembershipsRemoved += int(n)
-			}
+			result.MembershipsRemoved += int(n)
 		}
 
 		for _, userID := range members {
-			// Inserts a new row or flips an inactive one back on. The DO UPDATE
-			// WHERE leaves an already-active row alone, so RowsAffected is 1 only
-			// for a real change.
-			res, err := tx.ExecContext(ctx, `
-				INSERT INTO team_members (team_id, user_id, is_active) VALUES ($1, $2, true)
-				ON CONFLICT (team_id, user_id) DO UPDATE
-					SET is_active = true, deactivated_at = NULL
-					WHERE team_members.is_active = false
-			`, teamID, userID)
+			// Inserts a new row or flips an inactive one back on; an already-active
+			// row is left alone, so the count is 1 only for a real change.
+			n, err := q.ActivateSnapshotTeamMember(ctx, sqlcgen.ActivateSnapshotTeamMemberParams{TeamID: teamID, UserID: userID})
 			if err != nil {
 				return fmt.Errorf("failed to add user %q to team %q: %w", userID, teamID, err)
 			}
-			if n, err := res.RowsAffected(); err == nil {
-				result.MembershipsAdded += int(n)
-			}
+			result.MembershipsAdded += int(n)
 		}
 	}
 
@@ -1031,33 +961,21 @@ func reconcileSnapshotMemberships(ctx context.Context, tx *sql.Tx, in orgprovide
 // deactivateMissingTeams marks every non-protected team absent from a COMPLETE
 // snapshot inactive, along with its memberships. The team row, its action items
 // and its survey history are all retained.
-func deactivateMissingTeams(ctx context.Context, tx *sql.Tx, missingTeamIDs []string, result *orgprovider.ApplyResult) error {
+func deactivateMissingTeams(ctx context.Context, q *sqlcgen.Queries, missingTeamIDs []string, result *orgprovider.ApplyResult) error {
 	if len(missingTeamIDs) == 0 {
 		return nil
 	}
-	res, err := tx.ExecContext(ctx, `
-		UPDATE teams SET is_active = false, deactivated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ANY($1) AND is_active
-	`, pq.Array(missingTeamIDs))
+	n, err := q.DeactivateTeamsByIDs(ctx, missingTeamIDs)
 	if err != nil {
 		return fmt.Errorf("failed to deactivate teams: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to confirm team deactivation: %w", err)
-	}
 	result.TeamsDeactivated += int(n)
 
-	res, err = tx.ExecContext(ctx, `
-		UPDATE team_members SET is_active = false, deactivated_at = CURRENT_TIMESTAMP
-		WHERE team_id = ANY($1) AND is_active
-	`, pq.Array(missingTeamIDs))
+	removed, err := q.DeactivateMembershipsOfTeams(ctx, missingTeamIDs)
 	if err != nil {
 		return fmt.Errorf("failed to deactivate memberships of removed teams: %w", err)
 	}
-	if n, err := res.RowsAffected(); err == nil {
-		result.MembershipsRemoved += int(n)
-	}
+	result.MembershipsRemoved += int(removed)
 	return nil
 }
 
@@ -1068,7 +986,7 @@ func deactivateMissingTeams(ctx context.Context, tx *sql.Tx, missingTeamIDs []st
 // A user named in a protected team's supervisor chain is left active, the same
 // exemption the old delete honored, re-checked in the statement itself so a
 // concurrent chain edit cannot slip past the earlier read.
-func deactivateMissingUsers(ctx context.Context, tx *sql.Tx, missingUserIDs []string, result *orgprovider.ApplyResult) error {
+func deactivateMissingUsers(ctx context.Context, q *sqlcgen.Queries, missingUserIDs []string, result *orgprovider.ApplyResult) error {
 	if len(missingUserIDs) == 0 {
 		return nil
 	}
@@ -1078,35 +996,21 @@ func deactivateMissingUsers(ctx context.Context, tx *sql.Tx, missingUserIDs []st
 	// list: a user promoted to level-admin between that read and this statement
 	// must not be deactivated just because the stale candidate list still names
 	// them.
-	res, err := tx.ExecContext(ctx, `
-		UPDATE users SET is_active = false, deactivated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ANY($1) AND is_active
-		  AND hierarchy_level_id IS DISTINCT FROM $3
-		  AND NOT EXISTS (
-		      SELECT 1 FROM team_supervisors ts
-		      WHERE ts.user_id = users.id AND ts.team_id = ANY($2)
-		  )
-	`, pq.Array(missingUserIDs), pq.Array(protectedTeamIDs), orgprovider.ProtectedHierarchyLevelID)
+	n, err := q.DeactivateMissingUsers(ctx, sqlcgen.DeactivateMissingUsersParams{
+		Ids:              missingUserIDs,
+		ProtectedLevel:   orgprovider.ProtectedHierarchyLevelID,
+		ProtectedTeamIds: protectedTeamIDs,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to deactivate users: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to confirm user deactivation: %w", err)
-	}
 	result.UsersDeactivated += int(n)
 
-	res, err = tx.ExecContext(ctx, `
-		UPDATE team_members SET is_active = false, deactivated_at = CURRENT_TIMESTAMP
-		WHERE user_id = ANY($1) AND is_active
-		  AND user_id IN (SELECT id FROM users WHERE is_active = false)
-	`, pq.Array(missingUserIDs))
+	removed, err := q.DeactivateMembershipsOfInactiveUsers(ctx, missingUserIDs)
 	if err != nil {
 		return fmt.Errorf("failed to deactivate memberships of removed users: %w", err)
 	}
-	if n, err := res.RowsAffected(); err == nil {
-		result.MembershipsRemoved += int(n)
-	}
+	result.MembershipsRemoved += int(removed)
 	return nil
 }
 
@@ -1120,7 +1024,7 @@ func deactivateMissingUsers(ctx context.Context, tx *sql.Tx, missingUserIDs []st
 //   - An inactive person who now has an active membership, or who never had any
 //     membership (a VP, say), is reactivated (counted as updated).
 //   - A team the snapshot reports is reactivated if it was inactive.
-func reconcileActiveStates(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker, result *orgprovider.ApplyResult) error {
+func reconcileActiveStates(ctx context.Context, q *sqlcgen.Queries, in orgprovider.ApplyInput, currentProtectedUserIDs map[string]bool, track *changeTracker, result *orgprovider.ApplyResult) error {
 	userIDs := make([]string, 0, len(in.Snapshot.Users))
 	for _, u := range in.Snapshot.Users {
 		if orgprovider.IsProtectedUser(u.ID, u.HierarchyLevelID) || currentProtectedUserIDs[u.ID] {
@@ -1129,50 +1033,17 @@ func reconcileActiveStates(ctx context.Context, tx *sql.Tx, in orgprovider.Apply
 		userIDs = append(userIDs, u.ID)
 	}
 	if len(userIDs) > 0 {
-		rows, err := tx.QueryContext(ctx, `
-			UPDATE users SET is_active = false, deactivated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-			WHERE id = ANY($1) AND is_active
-			  AND EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = users.id)
-			  AND NOT EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = users.id AND tm.is_active)
-			RETURNING id
-		`, pq.Array(userIDs))
+		deactivated, err := q.DeactivateUsersWithoutActiveMembership(ctx, userIDs)
 		if err != nil {
 			return fmt.Errorf("failed to deactivate users without an active membership: %w", err)
 		}
-		n := 0
-		for rows.Next() {
-			n++
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
-		result.UsersDeactivated += n
+		result.UsersDeactivated += len(deactivated)
 
-		rows, err = tx.QueryContext(ctx, `
-			UPDATE users SET is_active = true, deactivated_at = NULL, updated_at = CURRENT_TIMESTAMP
-			WHERE id = ANY($1) AND NOT is_active
-			  AND (NOT EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = users.id)
-			       OR EXISTS (SELECT 1 FROM team_members tm WHERE tm.user_id = users.id AND tm.is_active))
-			RETURNING id
-		`, pq.Array(userIDs))
+		reactivated, err := q.ReactivateUsers(ctx, userIDs)
 		if err != nil {
 			return fmt.Errorf("failed to reactivate users: %w", err)
 		}
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return err
-			}
-			markChanged(track.changedUsers, track.insertedUsers, id)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
+		markUsersChanged(track, reactivated)
 	}
 
 	teamIDs := make([]string, 0, len(in.Snapshot.Teams))
@@ -1182,27 +1053,13 @@ func reconcileActiveStates(ctx context.Context, tx *sql.Tx, in orgprovider.Apply
 		}
 	}
 	if len(teamIDs) > 0 {
-		rows, err := tx.QueryContext(ctx, `
-			UPDATE teams SET is_active = true, deactivated_at = NULL, updated_at = CURRENT_TIMESTAMP
-			WHERE id = ANY($1) AND NOT is_active
-			RETURNING id
-		`, pq.Array(teamIDs))
+		reactivated, err := q.ReactivateTeams(ctx, teamIDs)
 		if err != nil {
 			return fmt.Errorf("failed to reactivate teams: %w", err)
 		}
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return err
-			}
+		for _, id := range reactivated {
 			markChanged(track.changedTeams, track.insertedTeams, id)
 		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
 	}
 	return nil
 }
@@ -1210,10 +1067,9 @@ func reconcileActiveStates(ctx context.Context, tx *sql.Tx, in orgprovider.Apply
 // rejectStaleSnapshot locks the singleton settings row and refuses a snapshot
 // generated before the last one applied. An equal timestamp is allowed so a
 // manual re-run of the same snapshot is idempotent.
-func rejectStaleSnapshot(ctx context.Context, tx *sql.Tx, generatedAt time.Time) error {
-	var last sql.NullTime
-	if err := tx.QueryRowContext(ctx,
-		`SELECT org_sync_last_source_generated_at FROM app_settings WHERE id = 1 FOR UPDATE`).Scan(&last); err != nil {
+func rejectStaleSnapshot(ctx context.Context, q *sqlcgen.Queries, generatedAt time.Time) error {
+	last, err := q.LockLastAppliedSnapshotTime(ctx)
+	if err != nil {
 		return fmt.Errorf("failed to read last applied snapshot time: %w", err)
 	}
 	if last.Valid && generatedAt.Before(last.Time) {
@@ -1224,9 +1080,8 @@ func rejectStaleSnapshot(ctx context.Context, tx *sql.Tx, generatedAt time.Time)
 
 // recordAppliedSnapshot stores the provider timestamp inside the same
 // transaction, so it only advances when the whole sync commits.
-func recordAppliedSnapshot(ctx context.Context, tx *sql.Tx, generatedAt time.Time) error {
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE app_settings SET org_sync_last_source_generated_at = $1 WHERE id = 1`, generatedAt.UTC()); err != nil {
+func recordAppliedSnapshot(ctx context.Context, q *sqlcgen.Queries, generatedAt time.Time) error {
+	if err := q.RecordAppliedSnapshotTime(ctx, sql.NullTime{Time: generatedAt.UTC(), Valid: true}); err != nil {
 		return fmt.Errorf("failed to record applied snapshot time: %w", err)
 	}
 	return nil
@@ -1238,25 +1093,17 @@ func recordAppliedSnapshot(ctx context.Context, tx *sql.Tx, generatedAt time.Tim
 // count in agreement with deleteMissingUsers' own, independently
 // re-checked, atomic exclusion -- see that function's comment for why this
 // snapshot is never treated as the actual safeguard.
-func protectedTeamSupervisorUserIDs(ctx context.Context, tx *sql.Tx) (map[string]bool, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT team_id, user_id FROM team_supervisors`)
+func protectedTeamSupervisorUserIDs(ctx context.Context, q *sqlcgen.Queries) (map[string]bool, error) {
+	rows, err := q.FindDistinctTeamSupervisors(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read team supervisors: %w", err)
 	}
-	defer rows.Close()
 
 	exempt := make(map[string]bool)
-	for rows.Next() {
-		var teamID, userID string
-		if err := rows.Scan(&teamID, &userID); err != nil {
-			return nil, fmt.Errorf("failed to scan team supervisor row: %w", err)
+	for _, row := range rows {
+		if orgprovider.IsProtectedTeam(row.TeamID) {
+			exempt[row.UserID] = true
 		}
-		if orgprovider.IsProtectedTeam(teamID) {
-			exempt[userID] = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to read team supervisors: %w", err)
 	}
 	return exempt, nil
 }
@@ -1267,34 +1114,35 @@ func protectedTeamSupervisorUserIDs(ctx context.Context, tx *sql.Tx) (map[string
 //
 // The WHERE clause is the stale-worker guard: only a RUNNING run can succeed, so if a recovery sweep already failed it the update matches no
 // row, this returns an error, and the whole apply rolls back.
-func markRunSucceeded(ctx context.Context, tx *sql.Tx, in orgprovider.ApplyInput, r *orgprovider.ApplyResult) error {
+func markRunSucceeded(ctx context.Context, q *sqlcgen.Queries, in orgprovider.ApplyInput, r *orgprovider.ApplyResult) error {
 	// The zero value means PARTIAL (see ApplyInput), and the column's CHECK
 	// constraint rejects an empty string.
 	snapshotType := in.SnapshotType
 	if snapshotType == "" {
 		snapshotType = orgprovider.SnapshotPartial
 	}
-	res, err := tx.ExecContext(ctx, `
-		UPDATE org_sync_runs SET
-			status = 'SUCCESS', stage = $16, completed_at = CURRENT_TIMESTAMP, heartbeat_at = CURRENT_TIMESTAMP,
-			source_generated_at = $2,
-			inserted_users = $3, updated_users = $4, inserted_teams = $5, updated_teams = $6,
-			membership_changes = $7, deactivated_records = $8,
-			unchanged_users = $9, unchanged_teams = $10, unchanged_recorded = TRUE,
-			health_checks_disabled = $11, health_checks_enabled = $12, mass_deletion_overridden = $13,
-			snapshot_type = $14
-		WHERE id = $1 AND status = ANY($15)
-	`, in.RunID, in.Snapshot.GeneratedAt.UTC(),
-		r.InsertedUsers, r.UpdatedUsers, r.InsertedTeams, r.UpdatedTeams,
-		r.MembershipsAdded+r.MembershipsRemoved, r.UsersDeactivated+r.TeamsDeactivated,
-		r.UnchangedUsers, r.UnchangedTeams,
-		r.HealthChecksDisabled, r.HealthChecksEnabled, r.MassDeletionOverride != nil,
-		string(snapshotType), pq.Array(orgsyncrun.StatusesBefore(orgsyncrun.StatusSuccess)),
-		string(orgsyncrun.StageCompleted))
+	n, err := q.MarkOrgSyncRunSucceeded(ctx, sqlcgen.MarkOrgSyncRunSucceededParams{
+		Stage:                  string(orgsyncrun.StageCompleted),
+		SourceGeneratedAt:      sql.NullTime{Time: in.Snapshot.GeneratedAt.UTC(), Valid: true},
+		InsertedUsers:          int32(r.InsertedUsers),
+		UpdatedUsers:           int32(r.UpdatedUsers),
+		InsertedTeams:          int32(r.InsertedTeams),
+		UpdatedTeams:           int32(r.UpdatedTeams),
+		MembershipChanges:      int32(r.MembershipsAdded + r.MembershipsRemoved),
+		DeactivatedRecords:     int32(r.UsersDeactivated + r.TeamsDeactivated),
+		UnchangedUsers:         int32(r.UnchangedUsers),
+		UnchangedTeams:         int32(r.UnchangedTeams),
+		HealthChecksDisabled:   int32(r.HealthChecksDisabled),
+		HealthChecksEnabled:    int32(r.HealthChecksEnabled),
+		MassDeletionOverridden: r.MassDeletionOverride != nil,
+		SnapshotType:           string(snapshotType),
+		ID:                     in.RunID,
+		AllowedStatuses:        orgsyncrun.StatusesBefore(orgsyncrun.StatusSuccess),
+	})
 	if err != nil {
 		return fmt.Errorf("failed to record run success: %w", err)
 	}
-	if n, err := res.RowsAffected(); err != nil || n != 1 {
+	if n != 1 {
 		return fmt.Errorf("sync run %s is no longer running; discarding apply", in.RunID)
 	}
 	return nil
