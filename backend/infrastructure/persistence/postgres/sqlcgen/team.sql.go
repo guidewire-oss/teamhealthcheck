@@ -140,7 +140,7 @@ const findSurveyCompletionTeams = `-- name: FindSurveyCompletionTeams :many
 SELECT
     t.id,
     t.name,
-    t.health_check_enabled,
+    COALESCE(t.health_check_enabled, true)::boolean AS health_check_enabled,
     COALESCE(sup.user_id, '') AS supervisor_id,
     COALESCE(t.team_lead_id, '') AS team_lead_id,
     COALESCE(tl.full_name, '') AS team_lead_name,
@@ -203,7 +203,7 @@ func (q *Queries) FindSurveyCompletionTeams(ctx context.Context) ([]FindSurveyCo
 
 const findTeamByID = `-- name: FindTeamByID :one
 
-SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
+SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, COALESCE(t.health_check_enabled, true)::boolean AS health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
 FROM teams t
 LEFT JOIN users u ON t.team_lead_id = u.id
 WHERE t.id = $1
@@ -354,7 +354,7 @@ func (q *Queries) FindTeamSupervisorChain(ctx context.Context, teamID string) ([
 }
 
 const findTeamsByLeadID = `-- name: FindTeamsByLeadID :many
-SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
+SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, COALESCE(t.health_check_enabled, true)::boolean AS health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
 FROM teams t
 LEFT JOIN users u ON t.team_lead_id = u.id
 WHERE t.team_lead_id = $1
@@ -411,7 +411,7 @@ func (q *Queries) FindTeamsByLeadID(ctx context.Context, leadID sql.NullString) 
 }
 
 const findTeamsByStatus = `-- name: FindTeamsByStatus :many
-SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
+SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, COALESCE(t.health_check_enabled, true)::boolean AS health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
 FROM teams t
 LEFT JOIN users u ON t.team_lead_id = u.id
 WHERE ($1::text = ''
@@ -434,7 +434,7 @@ type FindTeamsByStatusRow struct {
 	DeactivatedAt         sql.NullTime
 }
 
-// status is ” (all teams), 'active' or 'inactive'; the filter is applied in the
+// status is the empty string (all teams), 'active' or 'inactive'; the filter is applied in the
 // query so rows the caller does not want are never read.
 func (q *Queries) FindTeamsByStatus(ctx context.Context, status string) ([]FindTeamsByStatusRow, error) {
 	rows, err := q.db.QueryContext(ctx, findTeamsByStatus, status)
@@ -472,7 +472,7 @@ func (q *Queries) FindTeamsByStatus(ctx context.Context, status string) ([]FindT
 }
 
 const findTeamsBySupervisorID = `-- name: FindTeamsBySupervisorID :many
-SELECT DISTINCT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
+SELECT DISTINCT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, COALESCE(t.health_check_enabled, true)::boolean AS health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
 FROM teams t
 INNER JOIN team_supervisors ts ON t.id = ts.team_id
 LEFT JOIN users u ON t.team_lead_id = u.id

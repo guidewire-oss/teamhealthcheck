@@ -307,7 +307,7 @@ func (r *UserRepository) FindSubordinates(ctx context.Context, supervisorID stri
 
 	// Batch-load team memberships in a single query to avoid N+1
 	if len(userIDs) > 0 {
-		teamRows, err := r.queries.FindTeamMembershipsForUserIDs(ctx, userIDs)
+		teamRows, err := r.queries.FindTeamIDsForUsers(ctx, userIDs)
 		if err != nil {
 			return nil, fmt.Errorf("failed to batch-load team memberships: %w", err)
 		}

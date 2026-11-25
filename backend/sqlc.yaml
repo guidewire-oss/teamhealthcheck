@@ -55,7 +55,7 @@ sql:
           - column: "health_check_sessions.date"
             go_type: "string"
           - column: "health_check_sessions.completed"
-            go_type: "bool"
+            go_type: "database/sql.NullBool"
           - column: "team_overall.overall_health"
             go_type: "database/sql.NullFloat64"
           - column: "health_dimensions.weight"

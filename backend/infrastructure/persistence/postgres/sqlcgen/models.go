@@ -63,7 +63,7 @@ type HealthCheckSession struct {
 	// Assessment period (e.g., "2024 - 2nd Half")
 	AssessmentPeriod sql.NullString
 	// Whether all responses have been submitted
-	Completed  bool
+	Completed  sql.NullBool
 	CreatedAt  sql.NullTime
 	UpdatedAt  sql.NullTime
 	SurveyType string

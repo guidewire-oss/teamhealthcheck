@@ -412,42 +412,6 @@ func (q *Queries) FindTeamIDsForUsers(ctx context.Context, userIds []string) ([]
 	return items, nil
 }
 
-const findTeamMembershipsForUserIDs = `-- name: FindTeamMembershipsForUserIDs :many
-SELECT user_id, team_id
-FROM team_members
-WHERE user_id = ANY($1::text[]) AND is_active
-ORDER BY user_id, team_id
-`
-
-type FindTeamMembershipsForUserIDsRow struct {
-	UserID string
-	TeamID string
-}
-
-// Batch-loads team memberships for multiple users in a single query to avoid N+1.
-func (q *Queries) FindTeamMembershipsForUserIDs(ctx context.Context, userIds []string) ([]FindTeamMembershipsForUserIDsRow, error) {
-	rows, err := q.db.QueryContext(ctx, findTeamMembershipsForUserIDs, pq.Array(userIds))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []FindTeamMembershipsForUserIDsRow
-	for rows.Next() {
-		var i FindTeamMembershipsForUserIDsRow
-		if err := rows.Scan(&i.UserID, &i.TeamID); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const findTeamsWhereUserIsLead = `-- name: FindTeamsWhereUserIsLead :many
 SELECT id
 FROM teams

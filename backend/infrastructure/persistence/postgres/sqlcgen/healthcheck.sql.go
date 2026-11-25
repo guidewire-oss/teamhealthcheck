@@ -197,7 +197,7 @@ type FindSessionRowsByAssessmentPeriodRow struct {
 	Date             string
 	AssessmentPeriod sql.NullString
 	SurveyType       string
-	Completed        bool
+	Completed        sql.NullBool
 	DimensionID      sql.NullString
 	Score            sql.NullInt16
 	Trend            sql.NullString
@@ -255,7 +255,7 @@ type FindSessionRowsByIDRow struct {
 	Date             string
 	AssessmentPeriod sql.NullString
 	SurveyType       string
-	Completed        bool
+	Completed        sql.NullBool
 	DimensionID      sql.NullString
 	Score            sql.NullInt16
 	Trend            sql.NullString
@@ -313,7 +313,7 @@ type FindSessionRowsByTeamIDRow struct {
 	Date             string
 	AssessmentPeriod sql.NullString
 	SurveyType       string
-	Completed        bool
+	Completed        sql.NullBool
 	DimensionID      sql.NullString
 	Score            sql.NullInt16
 	Trend            sql.NullString
@@ -371,7 +371,7 @@ type FindSessionRowsByUserIDRow struct {
 	Date             string
 	AssessmentPeriod sql.NullString
 	SurveyType       string
-	Completed        bool
+	Completed        sql.NullBool
 	DimensionID      sql.NullString
 	Score            sql.NullInt16
 	Trend            sql.NullString
@@ -696,7 +696,7 @@ func (q *Queries) FindTeamHealthByManagerWithPeriod(ctx context.Context, arg Fin
 }
 
 const getTeamHealthCheckEnabled = `-- name: GetTeamHealthCheckEnabled :one
-SELECT health_check_enabled FROM teams WHERE id = $1
+SELECT COALESCE(health_check_enabled, true)::boolean AS health_check_enabled FROM teams WHERE id = $1
 `
 
 func (q *Queries) GetTeamHealthCheckEnabled(ctx context.Context, teamID string) (bool, error) {
@@ -765,12 +765,13 @@ func (q *Queries) InsertHealthCheckResponse(ctx context.Context, arg InsertHealt
 }
 
 const lockTeamHealthCheckEnabled = `-- name: LockTeamHealthCheckEnabled :one
-SELECT health_check_enabled FROM teams WHERE id = $1 FOR SHARE
+SELECT COALESCE(health_check_enabled, true)::boolean AS health_check_enabled FROM teams WHERE id = $1 FOR SHARE
 `
 
 // FOR SHARE locks the team row until the caller's transaction ends: a concurrent
 // sync UPDATE of health_check_enabled needs a conflicting lock, so it either
 // commits first (this read sees false) or waits for the save to finish.
+// A NULL flag (a legacy column that predates migration 000021's NOT NULL) counts as enabled.
 func (q *Queries) LockTeamHealthCheckEnabled(ctx context.Context, teamID string) (bool, error) {
 	row := q.db.QueryRowContext(ctx, lockTeamHealthCheckEnabled, teamID)
 	var health_check_enabled bool
@@ -800,7 +801,7 @@ type UpsertHealthCheckSessionParams struct {
 	Date             string
 	AssessmentPeriod sql.NullString
 	SurveyType       string
-	Completed        bool
+	Completed        sql.NullBool
 }
 
 // Queries for HealthCheckRepository (backend/infrastructure/persistence/postgres/health_check_repository.go)

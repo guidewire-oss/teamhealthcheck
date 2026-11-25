@@ -258,10 +258,11 @@ ORDER BY assessment_period DESC;
 -- FOR SHARE locks the team row until the caller's transaction ends: a concurrent
 -- sync UPDATE of health_check_enabled needs a conflicting lock, so it either
 -- commits first (this read sees false) or waits for the save to finish.
-SELECT health_check_enabled FROM teams WHERE id = sqlc.arg(team_id) FOR SHARE;
+-- A NULL flag (a legacy column that predates migration 000021's NOT NULL) counts as enabled.
+SELECT COALESCE(health_check_enabled, true)::boolean AS health_check_enabled FROM teams WHERE id = sqlc.arg(team_id) FOR SHARE;
 
 -- name: GetTeamHealthCheckEnabled :one
-SELECT health_check_enabled FROM teams WHERE id = sqlc.arg(team_id);
+SELECT COALESCE(health_check_enabled, true)::boolean AS health_check_enabled FROM teams WHERE id = sqlc.arg(team_id);
 
 -- name: FindSubmittedPeriodsByUser :many
 -- Completed submissions of one survey type for one user (individual scope).

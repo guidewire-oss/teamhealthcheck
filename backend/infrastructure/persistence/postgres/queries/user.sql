@@ -82,13 +82,6 @@ SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
 FROM supervisors
 ORDER BY depth;
 
--- name: FindTeamMembershipsForUserIDs :many
--- Batch-loads team memberships for multiple users in a single query to avoid N+1.
-SELECT user_id, team_id
-FROM team_members
-WHERE user_id = ANY(sqlc.arg(user_ids)::text[]) AND is_active
-ORDER BY user_id, team_id;
-
 -- name: InsertUser :exec
 INSERT INTO users (id, username, full_name, email, hierarchy_level_id, reports_to, password_hash, auth_type, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);

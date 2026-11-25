@@ -3,15 +3,15 @@
 -- Do not hand-edit sqlcgen/*.go - regenerate with `sqlc generate` (see Makefile).
 
 -- name: FindTeamByID :one
-SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
+SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, COALESCE(t.health_check_enabled, true)::boolean AS health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
 FROM teams t
 LEFT JOIN users u ON t.team_lead_id = u.id
 WHERE t.id = sqlc.arg(id);
 
 -- name: FindTeamsByStatus :many
--- status is '' (all teams), 'active' or 'inactive'; the filter is applied in the
+-- status is the empty string (all teams), 'active' or 'inactive'; the filter is applied in the
 -- query so rows the caller does not want are never read.
-SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
+SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, COALESCE(t.health_check_enabled, true)::boolean AS health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
 FROM teams t
 LEFT JOIN users u ON t.team_lead_id = u.id
 WHERE (sqlc.arg(status)::text = ''
@@ -20,14 +20,14 @@ WHERE (sqlc.arg(status)::text = ''
 ORDER BY t.name;
 
 -- name: FindTeamsByLeadID :many
-SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
+SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, COALESCE(t.health_check_enabled, true)::boolean AS health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
 FROM teams t
 LEFT JOIN users u ON t.team_lead_id = u.id
 WHERE t.team_lead_id = sqlc.arg(lead_id)
 ORDER BY t.name;
 
 -- name: FindTeamsBySupervisorID :many
-SELECT DISTINCT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
+SELECT DISTINCT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, COALESCE(t.health_check_enabled, true)::boolean AS health_check_enabled, u.full_name AS team_lead_name, t.is_active, t.deactivated_at
 FROM teams t
 INNER JOIN team_supervisors ts ON t.id = ts.team_id
 LEFT JOIN users u ON t.team_lead_id = u.id
@@ -120,7 +120,7 @@ VALUES (sqlc.arg(team_id), sqlc.arg(user_id), sqlc.arg(hierarchy_level_id), sqlc
 SELECT
     t.id,
     t.name,
-    t.health_check_enabled,
+    COALESCE(t.health_check_enabled, true)::boolean AS health_check_enabled,
     COALESCE(sup.user_id, '') AS supervisor_id,
     COALESCE(t.team_lead_id, '') AS team_lead_id,
     COALESCE(tl.full_name, '') AS team_lead_name,

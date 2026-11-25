@@ -133,11 +133,9 @@ type Querier interface {
 	FindTeamIDsForUsers(ctx context.Context, userIds []string) ([]FindTeamIDsForUsersRow, error)
 	FindTeamMemberUserIDs(ctx context.Context, teamID string) ([]string, error)
 	FindTeamMembersDetailed(ctx context.Context, teamID string) ([]FindTeamMembersDetailedRow, error)
-	// Batch-loads team memberships for multiple users in a single query to avoid N+1.
-	FindTeamMembershipsForUserIDs(ctx context.Context, userIds []string) ([]FindTeamMembershipsForUserIDsRow, error)
 	FindTeamSupervisorChain(ctx context.Context, teamID string) ([]FindTeamSupervisorChainRow, error)
 	FindTeamsByLeadID(ctx context.Context, leadID sql.NullString) ([]FindTeamsByLeadIDRow, error)
-	// status is '' (all teams), 'active' or 'inactive'; the filter is applied in the
+	// status is the empty string (all teams), 'active' or 'inactive'; the filter is applied in the
 	// query so rows the caller does not want are never read.
 	FindTeamsByStatus(ctx context.Context, status string) ([]FindTeamsByStatusRow, error)
 	FindTeamsBySupervisorID(ctx context.Context, supervisorID string) ([]FindTeamsBySupervisorIDRow, error)
@@ -193,6 +191,7 @@ type Querier interface {
 	// FOR SHARE locks the team row until the caller's transaction ends: a concurrent
 	// sync UPDATE of health_check_enabled needs a conflicting lock, so it either
 	// commits first (this read sees false) or waits for the save to finish.
+	// A NULL flag (a legacy column that predates migration 000021's NOT NULL) counts as enabled.
 	LockTeamHealthCheckEnabled(ctx context.Context, teamID string) (bool, error)
 	MarkOrgSyncRunRunning(ctx context.Context, arg MarkOrgSyncRunRunningParams) (int64, error)
 	// Only a RUNNING run can succeed (the stale-worker guard): if a recovery sweep

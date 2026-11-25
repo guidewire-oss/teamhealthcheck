@@ -71,7 +71,7 @@ func (r *HealthCheckRepository) Save(ctx context.Context, session *healthcheck.H
 		Date:             session.Date,
 		AssessmentPeriod: sql.NullString{String: session.AssessmentPeriod, Valid: true},
 		SurveyType:       surveyType,
-		Completed:        session.Completed,
+		Completed:        sql.NullBool{Bool: session.Completed, Valid: true},
 	})
 	if err != nil {
 		var pqErr *pq.Error
@@ -406,7 +406,7 @@ func sessionScanRowsFromByID(rows []sqlcgen.FindSessionRowsByIDRow) []sessionSca
 	for i, row := range rows {
 		out[i] = sessionScanRow{
 			SessionID: row.ID, TeamID: row.TeamID, UserID: row.UserID, Date: row.Date,
-			AssessmentPeriod: row.AssessmentPeriod, SurveyType: row.SurveyType, Completed: row.Completed,
+			AssessmentPeriod: row.AssessmentPeriod, SurveyType: row.SurveyType, Completed: row.Completed.Bool, // NULL reads as false
 			DimensionID: row.DimensionID, Score: row.Score, Trend: row.Trend, Comment: row.Comment,
 		}
 	}
@@ -418,7 +418,7 @@ func sessionScanRowsFromByTeamID(rows []sqlcgen.FindSessionRowsByTeamIDRow) []se
 	for i, row := range rows {
 		out[i] = sessionScanRow{
 			SessionID: row.ID, TeamID: row.TeamID, UserID: row.UserID, Date: row.Date,
-			AssessmentPeriod: row.AssessmentPeriod, SurveyType: row.SurveyType, Completed: row.Completed,
+			AssessmentPeriod: row.AssessmentPeriod, SurveyType: row.SurveyType, Completed: row.Completed.Bool, // NULL reads as false
 			DimensionID: row.DimensionID, Score: row.Score, Trend: row.Trend, Comment: row.Comment,
 		}
 	}
@@ -430,7 +430,7 @@ func sessionScanRowsFromByUserID(rows []sqlcgen.FindSessionRowsByUserIDRow) []se
 	for i, row := range rows {
 		out[i] = sessionScanRow{
 			SessionID: row.ID, TeamID: row.TeamID, UserID: row.UserID, Date: row.Date,
-			AssessmentPeriod: row.AssessmentPeriod, SurveyType: row.SurveyType, Completed: row.Completed,
+			AssessmentPeriod: row.AssessmentPeriod, SurveyType: row.SurveyType, Completed: row.Completed.Bool, // NULL reads as false
 			DimensionID: row.DimensionID, Score: row.Score, Trend: row.Trend, Comment: row.Comment,
 		}
 	}
@@ -442,7 +442,7 @@ func sessionScanRowsFromByAssessmentPeriod(rows []sqlcgen.FindSessionRowsByAsses
 	for i, row := range rows {
 		out[i] = sessionScanRow{
 			SessionID: row.ID, TeamID: row.TeamID, UserID: row.UserID, Date: row.Date,
-			AssessmentPeriod: row.AssessmentPeriod, SurveyType: row.SurveyType, Completed: row.Completed,
+			AssessmentPeriod: row.AssessmentPeriod, SurveyType: row.SurveyType, Completed: row.Completed.Bool, // NULL reads as false
 			DimensionID: row.DimensionID, Score: row.Score, Trend: row.Trend, Comment: row.Comment,
 		}
 	}
