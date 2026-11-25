@@ -7,34 +7,30 @@ import (
 	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/application/services"
+	"github.com/agopalakrishnan/teams360/backend/infrastructure/persistence/postgres/sqlcgen"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // PasswordResetRepository implements services.PasswordResetRepository
 type PasswordResetRepository struct {
-	db *sql.DB
+	db      *sql.DB
+	queries *sqlcgen.Queries
 }
 
 // NewPasswordResetRepository creates a new password reset repository
 func NewPasswordResetRepository(db *sql.DB) *PasswordResetRepository {
-	return &PasswordResetRepository{db: db}
+	return &PasswordResetRepository{db: db, queries: sqlcgen.New(db)}
 }
 
 // Create stores a new password reset token
 func (r *PasswordResetRepository) Create(ctx context.Context, token *services.PasswordResetToken) error {
-	query := `
-		INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at, created_at)
-		VALUES ($1, $2, $3, $4, $5)
-	`
-
-	_, err := r.db.ExecContext(ctx, query,
-		token.ID,
-		token.UserID,
-		token.TokenHash,
-		token.ExpiresAt,
-		token.CreatedAt,
-	)
-
+	err := r.queries.CreatePasswordResetToken(ctx, sqlcgen.CreatePasswordResetTokenParams{
+		ID:        token.ID,
+		UserID:    token.UserID,
+		TokenHash: token.TokenHash,
+		ExpiresAt: token.ExpiresAt,
+		CreatedAt: sql.NullTime{Time: token.CreatedAt, Valid: true},
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create password reset token: %w", err)
 	}
@@ -46,39 +42,23 @@ func (r *PasswordResetRepository) Create(ctx context.Context, token *services.Pa
 func (r *PasswordResetRepository) FindValidToken(ctx context.Context, plainToken string) (*services.PasswordResetToken, error) {
 	// Query all valid (not used, not expired) tokens
 	// Note: In production with many users, you might want to limit this or use a different approach
-	query := `
-		SELECT id, user_id, token_hash, expires_at, used_at, created_at
-		FROM password_reset_tokens
-		WHERE used_at IS NULL AND expires_at > $1
-		ORDER BY created_at DESC
-		LIMIT 100
-	`
-
-	rows, err := r.db.QueryContext(ctx, query, time.Now())
+	rows, err := r.queries.FindValidPasswordResetTokens(ctx, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("failed to query tokens: %w", err)
 	}
-	defer rows.Close()
 
 	// Compare plain token against each hash
-	for rows.Next() {
-		var token services.PasswordResetToken
-		var usedAt sql.NullTime
-
-		err := rows.Scan(
-			&token.ID,
-			&token.UserID,
-			&token.TokenHash,
-			&token.ExpiresAt,
-			&usedAt,
-			&token.CreatedAt,
-		)
-		if err != nil {
-			continue
+	for _, row := range rows {
+		token := services.PasswordResetToken{
+			ID:        row.ID,
+			UserID:    row.UserID,
+			TokenHash: row.TokenHash,
+			ExpiresAt: row.ExpiresAt,
+			CreatedAt: row.CreatedAt.Time,
 		}
 
-		if usedAt.Valid {
-			token.UsedAt = &usedAt.Time
+		if row.UsedAt.Valid {
+			token.UsedAt = &row.UsedAt.Time
 		}
 
 		// Compare plain token with stored hash
@@ -92,18 +72,14 @@ func (r *PasswordResetRepository) FindValidToken(ctx context.Context, plainToken
 
 // MarkAsUsed marks a token as used
 func (r *PasswordResetRepository) MarkAsUsed(ctx context.Context, tokenID string) error {
-	query := `
-		UPDATE password_reset_tokens
-		SET used_at = $1
-		WHERE id = $2
-	`
-
-	result, err := r.db.ExecContext(ctx, query, time.Now(), tokenID)
+	rowsAffected, err := r.queries.MarkPasswordResetTokenAsUsed(ctx, sqlcgen.MarkPasswordResetTokenAsUsedParams{
+		UsedAt: sql.NullTime{Time: time.Now(), Valid: true},
+		ID:     tokenID,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to mark token as used: %w", err)
 	}
 
-	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		return fmt.Errorf("token not found")
 	}
@@ -113,13 +89,11 @@ func (r *PasswordResetRepository) MarkAsUsed(ctx context.Context, tokenID string
 
 // DeleteExpiredTokens cleans up expired tokens (call periodically)
 func (r *PasswordResetRepository) DeleteExpiredTokens(ctx context.Context) error {
-	query := `
-		DELETE FROM password_reset_tokens
-		WHERE expires_at < $1 OR created_at < $2
-	`
-
 	// Delete tokens that are expired or older than 24 hours
-	_, err := r.db.ExecContext(ctx, query, time.Now(), time.Now().Add(-24*time.Hour))
+	err := r.queries.DeleteExpiredPasswordResetTokens(ctx, sqlcgen.DeleteExpiredPasswordResetTokensParams{
+		ExpiresBefore: time.Now(),
+		CreatedBefore: sql.NullTime{Time: time.Now().Add(-24 * time.Hour), Valid: true},
+	})
 	if err != nil {
 		return fmt.Errorf("failed to delete expired tokens: %w", err)
 	}

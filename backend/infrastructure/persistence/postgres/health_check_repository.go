@@ -9,6 +9,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/healthcheck"
+	"github.com/agopalakrishnan/teams360/backend/infrastructure/persistence/postgres/sqlcgen"
 )
 
 // uniqueViolationConstraints maps the Postgres unique-index names enforcing "one submission
@@ -22,12 +23,13 @@ var uniqueViolationConstraints = map[string]string{
 
 // HealthCheckRepository implements the healthcheck.Repository interface
 type HealthCheckRepository struct {
-	db *sql.DB
+	db      *sql.DB
+	queries *sqlcgen.Queries
 }
 
 // NewHealthCheckRepository creates a new repository instance
 func NewHealthCheckRepository(db *sql.DB) healthcheck.Repository {
-	return &HealthCheckRepository{db: db}
+	return &HealthCheckRepository{db: db, queries: sqlcgen.New(db)}
 }
 
 // Save persists a health check session and its responses (atomic operation)
@@ -44,38 +46,33 @@ func (r *HealthCheckRepository) Save(ctx context.Context, session *healthcheck.H
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	qtx := r.queries.WithTx(tx)
 
 	// Enforce enrollment in the same transaction as the write. The command checks the flag
 	// first for a fast answer, but that read is not atomic with this insert: a PodIQ sync could
 	// commit health_check_enabled = false in between. FOR SHARE locks the team row until this
 	// transaction ends, and the sync's UPDATE needs a conflicting lock, so either the sync
 	// commits first (the flag is false here and the save is rejected) or it waits for this save.
-	// An unknown team is left to the foreign key; a NULL flag counts as enabled.
-	var enabled sql.NullBool
-	err = tx.QueryRowContext(ctx, `SELECT health_check_enabled FROM teams WHERE id = $1 FOR SHARE`, session.TeamID).Scan(&enabled)
+	// An unknown team is left to the foreign key.
+	enabled, err := qtx.LockTeamHealthCheckEnabled(ctx, session.TeamID)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
 		return &healthcheck.ParticipationLookupError{TeamID: session.TeamID, Err: err}
-	case enabled.Valid && !enabled.Bool:
+	case !enabled:
 		return &healthcheck.ParticipationDisabledError{TeamID: session.TeamID}
 	}
 
 	// Insert or update session
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO health_check_sessions (
-			id, team_id, user_id, date, assessment_period, survey_type, completed, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
-		ON CONFLICT (id) DO UPDATE SET
-			team_id = EXCLUDED.team_id,
-			user_id = EXCLUDED.user_id,
-			date = EXCLUDED.date,
-			assessment_period = EXCLUDED.assessment_period,
-			survey_type = EXCLUDED.survey_type,
-			completed = EXCLUDED.completed,
-			updated_at = CURRENT_TIMESTAMP
-	`, session.ID, session.TeamID, session.UserID, session.Date, session.AssessmentPeriod, surveyType, session.Completed)
-
+	err = qtx.UpsertHealthCheckSession(ctx, sqlcgen.UpsertHealthCheckSessionParams{
+		ID:               session.ID,
+		TeamID:           session.TeamID,
+		UserID:           session.UserID,
+		Date:             session.Date,
+		AssessmentPeriod: sql.NullString{String: session.AssessmentPeriod, Valid: true},
+		SurveyType:       surveyType,
+		Completed:        sql.NullBool{Bool: session.Completed, Valid: true},
+	})
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
@@ -100,19 +97,19 @@ func (r *HealthCheckRepository) Save(ctx context.Context, session *healthcheck.H
 	}
 
 	// Delete existing responses (for updates)
-	_, err = tx.ExecContext(ctx, "DELETE FROM health_check_responses WHERE session_id = $1", session.ID)
-	if err != nil {
+	if err := qtx.DeleteHealthCheckResponsesBySessionID(ctx, session.ID); err != nil {
 		return fmt.Errorf("failed to delete existing responses: %w", err)
 	}
 
 	// Insert responses
 	for _, response := range session.Responses {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO health_check_responses (
-				session_id, dimension_id, score, trend, comment
-			) VALUES ($1, $2, $3, $4, $5)
-		`, session.ID, response.DimensionID, response.Score, response.Trend, response.Comment)
-
+		err = qtx.InsertHealthCheckResponse(ctx, sqlcgen.InsertHealthCheckResponseParams{
+			SessionID:   session.ID,
+			DimensionID: response.DimensionID,
+			Score:       int16(response.Score),
+			Trend:       response.Trend,
+			Comment:     sql.NullString{String: response.Comment, Valid: true},
+		})
 		if err != nil {
 			return fmt.Errorf("failed to save response: %w", err)
 		}
@@ -128,19 +125,12 @@ func (r *HealthCheckRepository) Save(ctx context.Context, session *healthcheck.H
 
 // FindByID retrieves a session by ID
 func (r *HealthCheckRepository) FindByID(ctx context.Context, id string) (*healthcheck.HealthCheckSession, error) {
-	sessions, err := r.scanSessions(ctx, `
-		SELECT s.id, s.team_id, s.user_id, s.date, s.assessment_period, s.survey_type, s.completed,
-		       r.dimension_id, r.score, r.trend, r.comment
-		FROM health_check_sessions s
-		LEFT JOIN health_check_responses r ON s.id = r.session_id
-		WHERE s.id = $1
-		ORDER BY r.dimension_id
-	`, id)
-
+	rows, err := r.queries.FindSessionRowsByID(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query failed: %w", err)
 	}
 
+	sessions := buildSessions(sessionScanRowsFromByID(rows))
 	if len(sessions) == 0 {
 		return nil, fmt.Errorf("session not found: %s", id)
 	}
@@ -150,235 +140,103 @@ func (r *HealthCheckRepository) FindByID(ctx context.Context, id string) (*healt
 
 // FindByTeamID retrieves all sessions for a team
 func (r *HealthCheckRepository) FindByTeamID(ctx context.Context, teamID string) ([]*healthcheck.HealthCheckSession, error) {
-	return r.scanSessions(ctx, `
-		SELECT s.id, s.team_id, s.user_id, s.date, s.assessment_period, s.survey_type, s.completed,
-		       r.dimension_id, r.score, r.trend, r.comment
-		FROM health_check_sessions s
-		LEFT JOIN health_check_responses r ON s.id = r.session_id
-		WHERE s.team_id = $1
-		ORDER BY s.date DESC, r.dimension_id
-	`, teamID)
+	rows, err := r.queries.FindSessionRowsByTeamID(ctx, teamID)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+
+	return buildSessions(sessionScanRowsFromByTeamID(rows)), nil
 }
 
 // FindByUserID retrieves all sessions for a user
 func (r *HealthCheckRepository) FindByUserID(ctx context.Context, userID string) ([]*healthcheck.HealthCheckSession, error) {
-	return r.scanSessions(ctx, `
-		SELECT s.id, s.team_id, s.user_id, s.date, s.assessment_period, s.survey_type, s.completed,
-		       r.dimension_id, r.score, r.trend, r.comment
-		FROM health_check_sessions s
-		LEFT JOIN health_check_responses r ON s.id = r.session_id
-		WHERE s.user_id = $1
-		ORDER BY s.date DESC, r.dimension_id
-	`, userID)
+	rows, err := r.queries.FindSessionRowsByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+
+	return buildSessions(sessionScanRowsFromByUserID(rows)), nil
 }
 
 // FindByAssessmentPeriod retrieves all sessions for an assessment period
 func (r *HealthCheckRepository) FindByAssessmentPeriod(ctx context.Context, period string) ([]*healthcheck.HealthCheckSession, error) {
-	return r.scanSessions(ctx, `
-		SELECT s.id, s.team_id, s.user_id, s.date, s.assessment_period, s.survey_type, s.completed,
-		       r.dimension_id, r.score, r.trend, r.comment
-		FROM health_check_sessions s
-		LEFT JOIN health_check_responses r ON s.id = r.session_id
-		WHERE s.assessment_period = $1
-		ORDER BY s.date DESC, r.dimension_id
-	`, period)
+	rows, err := r.queries.FindSessionRowsByAssessmentPeriod(ctx, sql.NullString{String: period, Valid: true})
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+
+	return buildSessions(sessionScanRowsFromByAssessmentPeriod(rows)), nil
 }
 
 // FindTeamHealthByManager retrieves aggregated health data for teams under a manager.
 // Prefers post-workshop sessions when available for a team+period, otherwise falls back to individual sessions.
 func (r *HealthCheckRepository) FindTeamHealthByManager(ctx context.Context, managerID string, assessmentPeriod string) ([]healthcheck.TeamHealthSummary, error) {
-	var query string
-	var rows *sql.Rows
-	var err error
+	var teamRows []teamHealthScanRow
 
 	// Use effective_sessions CTE to prefer post_workshop data when available
 	if assessmentPeriod != "" {
-		query = `
-			WITH post_workshop_teams AS (
-				SELECT DISTINCT s.team_id
-				FROM health_check_sessions s
-				INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
-				WHERE ts.user_id = $1 AND s.survey_type = 'post_workshop'
-					AND s.completed = true AND s.assessment_period = $2
-			),
-			effective_sessions AS (
-				SELECT s.id, s.team_id
-				FROM health_check_sessions s
-				INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
-				WHERE ts.user_id = $1 AND s.completed = true AND s.assessment_period = $2
-					AND (
-						s.survey_type = 'post_workshop'
-						OR (s.survey_type = 'individual'
-							AND s.team_id NOT IN (SELECT pw.team_id FROM post_workshop_teams pw))
-					)
-			),
-			team_overall AS (
-				SELECT
-					t.id AS team_id,
-					t.name AS team_name,
-					COUNT(DISTINCT es.id) AS submission_count,
-					AVG(r.score) AS overall_health,
-					CASE WHEN EXISTS (
-						SELECT 1 FROM post_workshop_teams pw WHERE pw.team_id = t.id
-					) THEN 'submitted' ELSE 'pending' END AS post_workshop_status
-				FROM teams t
-				INNER JOIN team_supervisors ts ON t.id = ts.team_id
-				LEFT JOIN effective_sessions es ON t.id = es.team_id
-				LEFT JOIN health_check_responses r ON es.id = r.session_id
-				WHERE ts.user_id = $1
-				GROUP BY t.id, t.name
-			),
-			team_dimensions AS (
-				SELECT
-					es.team_id,
-					r.dimension_id,
-					AVG(r.score) AS avg_score,
-					COUNT(r.dimension_id) AS response_count
-				FROM effective_sessions es
-				INNER JOIN health_check_responses r ON es.id = r.session_id
-				GROUP BY es.team_id, r.dimension_id
-			)
-			SELECT
-				o.team_id,
-				o.team_name,
-				o.submission_count,
-				o.overall_health,
-				o.post_workshop_status,
-				d.dimension_id,
-				d.avg_score,
-				d.response_count
-			FROM team_overall o
-			LEFT JOIN team_dimensions d ON o.team_id = d.team_id
-			ORDER BY o.overall_health ASC NULLS LAST, o.team_name, d.dimension_id
-		`
-		rows, err = r.db.QueryContext(ctx, query, managerID, assessmentPeriod)
+		rows, err := r.queries.FindTeamHealthByManagerWithPeriod(ctx, sqlcgen.FindTeamHealthByManagerWithPeriodParams{
+			ManagerID:        managerID,
+			AssessmentPeriod: sql.NullString{String: assessmentPeriod, Valid: true},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to query team health by manager: %w", err)
+		}
+		teamRows = make([]teamHealthScanRow, len(rows))
+		for i, row := range rows {
+			teamRows[i] = teamHealthScanRow{
+				TeamID: row.TeamID, TeamName: row.TeamName, SubmissionCount: row.SubmissionCount,
+				OverallHealth: row.OverallHealth, PostWorkshopStatus: row.PostWorkshopStatus,
+				DimensionID: row.DimensionID, AvgScore: row.AvgScore, ResponseCount: row.ResponseCount,
+			}
+		}
 	} else {
-		query = `
-			WITH post_workshop_teams AS (
-				SELECT DISTINCT s.team_id
-				FROM health_check_sessions s
-				INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
-				WHERE ts.user_id = $1 AND s.survey_type = 'post_workshop'
-					AND s.completed = true
-			),
-			effective_sessions AS (
-				SELECT s.id, s.team_id
-				FROM health_check_sessions s
-				INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
-				WHERE ts.user_id = $1 AND s.completed = true
-					AND (
-						s.survey_type = 'post_workshop'
-						OR (s.survey_type = 'individual'
-							AND s.team_id NOT IN (SELECT pw.team_id FROM post_workshop_teams pw))
-					)
-			),
-			team_overall AS (
-				SELECT
-					t.id AS team_id,
-					t.name AS team_name,
-					COUNT(DISTINCT es.id) AS submission_count,
-					AVG(r.score) AS overall_health,
-					CASE WHEN EXISTS (
-						SELECT 1 FROM post_workshop_teams pw WHERE pw.team_id = t.id
-					) THEN 'submitted' ELSE 'pending' END AS post_workshop_status
-				FROM teams t
-				INNER JOIN team_supervisors ts ON t.id = ts.team_id
-				LEFT JOIN effective_sessions es ON t.id = es.team_id
-				LEFT JOIN health_check_responses r ON es.id = r.session_id
-				WHERE ts.user_id = $1
-				GROUP BY t.id, t.name
-			),
-			team_dimensions AS (
-				SELECT
-					es.team_id,
-					r.dimension_id,
-					AVG(r.score) AS avg_score,
-					COUNT(r.dimension_id) AS response_count
-				FROM effective_sessions es
-				INNER JOIN health_check_responses r ON es.id = r.session_id
-				GROUP BY es.team_id, r.dimension_id
-			)
-			SELECT
-				o.team_id,
-				o.team_name,
-				o.submission_count,
-				o.overall_health,
-				o.post_workshop_status,
-				d.dimension_id,
-				d.avg_score,
-				d.response_count
-			FROM team_overall o
-			LEFT JOIN team_dimensions d ON o.team_id = d.team_id
-			ORDER BY o.overall_health ASC NULLS LAST, o.team_name, d.dimension_id
-		`
-		rows, err = r.db.QueryContext(ctx, query, managerID)
+		rows, err := r.queries.FindTeamHealthByManagerAllPeriods(ctx, managerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query team health by manager: %w", err)
+		}
+		teamRows = make([]teamHealthScanRow, len(rows))
+		for i, row := range rows {
+			teamRows[i] = teamHealthScanRow{
+				TeamID: row.TeamID, TeamName: row.TeamName, SubmissionCount: row.SubmissionCount,
+				OverallHealth: row.OverallHealth, PostWorkshopStatus: row.PostWorkshopStatus,
+				DimensionID: row.DimensionID, AvgScore: row.AvgScore, ResponseCount: row.ResponseCount,
+			}
+		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to query team health by manager: %w", err)
-	}
-	defer rows.Close()
 
-	// Group results by team
+	// Group results by team (order is already by overall_health ASC from query)
 	teamsMap := make(map[string]*healthcheck.TeamHealthSummary)
 	teamOrder := []string{}
 
-	for rows.Next() {
-		var teamID, teamName string
-		var submissionCount int
-		var overallHealth sql.NullFloat64
-		var postWorkshopStatus string
-		var dimensionID sql.NullString
-		var avgScore sql.NullFloat64
-		var responseCount sql.NullInt64
-
-		err := rows.Scan(
-			&teamID,
-			&teamName,
-			&submissionCount,
-			&overallHealth,
-			&postWorkshopStatus,
-			&dimensionID,
-			&avgScore,
-			&responseCount,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan team health row: %w", err)
-		}
-
-		// Create or get team summary
-		team, exists := teamsMap[teamID]
+	for _, row := range teamRows {
+		team, exists := teamsMap[row.TeamID]
 		if !exists {
 			health := 0.0
-			if overallHealth.Valid {
-				health = overallHealth.Float64
+			if row.OverallHealth.Valid {
+				health = row.OverallHealth.Float64
 			}
 			team = &healthcheck.TeamHealthSummary{
-				TeamID:             teamID,
-				TeamName:           teamName,
-				SubmissionCount:    submissionCount,
+				TeamID:             row.TeamID,
+				TeamName:           row.TeamName,
+				SubmissionCount:    int(row.SubmissionCount),
 				OverallHealth:      health,
 				Dimensions:         []healthcheck.DimensionSummary{},
-				PostWorkshopStatus: postWorkshopStatus,
+				PostWorkshopStatus: row.PostWorkshopStatus,
 			}
-			teamsMap[teamID] = team
-			teamOrder = append(teamOrder, teamID)
+			teamsMap[row.TeamID] = team
+			teamOrder = append(teamOrder, row.TeamID)
 		}
 
-		// Add dimension summary if exists
-		if dimensionID.Valid && avgScore.Valid {
+		if row.DimensionID.Valid && row.AvgScore.Valid {
 			team.Dimensions = append(team.Dimensions, healthcheck.DimensionSummary{
-				DimensionID:   dimensionID.String,
-				AvgScore:      avgScore.Float64,
-				ResponseCount: int(responseCount.Int64),
+				DimensionID:   row.DimensionID.String,
+				AvgScore:      row.AvgScore.Float64,
+				ResponseCount: int(row.ResponseCount.Int64),
 			})
 		}
 	}
 
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	// Convert map to ordered slice (order is already by overall_health ASC from query)
 	teams := make([]healthcheck.TeamHealthSummary, 0, len(teamOrder))
 	for _, id := range teamOrder {
 		teams = append(teams, *teamsMap[id])
@@ -390,100 +248,35 @@ func (r *HealthCheckRepository) FindTeamHealthByManager(ctx context.Context, man
 // FindAggregatedDimensionsByManager retrieves aggregated dimension data across all teams under a manager.
 // Prefers post-workshop sessions when available for a team+period, otherwise falls back to individual sessions.
 func (r *HealthCheckRepository) FindAggregatedDimensionsByManager(ctx context.Context, managerID string, assessmentPeriod string) ([]healthcheck.DimensionSummary, error) {
-	var query string
-	var rows *sql.Rows
-	var err error
+	dimensions := []healthcheck.DimensionSummary{}
 
 	if assessmentPeriod != "" {
-		query = `
-			WITH post_workshop_teams AS (
-				SELECT DISTINCT s.team_id
-				FROM health_check_sessions s
-				INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
-				WHERE ts.user_id = $1 AND s.survey_type = 'post_workshop'
-					AND s.completed = true AND s.assessment_period = $2
-			),
-			effective_sessions AS (
-				SELECT s.id
-				FROM health_check_sessions s
-				INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
-				WHERE ts.user_id = $1 AND s.completed = true AND s.assessment_period = $2
-					AND (
-						s.survey_type = 'post_workshop'
-						OR (s.survey_type = 'individual'
-							AND s.team_id NOT IN (SELECT pw.team_id FROM post_workshop_teams pw))
-					)
-			)
-			SELECT
-				r.dimension_id,
-				AVG(r.score) AS avg_score,
-				COUNT(r.dimension_id) AS response_count
-			FROM effective_sessions es
-			INNER JOIN health_check_responses r ON es.id = r.session_id
-			GROUP BY r.dimension_id
-			ORDER BY r.dimension_id
-		`
-		rows, err = r.db.QueryContext(ctx, query, managerID, assessmentPeriod)
-	} else {
-		query = `
-			WITH post_workshop_teams AS (
-				SELECT DISTINCT s.team_id
-				FROM health_check_sessions s
-				INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
-				WHERE ts.user_id = $1 AND s.survey_type = 'post_workshop'
-					AND s.completed = true
-			),
-			effective_sessions AS (
-				SELECT s.id
-				FROM health_check_sessions s
-				INNER JOIN team_supervisors ts ON s.team_id = ts.team_id
-				WHERE ts.user_id = $1 AND s.completed = true
-					AND (
-						s.survey_type = 'post_workshop'
-						OR (s.survey_type = 'individual'
-							AND s.team_id NOT IN (SELECT pw.team_id FROM post_workshop_teams pw))
-					)
-			)
-			SELECT
-				r.dimension_id,
-				AVG(r.score) AS avg_score,
-				COUNT(r.dimension_id) AS response_count
-			FROM effective_sessions es
-			INNER JOIN health_check_responses r ON es.id = r.session_id
-			GROUP BY r.dimension_id
-			ORDER BY r.dimension_id
-		`
-		rows, err = r.db.QueryContext(ctx, query, managerID)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to query aggregated dimensions by manager: %w", err)
-	}
-	defer rows.Close()
-
-	var dimensions []healthcheck.DimensionSummary
-
-	for rows.Next() {
-		var dimension healthcheck.DimensionSummary
-
-		err := rows.Scan(
-			&dimension.DimensionID,
-			&dimension.AvgScore,
-			&dimension.ResponseCount,
-		)
+		rows, err := r.queries.FindAggregatedDimensionsByManagerWithPeriod(ctx, sqlcgen.FindAggregatedDimensionsByManagerWithPeriodParams{
+			ManagerID:        managerID,
+			AssessmentPeriod: sql.NullString{String: assessmentPeriod, Valid: true},
+		})
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan dimension summary: %w", err)
+			return nil, fmt.Errorf("failed to query aggregated dimensions by manager: %w", err)
 		}
-
-		dimensions = append(dimensions, dimension)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	// Return empty slice instead of nil
-	if dimensions == nil {
-		dimensions = []healthcheck.DimensionSummary{}
+		for _, row := range rows {
+			dimensions = append(dimensions, healthcheck.DimensionSummary{
+				DimensionID:   row.DimensionID,
+				AvgScore:      row.AvgScore,
+				ResponseCount: int(row.ResponseCount),
+			})
+		}
+	} else {
+		rows, err := r.queries.FindAggregatedDimensionsByManagerAllPeriods(ctx, managerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query aggregated dimensions by manager: %w", err)
+		}
+		for _, row := range rows {
+			dimensions = append(dimensions, healthcheck.DimensionSummary{
+				DimensionID:   row.DimensionID,
+				AvgScore:      row.AvgScore,
+				ResponseCount: int(row.ResponseCount),
+			})
+		}
 	}
 
 	return dimensions, nil
@@ -491,31 +284,16 @@ func (r *HealthCheckRepository) FindAggregatedDimensionsByManager(ctx context.Co
 
 // GetTeamSubmissionStatus returns submission status for a team in a given assessment period
 func (r *HealthCheckRepository) GetTeamSubmissionStatus(ctx context.Context, teamID string, assessmentPeriod string) (*healthcheck.TeamSubmissionStatus, error) {
-	query := `
-		SELECT
-			COUNT(DISTINCT tm.user_id) AS total_members,
-			COUNT(DISTINCT CASE WHEN hcs.completed = true THEN hcs.user_id END) AS submitted_members,
-			EXISTS(
-				SELECT 1 FROM health_check_sessions
-				WHERE team_id = $1 AND assessment_period = $2
-					AND survey_type = 'post_workshop' AND completed = true
-			) AS post_workshop_exists
-		FROM team_members tm
-		LEFT JOIN health_check_sessions hcs ON tm.user_id = hcs.user_id AND tm.team_id = hcs.team_id
-			AND hcs.assessment_period = $2 AND hcs.survey_type = 'individual'
-		WHERE tm.team_id = $1 AND tm.is_active
-	`
-
-	var totalMembers, submittedMembers int
-	var postWorkshopExists bool
-
-	err := r.db.QueryRowContext(ctx, query, teamID, assessmentPeriod).Scan(
-		&totalMembers, &submittedMembers, &postWorkshopExists,
-	)
+	row, err := r.queries.GetTeamSubmissionStatus(ctx, sqlcgen.GetTeamSubmissionStatusParams{
+		TeamID:           teamID,
+		AssessmentPeriod: sql.NullString{String: assessmentPeriod, Valid: true},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query team submission status: %w", err)
 	}
 
+	totalMembers := int(row.TotalMembers)
+	submittedMembers := int(row.SubmittedMembers)
 	allSubmitted := totalMembers > 0 && submittedMembers >= totalMembers
 
 	return &healthcheck.TeamSubmissionStatus{
@@ -524,7 +302,7 @@ func (r *HealthCheckRepository) GetTeamSubmissionStatus(ctx context.Context, tea
 		TotalMembers:       totalMembers,
 		SubmittedMembers:   submittedMembers,
 		AllSubmitted:       allSubmitted,
-		PostWorkshopExists: postWorkshopExists,
+		PostWorkshopExists: row.PostWorkshopExists,
 	}, nil
 }
 
@@ -540,45 +318,31 @@ func (r *HealthCheckRepository) GetTeamSubmissionStatus(ctx context.Context, tea
 // healthcheck.NextEligiblePeriodAfter are evaluated against -- eligibility is never inferred
 // from submission dates.
 func (r *HealthCheckRepository) FindSubmittedPeriods(ctx context.Context, query healthcheck.LatestSubmissionQuery) ([]string, error) {
-	var scopeColumn, scopeValue string
+	var rows []sql.NullString
+	var err error
 	if query.SurveyType == healthcheck.SurveyTypePostWorkshop {
-		scopeColumn, scopeValue = "team_id", query.TeamID
+		rows, err = r.queries.FindSubmittedPeriodsByTeam(ctx, sqlcgen.FindSubmittedPeriodsByTeamParams{TeamID: query.TeamID, SurveyType: query.SurveyType})
 	} else {
-		scopeColumn, scopeValue = "user_id", query.UserID
+		rows, err = r.queries.FindSubmittedPeriodsByUser(ctx, sqlcgen.FindSubmittedPeriodsByUserParams{UserID: query.UserID, SurveyType: query.SurveyType})
 	}
-
-	rows, err := r.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT assessment_period
-		FROM health_check_sessions
-		WHERE %s = $1 AND survey_type = $2 AND completed = true
-		  AND assessment_period IS NOT NULL AND assessment_period <> ''
-	`, scopeColumn), scopeValue, query.SurveyType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query submitted periods: %w", err)
 	}
-	defer rows.Close()
 
 	var periods []string
-	for rows.Next() {
-		var period string
-		if err := rows.Scan(&period); err != nil {
-			return nil, fmt.Errorf("failed to scan submitted period: %w", err)
+	for _, row := range rows {
+		if row.Valid {
+			periods = append(periods, row.String)
 		}
-		periods = append(periods, period)
 	}
-	return periods, rows.Err()
+	return periods, nil
 }
 
 // Delete removes a session and its responses (cascade handled by DB)
 func (r *HealthCheckRepository) Delete(ctx context.Context, id string) error {
-	result, err := r.db.ExecContext(ctx, "DELETE FROM health_check_sessions WHERE id = $1", id)
+	rowsAffected, err := r.queries.DeleteHealthCheckSession(ctx, id)
 	if err != nil {
 		return fmt.Errorf("failed to delete session: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
 
 	if rowsAffected == 0 {
@@ -599,26 +363,14 @@ func (r *HealthCheckRepository) Delete(ctx context.Context, id string) error {
 // concept of month/quarter order across those formats (e.g. "H1" < "Mar" <
 // "Q1" alphabetically, unrelated to actual chronological order).
 func (r *HealthCheckRepository) FindDistinctAssessmentPeriods(ctx context.Context) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT DISTINCT assessment_period FROM health_check_sessions
-		WHERE assessment_period IS NOT NULL AND assessment_period != '' AND completed = true
-	`)
+	rows, err := r.queries.FindDistinctAssessmentPeriods(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query assessment periods: %w", err)
 	}
-	defer rows.Close()
 
-	var periods []string
-	for rows.Next() {
-		var period string
-		if err := rows.Scan(&period); err != nil {
-			return nil, fmt.Errorf("failed to scan assessment period: %w", err)
-		}
-		periods = append(periods, period)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating assessment periods: %w", err)
+	periods := make([]string, 0, len(rows))
+	for _, period := range rows {
+		periods = append(periods, period.String)
 	}
 
 	// Only half-year periods ("YYYY H1"/"YYYY H2", or the older
@@ -630,95 +382,140 @@ func (r *HealthCheckRepository) FindDistinctAssessmentPeriods(ctx context.Contex
 	return healthcheck.SelectableAssessmentPeriods(periods), nil
 }
 
-// scanSessions is a helper function to scan query results into sessions
-func (r *HealthCheckRepository) scanSessions(ctx context.Context, query string, args ...interface{}) ([]*healthcheck.HealthCheckSession, error) {
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query failed: %w", err)
-	}
-	defer rows.Close()
+// Helper types and functions
 
+// sessionScanRow is the common shape shared by every FindSessionRowsBy*Row
+// generated type - sqlc generates a distinct struct per query even though
+// FindSessionRowsByID/ByTeamID/ByUserID/ByAssessmentPeriod share one SELECT list.
+type sessionScanRow struct {
+	SessionID        string
+	TeamID           string
+	UserID           string
+	Date             string
+	AssessmentPeriod sql.NullString
+	SurveyType       string
+	Completed        bool
+	DimensionID      sql.NullString
+	Score            sql.NullInt16
+	Trend            sql.NullString
+	Comment          sql.NullString
+}
+
+func sessionScanRowsFromByID(rows []sqlcgen.FindSessionRowsByIDRow) []sessionScanRow {
+	out := make([]sessionScanRow, len(rows))
+	for i, row := range rows {
+		out[i] = sessionScanRow{
+			SessionID: row.ID, TeamID: row.TeamID, UserID: row.UserID, Date: row.Date,
+			AssessmentPeriod: row.AssessmentPeriod, SurveyType: row.SurveyType, Completed: row.Completed.Bool, // NULL reads as false
+			DimensionID: row.DimensionID, Score: row.Score, Trend: row.Trend, Comment: row.Comment,
+		}
+	}
+	return out
+}
+
+func sessionScanRowsFromByTeamID(rows []sqlcgen.FindSessionRowsByTeamIDRow) []sessionScanRow {
+	out := make([]sessionScanRow, len(rows))
+	for i, row := range rows {
+		out[i] = sessionScanRow{
+			SessionID: row.ID, TeamID: row.TeamID, UserID: row.UserID, Date: row.Date,
+			AssessmentPeriod: row.AssessmentPeriod, SurveyType: row.SurveyType, Completed: row.Completed.Bool, // NULL reads as false
+			DimensionID: row.DimensionID, Score: row.Score, Trend: row.Trend, Comment: row.Comment,
+		}
+	}
+	return out
+}
+
+func sessionScanRowsFromByUserID(rows []sqlcgen.FindSessionRowsByUserIDRow) []sessionScanRow {
+	out := make([]sessionScanRow, len(rows))
+	for i, row := range rows {
+		out[i] = sessionScanRow{
+			SessionID: row.ID, TeamID: row.TeamID, UserID: row.UserID, Date: row.Date,
+			AssessmentPeriod: row.AssessmentPeriod, SurveyType: row.SurveyType, Completed: row.Completed.Bool, // NULL reads as false
+			DimensionID: row.DimensionID, Score: row.Score, Trend: row.Trend, Comment: row.Comment,
+		}
+	}
+	return out
+}
+
+func sessionScanRowsFromByAssessmentPeriod(rows []sqlcgen.FindSessionRowsByAssessmentPeriodRow) []sessionScanRow {
+	out := make([]sessionScanRow, len(rows))
+	for i, row := range rows {
+		out[i] = sessionScanRow{
+			SessionID: row.ID, TeamID: row.TeamID, UserID: row.UserID, Date: row.Date,
+			AssessmentPeriod: row.AssessmentPeriod, SurveyType: row.SurveyType, Completed: row.Completed.Bool, // NULL reads as false
+			DimensionID: row.DimensionID, Score: row.Score, Trend: row.Trend, Comment: row.Comment,
+		}
+	}
+	return out
+}
+
+// buildSessions groups flat (session, response) rows produced by a LEFT JOIN
+// into HealthCheckSession aggregates with their Responses populated -
+// mirrors the original scanSessions helper's grouping logic.
+func buildSessions(rows []sessionScanRow) []*healthcheck.HealthCheckSession {
 	sessionsMap := make(map[string]*healthcheck.HealthCheckSession)
 	sessionOrder := []string{}
 
-	for rows.Next() {
-		var (
-			sessionID        string
-			teamID           string
-			userID           string
-			date             string
-			assessmentPeriod sql.NullString
-			surveyType       sql.NullString
-			completed        bool
-			dimensionID      sql.NullString
-			score            sql.NullInt64
-			trend            sql.NullString
-			comment          sql.NullString
-		)
-
-		err := rows.Scan(
-			&sessionID, &teamID, &userID, &date, &assessmentPeriod, &surveyType, &completed,
-			&dimensionID, &score, &trend, &comment,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		// Create or get session
-		session, exists := sessionsMap[sessionID]
+	for _, row := range rows {
+		session, exists := sessionsMap[row.SessionID]
 		if !exists {
-			st := healthcheck.SurveyTypeIndividual
-			if surveyType.Valid && surveyType.String != "" {
-				st = surveyType.String
+			st := row.SurveyType
+			if st == "" {
+				st = healthcheck.SurveyTypeIndividual
 			}
 			session = &healthcheck.HealthCheckSession{
-				ID:               sessionID,
-				TeamID:           teamID,
-				UserID:           userID,
-				Date:             date,
-				AssessmentPeriod: assessmentPeriod.String,
+				ID:               row.SessionID,
+				TeamID:           row.TeamID,
+				UserID:           row.UserID,
+				Date:             row.Date,
+				AssessmentPeriod: row.AssessmentPeriod.String,
 				SurveyType:       st,
-				Completed:        completed,
+				Completed:        row.Completed,
 				Responses:        []healthcheck.HealthCheckResponse{},
 			}
-			sessionsMap[sessionID] = session
-			sessionOrder = append(sessionOrder, sessionID)
+			sessionsMap[row.SessionID] = session
+			sessionOrder = append(sessionOrder, row.SessionID)
 		}
 
-		// Add response if exists
-		if dimensionID.Valid {
+		if row.DimensionID.Valid {
 			session.Responses = append(session.Responses, healthcheck.HealthCheckResponse{
-				DimensionID: dimensionID.String,
-				Score:       int(score.Int64),
-				Trend:       trend.String,
-				Comment:     comment.String,
+				DimensionID: row.DimensionID.String,
+				Score:       int(row.Score.Int16),
+				Trend:       row.Trend.String,
+				Comment:     row.Comment.String,
 			})
 		}
 	}
 
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	// Convert map to ordered slice
 	sessions := make([]*healthcheck.HealthCheckSession, 0, len(sessionOrder))
 	for _, id := range sessionOrder {
 		sessions = append(sessions, sessionsMap[id])
 	}
 
-	return sessions, nil
+	return sessions
 }
 
-// IsTeamHealthCheckEnabled implements healthcheck.ParticipationChecker. A NULL flag is
-// treated as enabled, matching team_repository's read of the column.
+// teamHealthScanRow is the common shape shared by both
+// FindTeamHealthByManagerWithPeriodRow and FindTeamHealthByManagerAllPeriodsRow.
+type teamHealthScanRow struct {
+	TeamID             string
+	TeamName           string
+	SubmissionCount    int64
+	OverallHealth      sql.NullFloat64
+	PostWorkshopStatus string
+	DimensionID        sql.NullString
+	AvgScore           sql.NullFloat64
+	ResponseCount      sql.NullInt64
+}
+
+// IsTeamHealthCheckEnabled implements healthcheck.ParticipationChecker.
 func (r *HealthCheckRepository) IsTeamHealthCheckEnabled(ctx context.Context, teamID string) (bool, bool, error) {
-	var enabled sql.NullBool
-	err := r.db.QueryRowContext(ctx, `SELECT health_check_enabled FROM teams WHERE id = $1`, teamID).Scan(&enabled)
+	enabled, err := r.queries.GetTeamHealthCheckEnabled(ctx, teamID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, false, nil
 	}
 	if err != nil {
 		return false, false, fmt.Errorf("failed to read team participation: %w", err)
 	}
-	return !enabled.Valid || enabled.Bool, true, nil
+	return enabled, true, nil
 }

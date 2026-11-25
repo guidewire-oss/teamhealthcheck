@@ -8,49 +8,59 @@ import (
 	"time"
 
 	"github.com/agopalakrishnan/teams360/backend/domain/user"
+	"github.com/agopalakrishnan/teams360/backend/infrastructure/persistence/postgres/sqlcgen"
 	"github.com/agopalakrishnan/teams360/backend/pkg/logger"
-	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // UserRepository implements the user.Repository interface
 type UserRepository struct {
-	db *sql.DB
+	db      *sql.DB
+	queries *sqlcgen.Queries
 }
 
 // NewUserRepository creates a new repository instance
 func NewUserRepository(db *sql.DB) user.Repository {
-	return &UserRepository{db: db}
+	return &UserRepository{db: db, queries: sqlcgen.New(db)}
+}
+
+// buildUserFromRow maps the scalar columns shared by every user-select query
+// (each sqlc query produces its own distinct row type even when structurally
+// identical, so this takes plain scalars rather than a shared row struct).
+func buildUserFromRow(id, username, fullName, email, hierarchyLevelID string, reportsTo sql.NullString, passwordHash, authType string, createdAt, updatedAt sql.NullTime, isActive bool, deactivatedAt sql.NullTime) *user.User {
+	u := &user.User{
+		ID:               id,
+		Username:         username,
+		Name:             fullName,
+		Email:            email,
+		HierarchyLevelID: hierarchyLevelID,
+		PasswordHash:     passwordHash,
+		IsActive:         isActive,
+	}
+
+	if reportsTo.Valid {
+		u.ReportsTo = &reportsTo.String
+	}
+	if authType != "" {
+		u.AuthType = user.AuthType(authType)
+	} else {
+		u.AuthType = user.AuthTypeLocal
+	}
+	if createdAt.Valid {
+		u.CreatedAt = createdAt.Time
+	}
+	if updatedAt.Valid {
+		u.UpdatedAt = updatedAt.Time
+	}
+	applyDeactivation(u, deactivatedAt)
+	u.IsAdmin = u.Username == "admin"
+
+	return u
 }
 
 // FindByID retrieves a user by ID
 func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, error) {
-	var u user.User
-	var email, hierarchyLevelID, reportsTo sql.NullString
-	var createdAt, updatedAt sql.NullTime
-	var passwordHash, authType sql.NullString
-	var deactivatedAt sql.NullTime
-
-	err := r.db.QueryRowContext(ctx, `
-		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
-		FROM users
-		WHERE id = $1
-	`, id).Scan(
-		&u.ID,
-		&u.Username,
-		&u.Name,
-		&email,
-		&hierarchyLevelID,
-		&reportsTo,
-		&passwordHash,
-		&authType,
-		&createdAt,
-		&updatedAt,
-		&u.IsActive,
-		&deactivatedAt,
-	)
-
+	row, err := r.queries.FindUserByID(ctx, id)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("user not found with provided ID")
 	}
@@ -58,78 +68,20 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*user.User, e
 		return nil, fmt.Errorf("failed to find user: %w", err)
 	}
 
-	// Handle NULL fields
-	if email.Valid {
-		u.Email = email.String
-	}
-	if hierarchyLevelID.Valid {
-		u.HierarchyLevelID = hierarchyLevelID.String
-	}
-	if reportsTo.Valid {
-		u.ReportsTo = &reportsTo.String
-	}
-	if passwordHash.Valid {
-		u.PasswordHash = passwordHash.String
-	}
-	if authType.Valid {
-		u.AuthType = user.AuthType(authType.String)
-	}
-	if u.AuthType == "" {
-		u.AuthType = user.AuthTypeLocal
-	}
-	if createdAt.Valid {
-		u.CreatedAt = createdAt.Time
-	}
-	if updatedAt.Valid {
-		u.UpdatedAt = updatedAt.Time
-	}
+	u := buildUserFromRow(row.ID, row.Username, row.FullName, row.Email, row.HierarchyLevelID, row.ReportsTo, row.PasswordHash, row.AuthType, row.CreatedAt, row.UpdatedAt, row.IsActive, row.DeactivatedAt)
 
-	if deactivatedAt.Valid {
-		t := deactivatedAt.Time
-		u.DeactivatedAt = &t
-	}
-
-	// Fetch team IDs
 	teamIDs, err := r.fetchTeamIDs(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	u.TeamIDs = teamIDs
 
-	// Check if user is admin (username = 'admin')
-	u.IsAdmin = u.Username == "admin"
-
-	return &u, nil
+	return u, nil
 }
 
 // FindByUsername retrieves a user by username (used for authentication)
 func (r *UserRepository) FindByUsername(ctx context.Context, username string) (*user.User, error) {
-	var u user.User
-	var email, hierarchyLevelID, reportsTo sql.NullString
-	var createdAt, updatedAt sql.NullTime
-	var passwordHash, authType sql.NullString
-	var deactivatedAt sql.NullTime
-
-	err := r.db.QueryRowContext(ctx, `
-		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
-		FROM users
-		WHERE username = $1 AND is_active
-	`, username).Scan(
-		&u.ID,
-		&u.Username,
-		&u.Name,
-		&email,
-		&hierarchyLevelID,
-		&reportsTo,
-		&passwordHash,
-		&authType,
-		&createdAt,
-		&updatedAt,
-		&u.IsActive,
-		&deactivatedAt,
-	)
-
+	row, err := r.queries.FindUserByUsername(ctx, username)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("user not found with provided username")
 	}
@@ -137,75 +89,20 @@ func (r *UserRepository) FindByUsername(ctx context.Context, username string) (*
 		return nil, fmt.Errorf("failed to find user: %w", err)
 	}
 
-	// Handle NULL fields
-	if email.Valid {
-		u.Email = email.String
-	}
-	if hierarchyLevelID.Valid {
-		u.HierarchyLevelID = hierarchyLevelID.String
-	}
-	if reportsTo.Valid {
-		u.ReportsTo = &reportsTo.String
-	}
-	if passwordHash.Valid {
-		u.PasswordHash = passwordHash.String
-	}
-	if authType.Valid {
-		u.AuthType = user.AuthType(authType.String)
-	}
-	if u.AuthType == "" {
-		u.AuthType = user.AuthTypeLocal
-	}
-	if createdAt.Valid {
-		u.CreatedAt = createdAt.Time
-	}
-	if updatedAt.Valid {
-		u.UpdatedAt = updatedAt.Time
-	}
+	u := buildUserFromRow(row.ID, row.Username, row.FullName, row.Email, row.HierarchyLevelID, row.ReportsTo, row.PasswordHash, row.AuthType, row.CreatedAt, row.UpdatedAt, row.IsActive, row.DeactivatedAt)
 
-	applyDeactivation(&u, deactivatedAt)
-
-	// Fetch team IDs
 	teamIDs, err := r.fetchTeamIDs(ctx, u.ID)
 	if err != nil {
 		return nil, err
 	}
 	u.TeamIDs = teamIDs
 
-	// Check if user is admin
-	u.IsAdmin = u.Username == "admin"
-
-	return &u, nil
+	return u, nil
 }
 
 // FindByEmail retrieves a user by email
 func (r *UserRepository) FindByEmail(ctx context.Context, emailParam string) (*user.User, error) {
-	var u user.User
-	var emailVal, hierarchyLevelID, reportsTo sql.NullString
-	var createdAt, updatedAt sql.NullTime
-	var passwordHash, authType sql.NullString
-	var deactivatedAt sql.NullTime
-
-	err := r.db.QueryRowContext(ctx, `
-		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
-		FROM users
-		WHERE email = $1 AND is_active
-	`, emailParam).Scan(
-		&u.ID,
-		&u.Username,
-		&u.Name,
-		&emailVal,
-		&hierarchyLevelID,
-		&reportsTo,
-		&passwordHash,
-		&authType,
-		&createdAt,
-		&updatedAt,
-		&u.IsActive,
-		&deactivatedAt,
-	)
-
+	row, err := r.queries.FindUserByEmail(ctx, emailParam)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("user not found with provided email")
 	}
@@ -213,163 +110,64 @@ func (r *UserRepository) FindByEmail(ctx context.Context, emailParam string) (*u
 		return nil, fmt.Errorf("failed to find user: %w", err)
 	}
 
-	// Handle NULL fields
-	if emailVal.Valid {
-		u.Email = emailVal.String
-	}
-	if hierarchyLevelID.Valid {
-		u.HierarchyLevelID = hierarchyLevelID.String
-	}
-	if reportsTo.Valid {
-		u.ReportsTo = &reportsTo.String
-	}
-	if passwordHash.Valid {
-		u.PasswordHash = passwordHash.String
-	}
-	if authType.Valid {
-		u.AuthType = user.AuthType(authType.String)
-	}
-	if u.AuthType == "" {
-		u.AuthType = user.AuthTypeLocal
-	}
-	if createdAt.Valid {
-		u.CreatedAt = createdAt.Time
-	}
-	if updatedAt.Valid {
-		u.UpdatedAt = updatedAt.Time
-	}
+	u := buildUserFromRow(row.ID, row.Username, row.FullName, row.Email, row.HierarchyLevelID, row.ReportsTo, row.PasswordHash, row.AuthType, row.CreatedAt, row.UpdatedAt, row.IsActive, row.DeactivatedAt)
 
-	applyDeactivation(&u, deactivatedAt)
-
-	// Fetch team IDs
 	teamIDs, err := r.fetchTeamIDs(ctx, u.ID)
 	if err != nil {
 		return nil, err
 	}
 	u.TeamIDs = teamIDs
 
-	// Check if user is admin
-	u.IsAdmin = u.Username == "admin"
-
-	return &u, nil
+	return u, nil
 }
 
 // FindAll retrieves all users
 func (r *UserRepository) FindAll(ctx context.Context) ([]*user.User, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
-		FROM users
-		ORDER BY username
-	`)
+	rows, err := r.queries.FindAllUsers(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query users: %w", err)
 	}
-	defer rows.Close()
 
 	var users []*user.User
-
-	for rows.Next() {
-		var u user.User
-		var email, hierarchyLevelID, reportsTo sql.NullString
-		var createdAt, updatedAt sql.NullTime
-		var passwordHash, authType sql.NullString
-		var deactivatedAt sql.NullTime
-
-		err := rows.Scan(
-			&u.ID,
-			&u.Username,
-			&u.Name,
-			&email,
-			&hierarchyLevelID,
-			&reportsTo,
-			&passwordHash,
-			&authType,
-			&createdAt,
-			&updatedAt,
-			&u.IsActive,
-			&deactivatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan user: %w", err)
-		}
-
-		// Handle NULL fields
-		if email.Valid {
-			u.Email = email.String
-		}
-		if hierarchyLevelID.Valid {
-			u.HierarchyLevelID = hierarchyLevelID.String
-		}
-		if reportsTo.Valid {
-			u.ReportsTo = &reportsTo.String
-		}
-		if passwordHash.Valid {
-			u.PasswordHash = passwordHash.String
-		}
-		if authType.Valid {
-			u.AuthType = user.AuthType(authType.String)
-		}
-		if u.AuthType == "" {
-			u.AuthType = user.AuthTypeLocal
-		}
-		if createdAt.Valid {
-			u.CreatedAt = createdAt.Time
-		}
-		if updatedAt.Valid {
-			u.UpdatedAt = updatedAt.Time
-		}
-
-		applyDeactivation(&u, deactivatedAt)
-
-		// Check if user is admin
-		u.IsAdmin = u.Username == "admin"
-
-		users = append(users, &u)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
+	for _, row := range rows {
+		u := buildUserFromRow(row.ID, row.Username, row.FullName, row.Email, row.HierarchyLevelID, row.ReportsTo, row.PasswordHash, row.AuthType, row.CreatedAt, row.UpdatedAt, row.IsActive, row.DeactivatedAt)
+		users = append(users, u)
 	}
 
 	// Batch-load every user's team memberships in one query instead of one
 	// round trip per user — with thousands of users, a per-user loop here
 	// turns a sub-second query into several seconds.
-	if len(users) > 0 {
-		userIDs := make([]string, len(users))
-		userMap := make(map[string]*user.User, len(users))
-		for i, u := range users {
-			userIDs[i] = u.ID
-			userMap[u.ID] = u
-			u.TeamIDs = []string{}
-		}
-
-		teamRows, err := r.db.QueryContext(ctx, `
-			SELECT user_id, team_id
-			FROM team_members
-			WHERE user_id = ANY($1) AND is_active
-			ORDER BY user_id, team_id
-		`, pq.Array(userIDs))
-		if err != nil {
-			return nil, fmt.Errorf("failed to batch-load team memberships: %w", err)
-		}
-		defer teamRows.Close()
-
-		for teamRows.Next() {
-			var userID, teamID string
-			if err := teamRows.Scan(&userID, &teamID); err != nil {
-				return nil, fmt.Errorf("failed to scan team membership: %w", err)
-			}
-			if u, ok := userMap[userID]; ok {
-				u.TeamIDs = append(u.TeamIDs, teamID)
-			}
-		}
-		if err := teamRows.Err(); err != nil {
-			return nil, fmt.Errorf("team rows error: %w", err)
-		}
+	if err := r.batchLoadTeamIDs(ctx, users); err != nil {
+		return nil, err
 	}
 
 	return users, nil
+}
+
+// batchLoadTeamIDs fetches active team memberships for every given user in one
+// query and populates each user's TeamIDs in place.
+func (r *UserRepository) batchLoadTeamIDs(ctx context.Context, users []*user.User) error {
+	if len(users) == 0 {
+		return nil
+	}
+	userIDs := make([]string, len(users))
+	userMap := make(map[string]*user.User, len(users))
+	for i, u := range users {
+		userIDs[i] = u.ID
+		userMap[u.ID] = u
+		u.TeamIDs = []string{}
+	}
+
+	rows, err := r.queries.FindTeamIDsForUsers(ctx, userIDs)
+	if err != nil {
+		return fmt.Errorf("failed to batch-load team memberships: %w", err)
+	}
+	for _, row := range rows {
+		if u, ok := userMap[row.UserID]; ok {
+			u.TeamIDs = append(u.TeamIDs, row.TeamID)
+		}
+	}
+	return nil
 }
 
 // pageOffset returns the zero-based row offset for a 1-based page, or false
@@ -399,16 +197,11 @@ func (r *UserRepository) FindPage(ctx context.Context, filter user.ListFilter, p
 	// OFFSET (a 500). pageOffset reports overflow instead of wrapping.
 	offset, offsetOK := pageOffset(page, pageSize)
 
-	var total int
-	err := r.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM users
-		WHERE ($1 = '' OR hierarchy_level_id = $1)
-		  AND ($2 = '' OR username ILIKE '%' || $2 || '%'
-		            OR full_name ILIKE '%' || $2 || '%'
-		            OR email ILIKE '%' || $2 || '%')
-		  AND ($3 = '' OR ($3 = 'active' AND is_active) OR ($3 = 'inactive' AND NOT is_active))
-	`, filter.HierarchyLevel, filter.Search, filter.Status).Scan(&total)
+	total, err := r.queries.CountUsersPage(ctx, sqlcgen.CountUsersPageParams{
+		HierarchyLevel: filter.HierarchyLevel,
+		Search:         filter.Search,
+		Status:         filter.Status,
+	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count users: %w", err)
 	}
@@ -417,172 +210,54 @@ func (r *UserRepository) FindPage(ctx context.Context, filter user.ListFilter, p
 	// any real result set: answer with the normal empty page (and the true
 	// total) instead of issuing a query with a bogus offset.
 	if !offsetOK {
-		return []*user.User{}, total, nil
+		return []*user.User{}, int(total), nil
 	}
 
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
-		FROM users
-		WHERE ($1 = '' OR hierarchy_level_id = $1)
-		  AND ($2 = '' OR username ILIKE '%' || $2 || '%'
-		            OR full_name ILIKE '%' || $2 || '%'
-		            OR email ILIKE '%' || $2 || '%')
-		  AND ($5 = '' OR ($5 = 'active' AND is_active) OR ($5 = 'inactive' AND NOT is_active))
-		ORDER BY username
-		LIMIT $3 OFFSET $4
-	`, filter.HierarchyLevel, filter.Search, pageSize, offset, filter.Status)
+	rows, err := r.queries.FindUsersPage(ctx, sqlcgen.FindUsersPageParams{
+		HierarchyLevel: filter.HierarchyLevel,
+		Search:         filter.Search,
+		Status:         filter.Status,
+		PageLimit:      int64(pageSize),
+		PageOffset:     int64(offset),
+	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to query users page: %w", err)
 	}
-	defer rows.Close()
 
-	users, err := r.scanUsersWithoutTeamIDs(rows)
-	if err != nil {
-		return nil, 0, err
+	users := make([]*user.User, 0, len(rows))
+	for _, row := range rows {
+		users = append(users, buildUserFromRow(row.ID, row.Username, row.FullName, row.Email, row.HierarchyLevelID, row.ReportsTo, row.PasswordHash, row.AuthType, row.CreatedAt, row.UpdatedAt, row.IsActive, row.DeactivatedAt))
 	}
 
 	// Batch-load team memberships for just this page's users in a single
 	// query to avoid an N+1 (one fetchTeamIDs call per row).
-	if len(users) > 0 {
-		userIDs := make([]string, len(users))
-		userMap := make(map[string]*user.User, len(users))
-		for i, u := range users {
-			userIDs[i] = u.ID
-			userMap[u.ID] = u
-			u.TeamIDs = []string{}
-		}
-
-		teamRows, err := r.db.QueryContext(ctx, `
-			SELECT user_id, team_id
-			FROM team_members
-			WHERE user_id = ANY($1) AND is_active
-			ORDER BY user_id, team_id
-		`, pq.Array(userIDs))
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to batch-load team memberships: %w", err)
-		}
-		defer teamRows.Close()
-
-		for teamRows.Next() {
-			var userID, teamID string
-			if err := teamRows.Scan(&userID, &teamID); err != nil {
-				return nil, 0, fmt.Errorf("failed to scan team membership: %w", err)
-			}
-			if u, ok := userMap[userID]; ok {
-				u.TeamIDs = append(u.TeamIDs, teamID)
-			}
-		}
-		if err := teamRows.Err(); err != nil {
-			return nil, 0, fmt.Errorf("team rows error: %w", err)
-		}
+	if err := r.batchLoadTeamIDs(ctx, users); err != nil {
+		return nil, 0, err
 	}
 
-	return users, total, nil
+	return users, int(total), nil
 }
 
 // FindAllLite retrieves minimal fields (no team IDs, no password hash use) for
 // every user. Intended for dropdowns/pickers that need the full user set
 // without the cost of the team-membership joins used by the full listing.
 func (r *UserRepository) FindAllLite(ctx context.Context) ([]*user.User, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, username, full_name, hierarchy_level_id
-		FROM users
-		ORDER BY username
-	`)
+	rows, err := r.queries.FindAllUsersLite(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query users (lite): %w", err)
 	}
-	defer rows.Close()
 
-	var users []*user.User
-	for rows.Next() {
-		var u user.User
-		var hierarchyLevelID sql.NullString
-		if err := rows.Scan(&u.ID, &u.Username, &u.Name, &hierarchyLevelID); err != nil {
-			return nil, fmt.Errorf("failed to scan user (lite): %w", err)
-		}
-		if hierarchyLevelID.Valid {
-			u.HierarchyLevelID = hierarchyLevelID.String
+	users := make([]*user.User, 0, len(rows))
+	for _, row := range rows {
+		u := &user.User{
+			ID:               row.ID,
+			Username:         row.Username,
+			Name:             row.FullName,
+			HierarchyLevelID: row.HierarchyLevelID,
+			TeamIDs:          []string{},
 		}
 		u.IsAdmin = u.Username == "admin"
-		u.TeamIDs = []string{}
-		users = append(users, &u)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	return users, nil
-}
-
-// scanUsersWithoutTeamIDs scans query results into users without fetching
-// team IDs per row (caller is responsible for batch-loading TeamIDs).
-func (r *UserRepository) scanUsersWithoutTeamIDs(rows *sql.Rows) ([]*user.User, error) {
-	var users []*user.User
-
-	for rows.Next() {
-		var u user.User
-		var email, hierarchyLevelID, reportsTo sql.NullString
-		var createdAt, updatedAt sql.NullTime
-		var passwordHash, authType sql.NullString
-		var deactivatedAt sql.NullTime
-
-		err := rows.Scan(
-			&u.ID,
-			&u.Username,
-			&u.Name,
-			&email,
-			&hierarchyLevelID,
-			&reportsTo,
-			&passwordHash,
-			&authType,
-			&createdAt,
-			&updatedAt,
-			&u.IsActive,
-			&deactivatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan user: %w", err)
-		}
-
-		if email.Valid {
-			u.Email = email.String
-		}
-		if hierarchyLevelID.Valid {
-			u.HierarchyLevelID = hierarchyLevelID.String
-		}
-		if reportsTo.Valid {
-			u.ReportsTo = &reportsTo.String
-		}
-		if passwordHash.Valid {
-			u.PasswordHash = passwordHash.String
-		}
-		if authType.Valid {
-			u.AuthType = user.AuthType(authType.String)
-		}
-		if u.AuthType == "" {
-			u.AuthType = user.AuthTypeLocal
-		}
-		if createdAt.Valid {
-			u.CreatedAt = createdAt.Time
-		}
-		if updatedAt.Valid {
-			u.UpdatedAt = updatedAt.Time
-		}
-
-		if deactivatedAt.Valid {
-			t := deactivatedAt.Time
-			u.DeactivatedAt = &t
-		}
-
-		u.IsAdmin = u.Username == "admin"
-
-		users = append(users, &u)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
+		users = append(users, u)
 	}
 
 	return users, nil
@@ -590,20 +265,23 @@ func (r *UserRepository) scanUsersWithoutTeamIDs(rows *sql.Rows) ([]*user.User, 
 
 // FindByHierarchyLevel retrieves all users at a specific hierarchy level
 func (r *UserRepository) FindByHierarchyLevel(ctx context.Context, levelID string) ([]*user.User, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
-		FROM users
-		WHERE hierarchy_level_id = $1
-		ORDER BY username
-	`, levelID)
-
+	rows, err := r.queries.FindUsersByHierarchyLevel(ctx, levelID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query users by hierarchy level: %w", err)
 	}
-	defer rows.Close()
 
-	return r.scanUsers(ctx, rows)
+	var users []*user.User
+	for _, row := range rows {
+		u := buildUserFromRow(row.ID, row.Username, row.FullName, row.Email, row.HierarchyLevelID, row.ReportsTo, row.PasswordHash, row.AuthType, row.CreatedAt, row.UpdatedAt, row.IsActive, row.DeactivatedAt)
+		teamIDs, err := r.fetchTeamIDs(ctx, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		u.TeamIDs = teamIDs
+		users = append(users, u)
+	}
+
+	return users, nil
 }
 
 // FindSubordinates recursively finds all users reporting to a given user.
@@ -611,125 +289,32 @@ func (r *UserRepository) FindByHierarchyLevel(ctx context.Context, levelID strin
 // infinite recursion from bad data in reports_to.
 // Team memberships are batch-loaded in a single query to avoid N+1.
 func (r *UserRepository) FindSubordinates(ctx context.Context, supervisorID string) ([]*user.User, error) {
-	// Use recursive CTE with cycle protection and depth limit
-	rows, err := r.db.QueryContext(ctx, `
-		WITH RECURSIVE subordinates AS (
-			-- Base case: direct reports
-			SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-			       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at,
-			       1 AS depth, ARRAY[$1::text, id::text] AS visited
-			FROM users
-			WHERE reports_to = $1
-
-			UNION ALL
-
-			-- Recursive case: reports of reports
-			-- Stops on cycle (visited array) or max depth (20 levels)
-			SELECT u.id, u.username, u.full_name, u.email, u.hierarchy_level_id, u.reports_to,
-			       u.password_hash, u.auth_type, u.created_at, u.updated_at, u.is_active, u.deactivated_at,
-			       s.depth + 1, s.visited || u.id::text
-			FROM users u
-			INNER JOIN subordinates s ON u.reports_to = s.id
-			WHERE s.depth < 20
-			  AND NOT (u.id::text = ANY(s.visited))
-		)
-		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
-		FROM subordinates
-		ORDER BY username
-	`, supervisorID)
-
+	rows, err := r.queries.FindSubordinatesRecursive(ctx, supervisorID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query subordinates: %w", err)
 	}
-	defer rows.Close()
 
-	// Scan users without per-user team queries
 	var users []*user.User
-	for rows.Next() {
-		var u user.User
-		var email, hierarchyLevelID, reportsTo sql.NullString
-		var createdAt, updatedAt sql.NullTime
-		var passwordHash, authType sql.NullString
-		var deactivatedAt sql.NullTime
-
-		err := rows.Scan(
-			&u.ID, &u.Username, &u.Name, &email,
-			&hierarchyLevelID, &reportsTo, &passwordHash,
-			&authType, &createdAt, &updatedAt,
-			&u.IsActive,
-			&deactivatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan user: %w", err)
-		}
-
-		if email.Valid {
-			u.Email = email.String
-		}
-		if hierarchyLevelID.Valid {
-			u.HierarchyLevelID = hierarchyLevelID.String
-		}
-		if reportsTo.Valid {
-			u.ReportsTo = &reportsTo.String
-		}
-		if passwordHash.Valid {
-			u.PasswordHash = passwordHash.String
-		}
-		if authType.Valid {
-			u.AuthType = user.AuthType(authType.String)
-		}
-		if u.AuthType == "" {
-			u.AuthType = user.AuthTypeLocal
-		}
-		if createdAt.Valid {
-			u.CreatedAt = createdAt.Time
-		}
-		if updatedAt.Valid {
-			u.UpdatedAt = updatedAt.Time
-		}
-
-		applyDeactivation(&u, deactivatedAt)
-		u.IsAdmin = u.Username == "admin"
+	userMap := make(map[string]*user.User, len(rows))
+	userIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		u := buildUserFromRow(row.ID, row.Username, row.FullName, row.Email, row.HierarchyLevelID, row.ReportsTo, row.PasswordHash, row.AuthType, row.CreatedAt, row.UpdatedAt, row.IsActive, row.DeactivatedAt)
 		u.TeamIDs = []string{} // populated below in batch
-
-		users = append(users, &u)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
+		users = append(users, u)
+		userMap[u.ID] = u
+		userIDs = append(userIDs, u.ID)
 	}
 
 	// Batch-load team memberships in a single query to avoid N+1
-	if len(users) > 0 {
-		userIDs := make([]string, len(users))
-		userMap := make(map[string]*user.User, len(users))
-		for i, u := range users {
-			userIDs[i] = u.ID
-			userMap[u.ID] = u
-		}
-
-		teamRows, err := r.db.QueryContext(ctx, `
-			SELECT user_id, team_id
-			FROM team_members
-			WHERE user_id = ANY($1) AND is_active
-			ORDER BY user_id, team_id
-		`, pq.Array(userIDs))
+	if len(userIDs) > 0 {
+		teamRows, err := r.queries.FindTeamIDsForUsers(ctx, userIDs)
 		if err != nil {
 			return nil, fmt.Errorf("failed to batch-load team memberships: %w", err)
 		}
-		defer teamRows.Close()
-
-		for teamRows.Next() {
-			var userID, teamID string
-			if err := teamRows.Scan(&userID, &teamID); err != nil {
-				return nil, fmt.Errorf("failed to scan team membership: %w", err)
+		for _, tr := range teamRows {
+			if u, ok := userMap[tr.UserID]; ok {
+				u.TeamIDs = append(u.TeamIDs, tr.TeamID)
 			}
-			if u, ok := userMap[userID]; ok {
-				u.TeamIDs = append(u.TeamIDs, teamID)
-			}
-		}
-		if err := teamRows.Err(); err != nil {
-			return nil, fmt.Errorf("team rows error: %w", err)
 		}
 	}
 
@@ -739,45 +324,29 @@ func (r *UserRepository) FindSubordinates(ctx context.Context, supervisorID stri
 // FindSupervisorChainUp walks UP the reports_to chain from a user, returning
 // supervisors in order: direct manager first, then their manager, etc.
 func (r *UserRepository) FindSupervisorChainUp(ctx context.Context, userID string) ([]*user.User, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		WITH RECURSIVE supervisors AS (
-			-- Base case: direct supervisor of the given user
-			SELECT u.id, u.username, u.full_name, u.email, u.hierarchy_level_id, u.reports_to,
-			       u.password_hash, u.auth_type, u.created_at, u.updated_at, u.is_active, u.deactivated_at,
-			       1 AS depth, ARRAY[$1::text, u.id::text] AS visited
-			FROM users u
-			WHERE u.id = (SELECT reports_to FROM users WHERE id = $1)
-
-			UNION ALL
-
-			-- Recursive case: supervisor's supervisor
-			-- Stops on cycle (visited array) or max depth (20 levels)
-			SELECT u.id, u.username, u.full_name, u.email, u.hierarchy_level_id, u.reports_to,
-			       u.password_hash, u.auth_type, u.created_at, u.updated_at, u.is_active, u.deactivated_at,
-			       s.depth + 1, s.visited || u.id::text
-			FROM users u
-			INNER JOIN supervisors s ON u.id = s.reports_to
-			WHERE s.depth < 20 AND NOT (u.id::text = ANY(s.visited))
-		)
-		SELECT id, username, full_name, email, hierarchy_level_id, reports_to,
-		       password_hash, auth_type, created_at, updated_at, is_active, deactivated_at
-		FROM supervisors
-		ORDER BY depth
-	`, userID)
-
+	rows, err := r.queries.FindSupervisorChainUpRecursive(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query supervisor chain: %w", err)
 	}
-	defer rows.Close()
 
-	return r.scanUsers(ctx, rows)
+	var users []*user.User
+	for _, row := range rows {
+		u := buildUserFromRow(row.ID, row.Username, row.FullName, row.Email, row.HierarchyLevelID, row.ReportsTo, row.PasswordHash, row.AuthType, row.CreatedAt, row.UpdatedAt, row.IsActive, row.DeactivatedAt)
+		teamIDs, err := r.fetchTeamIDs(ctx, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		u.TeamIDs = teamIDs
+		users = append(users, u)
+	}
+
+	return users, nil
 }
 
 // Save persists a new user
 func (r *UserRepository) Save(ctx context.Context, u *user.User) error {
 	log := logger.Get()
 
-	// Begin transaction
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		log.DB("begin_transaction").
@@ -789,36 +358,27 @@ func (r *UserRepository) Save(ctx context.Context, u *user.User) error {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	qtx := r.queries.WithTx(tx)
 
-	// Convert empty strings to NULL for optional fields
-	var email, hierarchyLevelID, reportsTo sql.NullString
-	if u.Email != "" {
-		email = sql.NullString{String: u.Email, Valid: true}
-	}
-	if u.HierarchyLevelID != "" {
-		hierarchyLevelID = sql.NullString{String: u.HierarchyLevelID, Valid: true}
-	}
+	var reportsTo sql.NullString
 	if u.ReportsTo != nil && *u.ReportsTo != "" {
 		reportsTo = sql.NullString{String: *u.ReportsTo, Valid: true}
 	}
 
 	// Hash password if provided; SSO users get an empty string (password_hash is NOT NULL)
-	var passwordHash sql.NullString
+	passwordHash := ""
 	if u.PasswordHash != "" {
 		// If the password hash is already a bcrypt hash (starts with $2a$), use it as-is
 		// Otherwise, hash it
 		if len(u.PasswordHash) > 4 && u.PasswordHash[:4] == "$2a$" {
-			passwordHash = sql.NullString{String: u.PasswordHash, Valid: true}
+			passwordHash = u.PasswordHash
 		} else {
 			hashed, err := bcrypt.GenerateFromPassword([]byte(u.PasswordHash), bcrypt.DefaultCost)
 			if err != nil {
 				return fmt.Errorf("failed to hash password: %w", err)
 			}
-			passwordHash = sql.NullString{String: string(hashed), Valid: true}
+			passwordHash = string(hashed)
 		}
-	} else {
-		// password_hash column is NOT NULL — use empty string for SSO users
-		passwordHash = sql.NullString{String: "", Valid: true}
 	}
 
 	// Set timestamps
@@ -833,12 +393,18 @@ func (r *UserRepository) Save(ctx context.Context, u *user.User) error {
 		u.AuthType = user.AuthTypeLocal
 	}
 
-	// Insert user
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO users (id, username, full_name, email, hierarchy_level_id, reports_to, password_hash, auth_type, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, u.ID, u.Username, u.Name, email, hierarchyLevelID, reportsTo, passwordHash, string(u.AuthType), u.CreatedAt, u.UpdatedAt)
-
+	err = qtx.InsertUser(ctx, sqlcgen.InsertUserParams{
+		ID:               u.ID,
+		Username:         u.Username,
+		FullName:         u.Name,
+		Email:            u.Email,
+		HierarchyLevelID: u.HierarchyLevelID,
+		ReportsTo:        reportsTo,
+		PasswordHash:     passwordHash,
+		AuthType:         string(u.AuthType),
+		CreatedAt:        sql.NullTime{Time: u.CreatedAt, Valid: true},
+		UpdatedAt:        sql.NullTime{Time: u.UpdatedAt, Valid: true},
+	})
 	if err != nil {
 		log.DB("insert").
 			Table("users").
@@ -851,16 +417,11 @@ func (r *UserRepository) Save(ctx context.Context, u *user.User) error {
 
 	// Insert team memberships
 	for _, teamID := range u.TeamIDs {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO team_members (team_id, user_id)
-			VALUES ($1, $2)
-		`, teamID, u.ID)
-		if err != nil {
+		if err := qtx.InsertTeamMember(ctx, sqlcgen.InsertTeamMemberParams{TeamID: teamID, UserID: u.ID}); err != nil {
 			return fmt.Errorf("failed to save team membership: %w", err)
 		}
 	}
 
-	// Commit transaction
 	if err = tx.Commit(); err != nil {
 		log.DB("commit_transaction").
 			Table("users").
@@ -878,7 +439,6 @@ func (r *UserRepository) Save(ctx context.Context, u *user.User) error {
 func (r *UserRepository) Update(ctx context.Context, u *user.User) error {
 	log := logger.Get()
 
-	// Begin transaction
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		log.DB("begin_transaction").
@@ -890,35 +450,26 @@ func (r *UserRepository) Update(ctx context.Context, u *user.User) error {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	qtx := r.queries.WithTx(tx)
 
-	// Convert empty strings to NULL for optional fields
-	var email, hierarchyLevelID, reportsTo sql.NullString
-	if u.Email != "" {
-		email = sql.NullString{String: u.Email, Valid: true}
-	}
-	if u.HierarchyLevelID != "" {
-		hierarchyLevelID = sql.NullString{String: u.HierarchyLevelID, Valid: true}
-	}
+	var reportsTo sql.NullString
 	if u.ReportsTo != nil && *u.ReportsTo != "" {
 		reportsTo = sql.NullString{String: *u.ReportsTo, Valid: true}
 	}
 
-	// Update timestamp
 	u.UpdatedAt = time.Now()
 
 	// Update user (don't update password_hash here - use separate method)
-	result, err := tx.ExecContext(ctx, `
-		UPDATE users SET
-			username = $1,
-			full_name = $2,
-			email = $3,
-			hierarchy_level_id = $4,
-			reports_to = $5,
-			auth_type = COALESCE(NULLIF($6, ''), auth_type),
-			updated_at = $7
-		WHERE id = $8
-	`, u.Username, u.Name, email, hierarchyLevelID, reportsTo, string(u.AuthType), u.UpdatedAt, u.ID)
-
+	rowsAffected, err := qtx.UpdateUser(ctx, sqlcgen.UpdateUserParams{
+		Username:         u.Username,
+		FullName:         u.Name,
+		Email:            u.Email,
+		HierarchyLevelID: u.HierarchyLevelID,
+		ReportsTo:        reportsTo,
+		AuthType:         string(u.AuthType),
+		UpdatedAt:        sql.NullTime{Time: u.UpdatedAt, Valid: true},
+		ID:               u.ID,
+	})
 	if err != nil {
 		log.DB("update").
 			Table("users").
@@ -927,11 +478,6 @@ func (r *UserRepository) Update(ctx context.Context, u *user.User) error {
 			Error(err).
 			Failure()
 		return fmt.Errorf("failed to update user: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
 		log.DB("update").
@@ -942,34 +488,19 @@ func (r *UserRepository) Update(ctx context.Context, u *user.User) error {
 		return fmt.Errorf("user not found for update")
 	}
 
-	// Update team memberships
-	// Delete existing memberships
 	// Reconcile memberships without destroying history: a team the person was
 	// taken out of becomes an inactive membership (kept), and a team they are
 	// put back into is reactivated. Rewriting the whole set (delete, re-insert)
 	// would erase inactive history and could resurrect an old membership.
-	if _, err = tx.ExecContext(ctx, `
-		UPDATE team_members
-		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
-		WHERE user_id = $1 AND is_active AND team_id <> ALL($2)
-	`, u.ID, pq.Array(u.TeamIDs)); err != nil {
+	if err := qtx.DeactivateTeamMembershipsNotIn(ctx, sqlcgen.DeactivateTeamMembershipsNotInParams{UserID: u.ID, TeamIds: u.TeamIDs}); err != nil {
 		return fmt.Errorf("failed to end team memberships: %w", err)
 	}
-
 	for _, teamID := range u.TeamIDs {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO team_members (team_id, user_id)
-			VALUES ($1, $2)
-			ON CONFLICT (team_id, user_id) DO UPDATE
-				SET is_active = true, deactivated_at = NULL
-				WHERE team_members.is_active = false
-		`, teamID, u.ID)
-		if err != nil {
+		if err := qtx.AddTeamMember(ctx, sqlcgen.AddTeamMemberParams{TeamID: teamID, UserID: u.ID}); err != nil {
 			return fmt.Errorf("failed to save team membership: %w", err)
 		}
 	}
 
-	// Commit transaction
 	if err = tx.Commit(); err != nil {
 		log.DB("commit_transaction").
 			Table("users").
@@ -994,26 +525,17 @@ func (r *UserRepository) Deactivate(ctx context.Context, id string) error {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	qtx := r.queries.WithTx(tx)
 
-	res, err := tx.ExecContext(ctx, `
-		UPDATE users
-		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-	`, id)
+	rowsAffected, err := qtx.DeactivateUser(ctx, id)
 	if err != nil {
 		return fmt.Errorf("failed to deactivate user: %w", err)
 	}
-	if n, err := res.RowsAffected(); err != nil {
-		return fmt.Errorf("failed to confirm user deactivation: %w", err)
-	} else if n == 0 {
+	if rowsAffected == 0 {
 		return fmt.Errorf("user not found with provided ID")
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE team_members
-		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
-		WHERE user_id = $1 AND is_active
-	`, id); err != nil {
+	if err := qtx.DeactivateTeamMembershipsForUser(ctx, id); err != nil {
 		return fmt.Errorf("failed to end memberships of deactivated user: %w", err)
 	}
 
@@ -1027,7 +549,7 @@ func (r *UserRepository) Deactivate(ctx context.Context, id string) error {
 func (r *UserRepository) Delete(ctx context.Context, id string) error {
 	log := logger.Get()
 
-	result, err := r.db.ExecContext(ctx, "DELETE FROM users WHERE id = $1", id)
+	rowsAffected, err := r.queries.DeleteUser(ctx, id)
 	if err != nil {
 		log.DB("delete").
 			Table("users").
@@ -1036,11 +558,6 @@ func (r *UserRepository) Delete(ctx context.Context, id string) error {
 			Error(err).
 			Failure()
 		return fmt.Errorf("failed to delete user: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
 
 	if rowsAffected == 0 {
@@ -1071,26 +588,12 @@ func (r *UserRepository) FindTeamIDsForUsers(ctx context.Context, userIDs []stri
 		return result, nil
 	}
 
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT user_id, team_id
-		FROM team_members
-		WHERE user_id = ANY($1) AND is_active
-		ORDER BY user_id, team_id
-	`, pq.Array(userIDs))
+	rows, err := r.queries.FindTeamIDsForUsers(ctx, userIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to batch-load team memberships: %w", err)
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var userID, teamID string
-		if err := rows.Scan(&userID, &teamID); err != nil {
-			return nil, fmt.Errorf("failed to scan team membership: %w", err)
-		}
-		result[userID] = append(result[userID], teamID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
+	for _, row := range rows {
+		result[row.UserID] = append(result[row.UserID], row.TeamID)
 	}
 
 	return result, nil
@@ -1098,29 +601,9 @@ func (r *UserRepository) FindTeamIDsForUsers(ctx context.Context, userIDs []stri
 
 // FindTeamsWhereUserIsLead retrieves all team IDs where the user is a team lead
 func (r *UserRepository) FindTeamsWhereUserIsLead(ctx context.Context, userID string) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT id
-		FROM teams
-		WHERE team_lead_id = $1
-		ORDER BY id
-	`, userID)
-
+	teamIDs, err := r.queries.FindTeamsWhereUserIsLead(ctx, sql.NullString{String: userID, Valid: true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query teams where user is lead: %w", err)
-	}
-	defer rows.Close()
-
-	var teamIDs []string
-	for rows.Next() {
-		var teamID string
-		if err := rows.Scan(&teamID); err != nil {
-			return nil, fmt.Errorf("failed to scan team ID: %w", err)
-		}
-		teamIDs = append(teamIDs, teamID)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
 	}
 
 	// Return empty slice instead of nil if no teams
@@ -1133,29 +616,9 @@ func (r *UserRepository) FindTeamsWhereUserIsLead(ctx context.Context, userID st
 
 // fetchTeamIDs is a helper function to get team IDs for a user
 func (r *UserRepository) fetchTeamIDs(ctx context.Context, userID string) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT team_id
-		FROM team_members
-		WHERE user_id = $1 AND is_active
-		ORDER BY team_id
-	`, userID)
-
+	teamIDs, err := r.queries.FindTeamIDsForUser(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query team memberships: %w", err)
-	}
-	defer rows.Close()
-
-	var teamIDs []string
-	for rows.Next() {
-		var teamID string
-		if err := rows.Scan(&teamID); err != nil {
-			return nil, fmt.Errorf("failed to scan team ID: %w", err)
-		}
-		teamIDs = append(teamIDs, teamID)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
 	}
 
 	// Return empty slice instead of nil if no teams
@@ -1166,98 +629,15 @@ func (r *UserRepository) fetchTeamIDs(ctx context.Context, userID string) ([]str
 	return teamIDs, nil
 }
 
-// scanUsers is a helper function to scan query results into users
-func (r *UserRepository) scanUsers(ctx context.Context, rows *sql.Rows) ([]*user.User, error) {
-	var users []*user.User
-
-	for rows.Next() {
-		var u user.User
-		var email, hierarchyLevelID, reportsTo sql.NullString
-		var createdAt, updatedAt sql.NullTime
-		var passwordHash, authType sql.NullString
-		var deactivatedAt sql.NullTime
-
-		err := rows.Scan(
-			&u.ID,
-			&u.Username,
-			&u.Name,
-			&email,
-			&hierarchyLevelID,
-			&reportsTo,
-			&passwordHash,
-			&authType,
-			&createdAt,
-			&updatedAt,
-			&u.IsActive,
-			&deactivatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan user: %w", err)
-		}
-
-		// Handle NULL fields
-		if email.Valid {
-			u.Email = email.String
-		}
-		if hierarchyLevelID.Valid {
-			u.HierarchyLevelID = hierarchyLevelID.String
-		}
-		if reportsTo.Valid {
-			u.ReportsTo = &reportsTo.String
-		}
-		if passwordHash.Valid {
-			u.PasswordHash = passwordHash.String
-		}
-		if authType.Valid {
-			u.AuthType = user.AuthType(authType.String)
-		}
-		if u.AuthType == "" {
-			u.AuthType = user.AuthTypeLocal
-		}
-		if createdAt.Valid {
-			u.CreatedAt = createdAt.Time
-		}
-		if updatedAt.Valid {
-			u.UpdatedAt = updatedAt.Time
-		}
-
-		applyDeactivation(&u, deactivatedAt)
-
-		// Fetch team IDs
-		teamIDs, err := r.fetchTeamIDs(ctx, u.ID)
-		if err != nil {
-			return nil, err
-		}
-		u.TeamIDs = teamIDs
-
-		// Check if user is admin
-		u.IsAdmin = u.Username == "admin"
-
-		users = append(users, &u)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	return users, nil
-}
-
 // UpdatePassword updates a user's password hash
 func (r *UserRepository) UpdatePassword(ctx context.Context, userID string, hashedPassword string) error {
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE users
-		SET password_hash = $1, updated_at = $2
-		WHERE id = $3
-	`, hashedPassword, time.Now(), userID)
-
+	rowsAffected, err := r.queries.UpdateUserPassword(ctx, sqlcgen.UpdateUserPasswordParams{
+		PasswordHash: hashedPassword,
+		UpdatedAt:    sql.NullTime{Time: time.Now(), Valid: true},
+		ID:           userID,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to update password: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
 		return fmt.Errorf("user not found for password update")

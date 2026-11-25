@@ -7,58 +7,34 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/agopalakrishnan/teams360/backend/domain/team"
 	"github.com/lib/pq"
+
+	"github.com/agopalakrishnan/teams360/backend/domain/team"
+	"github.com/agopalakrishnan/teams360/backend/infrastructure/persistence/postgres/sqlcgen"
 )
 
 // TeamRepository implements the team.Repository interface
 type TeamRepository struct {
-	db *sql.DB
+	db      *sql.DB
+	queries *sqlcgen.Queries
 }
 
 // NewTeamRepository creates a new repository instance
 func NewTeamRepository(db *sql.DB) team.Repository {
-	return &TeamRepository{db: db}
+	return &TeamRepository{db: db, queries: sqlcgen.New(db)}
 }
 
-// FindByID retrieves a team by ID
-func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, error) {
-	var t team.Team
-	var teamLeadID sql.NullString
-	var teamLeadName sql.NullString
-	var cadence sql.NullString
-	var distributionListEmail sql.NullString
-	var healthCheckEnabled sql.NullBool
-	var createdAt, updatedAt sql.NullTime
-	var deactivatedAt sql.NullTime
-
-	err := r.db.QueryRowContext(ctx, `
-		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name, t.is_active, t.deactivated_at
-		FROM teams t
-		LEFT JOIN users u ON t.team_lead_id = u.id
-		WHERE t.id = $1
-	`, id).Scan(
-		&t.ID,
-		&t.Name,
-		&teamLeadID,
-		&cadence,
-		&createdAt,
-		&updatedAt,
-		&distributionListEmail,
-		&healthCheckEnabled,
-		&teamLeadName,
-		&t.IsActive,
-		&deactivatedAt,
-	)
-
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("team not found: %s", id)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to find team: %w", err)
+// buildTeamFromRow maps the scalar columns shared by FindTeamByID/FindAllTeams/
+// FindTeamsByLeadID/FindTeamsBySupervisorID into a domain Team. Each caller
+// still needs to hydrate Members/SupervisorChain/Tags itself.
+func buildTeamFromRow(id, name string, teamLeadID sql.NullString, cadence sql.NullString, distributionListEmail sql.NullString, healthCheckEnabled bool, teamLeadName sql.NullString, createdAt, updatedAt sql.NullTime, isActive bool, deactivatedAt sql.NullTime) *team.Team {
+	t := &team.Team{
+		ID:                 id,
+		Name:               name,
+		HealthCheckEnabled: healthCheckEnabled,
+		IsActive:           isActive,
 	}
 
-	// Handle NULL fields
 	if teamLeadID.Valid {
 		t.TeamLeadID = &teamLeadID.String
 	}
@@ -73,46 +49,37 @@ func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, e
 	if distributionListEmail.Valid {
 		t.DistributionListEmail = &distributionListEmail.String
 	}
-	t.HealthCheckEnabled = !healthCheckEnabled.Valid || healthCheckEnabled.Bool
 	if createdAt.Valid {
 		t.CreatedAt = createdAt.Time
 	}
 	if updatedAt.Valid {
 		t.UpdatedAt = updatedAt.Time
 	}
-
 	if deactivatedAt.Valid {
 		d := deactivatedAt.Time
 		t.DeactivatedAt = &d
 	}
 
-	// Fetch team members
-	members, err := r.FindTeamMembers(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	t.Members = members
-	t.MemberCount = len(members)
+	return t
+}
 
-	// Fetch supervisor chain
-	supervisorChain, err := r.FindSupervisorChain(ctx, id)
-	if err != nil {
-		return nil, err
+// FindByID retrieves a team by ID
+func (r *TeamRepository) FindByID(ctx context.Context, id string) (*team.Team, error) {
+	row, err := r.queries.FindTeamByID(ctx, id)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("team not found: %s", id)
 	}
-	// Convert []*SupervisorLink to []SupervisorLink
-	t.SupervisorChain = make([]team.SupervisorLink, len(supervisorChain))
-	for i, link := range supervisorChain {
-		t.SupervisorChain[i] = *link
+	if err != nil {
+		return nil, fmt.Errorf("failed to find team: %w", err)
 	}
 
-	// Fetch tags
-	tags, err := r.fetchTags(ctx, id)
-	if err != nil {
+	t := buildTeamFromRow(row.ID, row.Name, row.TeamLeadID, row.Cadence, row.DistributionListEmail, row.HealthCheckEnabled, row.TeamLeadName, row.CreatedAt, row.UpdatedAt, row.IsActive, row.DeactivatedAt)
+
+	if err := r.hydrateTeam(ctx, t); err != nil {
 		return nil, err
 	}
-	t.Tags = tags
 
-	return &t, nil
+	return t, nil
 }
 
 // FindAll retrieves all teams
@@ -123,30 +90,27 @@ func (r *TeamRepository) FindAll(ctx context.Context) ([]*team.Team, error) {
 // findByStatus loads teams, restricted in the query to the given status so rows
 // the caller does not want are never read or scanned.
 func (r *TeamRepository) findByStatus(ctx context.Context, status string) ([]*team.Team, error) {
-	var filter string
 	switch status {
-	case team.StatusAll:
-	case team.StatusActive:
-		filter = "WHERE t.is_active"
-	case team.StatusInactive:
-		filter = "WHERE NOT t.is_active"
+	case team.StatusAll, team.StatusActive, team.StatusInactive:
 	default:
 		return nil, fmt.Errorf("unknown team status filter %q", status)
 	}
 
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name, t.is_active, t.deactivated_at
-		FROM teams t
-		LEFT JOIN users u ON t.team_lead_id = u.id
-		`+filter+`
-		ORDER BY t.name
-	`)
+	rows, err := r.queries.FindTeamsByStatus(ctx, status)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query teams: %w", err)
 	}
-	defer rows.Close()
 
-	return r.scanTeams(ctx, rows)
+	teams := make([]*team.Team, 0, len(rows))
+	for _, row := range rows {
+		t := buildTeamFromRow(row.ID, row.Name, row.TeamLeadID, row.Cadence, row.DistributionListEmail, row.HealthCheckEnabled, row.TeamLeadName, row.CreatedAt, row.UpdatedAt, row.IsActive, row.DeactivatedAt)
+		if err := r.hydrateTeam(ctx, t); err != nil {
+			return nil, err
+		}
+		teams = append(teams, t)
+	}
+
+	return teams, nil
 }
 
 // FindAllWithDetails retrieves all teams with enriched details
@@ -173,39 +137,40 @@ func (r *TeamRepository) FindWithDetailsByStatus(ctx context.Context, status str
 
 // FindByLeadID retrieves all teams led by a specific user
 func (r *TeamRepository) FindByLeadID(ctx context.Context, leadID string) ([]*team.Team, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name, t.is_active, t.deactivated_at
-		FROM teams t
-		LEFT JOIN users u ON t.team_lead_id = u.id
-		WHERE t.team_lead_id = $1
-		ORDER BY t.name
-	`, leadID)
-
+	rows, err := r.queries.FindTeamsByLeadID(ctx, sql.NullString{String: leadID, Valid: leadID != ""})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query teams by lead: %w", err)
 	}
-	defer rows.Close()
 
-	return r.scanTeams(ctx, rows)
+	teams := make([]*team.Team, 0, len(rows))
+	for _, row := range rows {
+		t := buildTeamFromRow(row.ID, row.Name, row.TeamLeadID, row.Cadence, row.DistributionListEmail, row.HealthCheckEnabled, row.TeamLeadName, row.CreatedAt, row.UpdatedAt, row.IsActive, row.DeactivatedAt)
+		if err := r.hydrateTeam(ctx, t); err != nil {
+			return nil, err
+		}
+		teams = append(teams, t)
+	}
+
+	return teams, nil
 }
 
 // FindBySupervisorID retrieves all teams where a user is in the supervisor chain
 func (r *TeamRepository) FindBySupervisorID(ctx context.Context, supervisorID string) ([]*team.Team, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT DISTINCT t.id, t.name, t.team_lead_id, t.cadence, t.created_at, t.updated_at, t.distribution_list_email, t.health_check_enabled, u.full_name, t.is_active, t.deactivated_at
-		FROM teams t
-		INNER JOIN team_supervisors ts ON t.id = ts.team_id
-		LEFT JOIN users u ON t.team_lead_id = u.id
-		WHERE ts.user_id = $1
-		ORDER BY t.name
-	`, supervisorID)
-
+	rows, err := r.queries.FindTeamsBySupervisorID(ctx, supervisorID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query teams by supervisor: %w", err)
 	}
-	defer rows.Close()
 
-	return r.scanTeams(ctx, rows)
+	teams := make([]*team.Team, 0, len(rows))
+	for _, row := range rows {
+		t := buildTeamFromRow(row.ID, row.Name, row.TeamLeadID, row.Cadence, row.DistributionListEmail, row.HealthCheckEnabled, row.TeamLeadName, row.CreatedAt, row.UpdatedAt, row.IsActive, row.DeactivatedAt)
+		if err := r.hydrateTeam(ctx, t); err != nil {
+			return nil, err
+		}
+		teams = append(teams, t)
+	}
+
+	return teams, nil
 }
 
 // FindSurveyCompletionTeams returns a lightweight per-team projection for the
@@ -236,50 +201,22 @@ func (r *TeamRepository) FindBySupervisorID(ctx context.Context, supervisorID st
 // individual survey (Level 4 + Level 5 only) can't be answered from this
 // query — see FindEligibleMemberIDs, the caller's actual source for that.
 func (r *TeamRepository) FindSurveyCompletionTeams(ctx context.Context) ([]team.SurveyCompletionRow, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT
-			t.id,
-			t.name,
-			t.health_check_enabled,
-			COALESCE(sup.user_id, '') AS supervisor_id,
-			COALESCE(t.team_lead_id, '') AS team_lead_id,
-			COALESCE(tl.full_name, '') AS team_lead_name,
-			COALESCE(tl.email, '') AS team_lead_email
-		FROM teams t
-		LEFT JOIN LATERAL (
-			SELECT ts.user_id
-			FROM team_supervisors ts
-			WHERE ts.team_id = t.id
-			ORDER BY ts.position ASC
-			LIMIT 1
-		) sup ON true
-		LEFT JOIN users tl ON tl.id = t.team_lead_id
-		WHERE t.is_active
-		ORDER BY t.name
-	`)
+	rows, err := r.queries.FindSurveyCompletionTeams(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query survey completion teams: %w", err)
 	}
-	defer rows.Close()
 
-	var result []team.SurveyCompletionRow
-	for rows.Next() {
-		var row team.SurveyCompletionRow
-		if err := rows.Scan(
-			&row.ID,
-			&row.Name,
-			&row.HealthCheckEnabled,
-			&row.SupervisorID,
-			&row.TeamLeadID,
-			&row.TeamLeadName,
-			&row.TeamLeadEmail,
-		); err != nil {
-			return nil, fmt.Errorf("failed to scan survey completion team: %w", err)
-		}
-		result = append(result, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
+	result := make([]team.SurveyCompletionRow, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, team.SurveyCompletionRow{
+			ID:                 row.ID,
+			Name:               row.Name,
+			HealthCheckEnabled: row.HealthCheckEnabled,
+			SupervisorID:       row.SupervisorID,
+			TeamLeadID:         row.TeamLeadID,
+			TeamLeadName:       row.TeamLeadName,
+			TeamLeadEmail:      row.TeamLeadEmail,
+		})
 	}
 
 	return result, nil
@@ -309,29 +246,14 @@ func (r *TeamRepository) FindSurveyCompletionTeams(ctx context.Context) ([]team.
 // that alone either). A soft-deactivated team is excluded too, so an Inactive
 // team never receives surveys even if a member row is attached to it.
 func (r *TeamRepository) FindEligibleMemberIDs(ctx context.Context) (map[string][]string, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT DISTINCT tm.team_id, tm.user_id
-		FROM team_members tm
-		JOIN teams t ON t.id = tm.team_id
-		JOIN users u ON u.id = tm.user_id
-		JOIN hierarchy_levels hl ON hl.id = u.hierarchy_level_id
-		WHERE hl.position IN (4, 5) AND tm.is_active AND u.is_active AND t.is_active
-	`)
+	rows, err := r.queries.FindEligibleMemberIDs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query eligible team members: %w", err)
 	}
-	defer rows.Close()
 
 	result := make(map[string][]string)
-	for rows.Next() {
-		var teamID, userID string
-		if err := rows.Scan(&teamID, &userID); err != nil {
-			return nil, fmt.Errorf("failed to scan eligible team member: %w", err)
-		}
-		result[teamID] = append(result[teamID], userID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
+	for _, row := range rows {
+		result[row.TeamID] = append(result[row.TeamID], row.UserID)
 	}
 
 	return result, nil
@@ -339,35 +261,14 @@ func (r *TeamRepository) FindEligibleMemberIDs(ctx context.Context) (map[string]
 
 // FindMembers retrieves team members as domain Members
 func (r *TeamRepository) FindMembers(ctx context.Context, teamID string) ([]*team.Member, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT user_id
-		FROM team_members
-		WHERE team_id = $1 AND is_active
-		ORDER BY user_id
-	`, teamID)
-
+	userIDs, err := r.queries.FindTeamMemberUserIDs(ctx, teamID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query team members: %w", err)
 	}
-	defer rows.Close()
 
-	var members []*team.Member
-	for rows.Next() {
-		var member team.Member
-		if err := rows.Scan(&member.UserID); err != nil {
-			return nil, fmt.Errorf("failed to scan member: %w", err)
-		}
-		member.Role = "member" // Default role
-		members = append(members, &member)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	// Return empty slice instead of nil
-	if members == nil {
-		members = []*team.Member{}
+	members := make([]*team.Member, 0, len(userIDs))
+	for _, userID := range userIDs {
+		members = append(members, &team.Member{UserID: userID, Role: "member"})
 	}
 
 	return members, nil
@@ -375,35 +276,19 @@ func (r *TeamRepository) FindMembers(ctx context.Context, teamID string) ([]*tea
 
 // FindTeamMembers retrieves team members with full user details
 func (r *TeamRepository) FindTeamMembers(ctx context.Context, teamID string) ([]team.TeamMember, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT u.id, u.username, u.full_name, u.email
-		FROM users u
-		INNER JOIN team_members tm ON u.id = tm.user_id
-		WHERE tm.team_id = $1 AND tm.is_active
-		ORDER BY u.username
-	`, teamID)
-
+	rows, err := r.queries.FindTeamMembersDetailed(ctx, teamID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query team members: %w", err)
 	}
-	defer rows.Close()
 
-	var members []team.TeamMember
-	for rows.Next() {
-		var member team.TeamMember
-		if err := rows.Scan(&member.ID, &member.Username, &member.FullName, &member.Email); err != nil {
-			return nil, fmt.Errorf("failed to scan team member: %w", err)
-		}
-		members = append(members, member)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	// Return empty slice instead of nil
-	if members == nil {
-		members = []team.TeamMember{}
+	members := make([]team.TeamMember, 0, len(rows))
+	for _, row := range rows {
+		members = append(members, team.TeamMember{
+			ID:       row.ID,
+			Username: row.Username,
+			FullName: row.FullName,
+			Email:    row.Email,
+		})
 	}
 
 	return members, nil
@@ -411,50 +296,24 @@ func (r *TeamRepository) FindTeamMembers(ctx context.Context, teamID string) ([]
 
 // CountTeamMembers returns the number of members in a team
 func (r *TeamRepository) CountTeamMembers(ctx context.Context, teamID string) (int, error) {
-	var count int
-	err := r.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM team_members
-		WHERE team_id = $1 AND is_active
-	`, teamID).Scan(&count)
-
+	count, err := r.queries.CountTeamMembers(ctx, teamID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to count team members: %w", err)
 	}
 
-	return count, nil
+	return int(count), nil
 }
 
 // FindSupervisorChain retrieves the ordered supervisor chain for a team
 func (r *TeamRepository) FindSupervisorChain(ctx context.Context, teamID string) ([]*team.SupervisorLink, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT user_id, hierarchy_level_id
-		FROM team_supervisors
-		WHERE team_id = $1
-		ORDER BY position
-	`, teamID)
-
+	rows, err := r.queries.FindTeamSupervisorChain(ctx, teamID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query supervisor chain: %w", err)
 	}
-	defer rows.Close()
 
-	var supervisorChain []*team.SupervisorLink
-	for rows.Next() {
-		var supervisor team.SupervisorLink
-		if err := rows.Scan(&supervisor.UserID, &supervisor.LevelID); err != nil {
-			return nil, fmt.Errorf("failed to scan supervisor: %w", err)
-		}
-		supervisorChain = append(supervisorChain, &supervisor)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	// Return empty slice instead of nil
-	if supervisorChain == nil {
-		supervisorChain = []*team.SupervisorLink{}
+	supervisorChain := make([]*team.SupervisorLink, 0, len(rows))
+	for _, row := range rows {
+		supervisorChain = append(supervisorChain, &team.SupervisorLink{UserID: row.UserID, LevelID: row.HierarchyLevelID})
 	}
 
 	return supervisorChain, nil
@@ -462,41 +321,30 @@ func (r *TeamRepository) FindSupervisorChain(ctx context.Context, teamID string)
 
 // Save persists a new team
 func (r *TeamRepository) Save(ctx context.Context, t *team.Team) error {
-	// Begin transaction
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	qtx := r.queries.WithTx(tx)
 
-	// Convert optional fields to NULL
-	var teamLeadID, cadence, distributionListEmail sql.NullString
-	if t.TeamLeadID != nil && *t.TeamLeadID != "" {
-		teamLeadID = sql.NullString{String: *t.TeamLeadID, Valid: true}
-	}
-	if t.Cadence != "" {
-		cadence = sql.NullString{String: t.Cadence, Valid: true}
-	} else {
-		cadence = sql.NullString{String: "monthly", Valid: true}
-	}
-	if t.DistributionListEmail != nil && *t.DistributionListEmail != "" {
-		distributionListEmail = sql.NullString{String: *t.DistributionListEmail, Valid: true}
-	}
+	teamLeadID, cadence, distributionListEmail := teamWriteFields(t)
 
-	// Set timestamps
 	now := time.Now()
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = now
 	}
 	t.UpdatedAt = now
 
-	// Insert team
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO teams (id, name, team_lead_id, cadence, distribution_list_email, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, t.ID, t.Name, teamLeadID, cadence, distributionListEmail, t.CreatedAt, t.UpdatedAt)
-
-	if err != nil {
+	if err := qtx.InsertTeam(ctx, sqlcgen.InsertTeamParams{
+		ID:                    t.ID,
+		Name:                  t.Name,
+		TeamLeadID:            teamLeadID,
+		Cadence:               cadence,
+		DistributionListEmail: distributionListEmail,
+		CreatedAt:             sql.NullTime{Time: t.CreatedAt, Valid: true},
+		UpdatedAt:             sql.NullTime{Time: t.UpdatedAt, Valid: true},
+	}); err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
 			return fmt.Errorf("%w: %s", team.ErrDuplicateTeam, t.ID)
@@ -504,27 +352,17 @@ func (r *TeamRepository) Save(ctx context.Context, t *team.Team) error {
 		return fmt.Errorf("failed to save team: %w", err)
 	}
 
-	// Insert team members
 	for _, member := range t.Members {
-		err = r.addMemberTx(ctx, tx, t.ID, member.ID)
-		if err != nil {
-			return err
+		if err := qtx.InsertTeamMember(ctx, sqlcgen.InsertTeamMemberParams{TeamID: t.ID, UserID: member.ID}); err != nil {
+			return fmt.Errorf("failed to add team member: %w", err)
 		}
 	}
 
-	// Insert supervisor chain
-	// Convert []SupervisorLink to []*SupervisorLink
-	chainPtrs := make([]*team.SupervisorLink, len(t.SupervisorChain))
-	for i := range t.SupervisorChain {
-		chainPtrs[i] = &t.SupervisorChain[i]
-	}
-	err = r.updateSupervisorChainTx(ctx, tx, t.ID, chainPtrs)
-	if err != nil {
+	if err := r.updateSupervisorChainTx(ctx, qtx, t.ID, supervisorChainPtrs(t)); err != nil {
 		return err
 	}
 
-	// Commit transaction
-	if err = tx.Commit(); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
@@ -533,48 +371,26 @@ func (r *TeamRepository) Save(ctx context.Context, t *team.Team) error {
 
 // Update updates an existing team
 func (r *TeamRepository) Update(ctx context.Context, t *team.Team) error {
-	// Begin transaction
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	qtx := r.queries.WithTx(tx)
 
-	// Convert optional fields to NULL
-	var teamLeadID, cadence, distributionListEmail sql.NullString
-	if t.TeamLeadID != nil && *t.TeamLeadID != "" {
-		teamLeadID = sql.NullString{String: *t.TeamLeadID, Valid: true}
-	}
-	if t.Cadence != "" {
-		cadence = sql.NullString{String: t.Cadence, Valid: true}
-	} else {
-		cadence = sql.NullString{String: "monthly", Valid: true}
-	}
-	if t.DistributionListEmail != nil && *t.DistributionListEmail != "" {
-		distributionListEmail = sql.NullString{String: *t.DistributionListEmail, Valid: true}
-	}
-
-	// Update timestamp
+	teamLeadID, cadence, distributionListEmail := teamWriteFields(t)
 	t.UpdatedAt = time.Now()
 
-	// Update team
-	result, err := tx.ExecContext(ctx, `
-		UPDATE teams SET
-			name = $1,
-			team_lead_id = $2,
-			cadence = $3,
-			distribution_list_email = $4,
-			updated_at = $5
-		WHERE id = $6
-	`, t.Name, teamLeadID, cadence, distributionListEmail, t.UpdatedAt, t.ID)
-
+	rowsAffected, err := qtx.UpdateTeam(ctx, sqlcgen.UpdateTeamParams{
+		Name:                  t.Name,
+		TeamLeadID:            teamLeadID,
+		Cadence:               cadence,
+		DistributionListEmail: distributionListEmail,
+		UpdatedAt:             sql.NullTime{Time: t.UpdatedAt, Valid: true},
+		ID:                    t.ID,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to update team: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
 	}
 	if rowsAffected == 0 {
 		return fmt.Errorf("team not found: %s", t.ID)
@@ -588,33 +404,21 @@ func (r *TeamRepository) Update(ctx context.Context, t *team.Team) error {
 	for i, member := range t.Members {
 		memberIDs[i] = member.ID
 	}
-	if _, err = tx.ExecContext(ctx, `
-		UPDATE team_members
-		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
-		WHERE team_id = $1 AND is_active AND user_id <> ALL($2)
-	`, t.ID, pq.Array(memberIDs)); err != nil {
+	if err := qtx.DeactivateTeamMembersNotIn(ctx, sqlcgen.DeactivateTeamMembersNotInParams{TeamID: t.ID, UserIds: memberIDs}); err != nil {
 		return fmt.Errorf("failed to end team memberships: %w", err)
 	}
 
 	for _, id := range memberIDs {
-		if err = r.addMemberTx(ctx, tx, t.ID, id); err != nil {
-			return err
+		if err := qtx.AddTeamMember(ctx, sqlcgen.AddTeamMemberParams{TeamID: t.ID, UserID: id}); err != nil {
+			return fmt.Errorf("failed to add team member: %w", err)
 		}
 	}
 
-	// Update supervisor chain
-	// Convert []SupervisorLink to []*SupervisorLink
-	chainPtrs := make([]*team.SupervisorLink, len(t.SupervisorChain))
-	for i := range t.SupervisorChain {
-		chainPtrs[i] = &t.SupervisorChain[i]
-	}
-	err = r.updateSupervisorChainTx(ctx, tx, t.ID, chainPtrs)
-	if err != nil {
+	if err := r.updateSupervisorChainTx(ctx, qtx, t.ID, supervisorChainPtrs(t)); err != nil {
 		return err
 	}
 
-	// Commit transaction
-	if err = tx.Commit(); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
@@ -632,26 +436,17 @@ func (r *TeamRepository) Deactivate(ctx context.Context, id string) error {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	qtx := r.queries.WithTx(tx)
 
-	res, err := tx.ExecContext(ctx, `
-		UPDATE teams
-		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-	`, id)
+	rowsAffected, err := qtx.DeactivateTeam(ctx, id)
 	if err != nil {
 		return fmt.Errorf("failed to deactivate team: %w", err)
 	}
-	if n, err := res.RowsAffected(); err != nil {
-		return fmt.Errorf("failed to confirm team deactivation: %w", err)
-	} else if n == 0 {
+	if rowsAffected == 0 {
 		return fmt.Errorf("team not found: %s", id)
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE team_members
-		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
-		WHERE team_id = $1 AND is_active
-	`, id); err != nil {
+	if err := qtx.DeactivateTeamMembersByTeamID(ctx, id); err != nil {
 		return fmt.Errorf("failed to end memberships of deactivated team: %w", err)
 	}
 
@@ -663,15 +458,7 @@ func (r *TeamRepository) Deactivate(ctx context.Context, id string) error {
 
 // AddMember adds a member to a team
 func (r *TeamRepository) AddMember(ctx context.Context, teamID, userID string) error {
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO team_members (team_id, user_id)
-		VALUES ($1, $2)
-		ON CONFLICT (team_id, user_id) DO UPDATE
-			SET is_active = true, deactivated_at = NULL
-			WHERE team_members.is_active = false
-	`, teamID, userID)
-
-	if err != nil {
+	if err := r.queries.AddTeamMember(ctx, sqlcgen.AddTeamMemberParams{TeamID: teamID, UserID: userID}); err != nil {
 		return fmt.Errorf("failed to add team member: %w", err)
 	}
 
@@ -680,22 +467,10 @@ func (r *TeamRepository) AddMember(ctx context.Context, teamID, userID string) e
 
 // RemoveMember ends a member's membership of a team (soft: the row is kept as history)
 func (r *TeamRepository) RemoveMember(ctx context.Context, teamID, userID string) error {
-	// Ends the membership but keeps the row as inactive history.
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE team_members
-		SET is_active = false, deactivated_at = COALESCE(deactivated_at, CURRENT_TIMESTAMP)
-		WHERE team_id = $1 AND user_id = $2 AND is_active
-	`, teamID, userID)
-
+	rowsAffected, err := r.queries.RemoveTeamMember(ctx, sqlcgen.RemoveTeamMemberParams{TeamID: teamID, UserID: userID})
 	if err != nil {
 		return fmt.Errorf("failed to remove team member: %w", err)
 	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
 	if rowsAffected == 0 {
 		return fmt.Errorf("team member not found: %s in team %s", userID, teamID)
 	}
@@ -705,20 +480,17 @@ func (r *TeamRepository) RemoveMember(ctx context.Context, teamID, userID string
 
 // UpdateSupervisorChain updates the supervisor chain for a team
 func (r *TeamRepository) UpdateSupervisorChain(ctx context.Context, teamID string, chain []*team.SupervisorLink) error {
-	// Begin transaction
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	err = r.updateSupervisorChainTx(ctx, tx, teamID, chain)
-	if err != nil {
+	if err := r.updateSupervisorChainTx(ctx, r.queries.WithTx(tx), teamID, chain); err != nil {
 		return err
 	}
 
-	// Commit transaction
-	if err = tx.Commit(); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
@@ -727,101 +499,31 @@ func (r *TeamRepository) UpdateSupervisorChain(ctx context.Context, teamID strin
 
 // Helper methods
 
-// scanTeams is a helper function to scan query results into teams
-func (r *TeamRepository) scanTeams(ctx context.Context, rows *sql.Rows) ([]*team.Team, error) {
-	var teams []*team.Team
+// hydrateTeam fills in a Team's Members, SupervisorChain, and Tags.
+func (r *TeamRepository) hydrateTeam(ctx context.Context, t *team.Team) error {
+	members, err := r.FindTeamMembers(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	t.Members = members
+	t.MemberCount = len(members)
 
-	for rows.Next() {
-		var t team.Team
-		var teamLeadID sql.NullString
-		var teamLeadName sql.NullString
-		var cadence sql.NullString
-		var distributionListEmail sql.NullString
-		var healthCheckEnabled sql.NullBool
-		var createdAt, updatedAt sql.NullTime
-		var deactivatedAt sql.NullTime
-
-		err := rows.Scan(
-			&t.ID,
-			&t.Name,
-			&teamLeadID,
-			&cadence,
-			&createdAt,
-			&updatedAt,
-			&distributionListEmail,
-			&healthCheckEnabled,
-			&teamLeadName,
-			&t.IsActive,
-			&deactivatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan team: %w", err)
-		}
-
-		// Handle NULL fields
-		if teamLeadID.Valid {
-			t.TeamLeadID = &teamLeadID.String
-		}
-		if teamLeadName.Valid {
-			t.TeamLeadName = &teamLeadName.String
-		}
-		if cadence.Valid {
-			t.Cadence = cadence.String
-		} else {
-			t.Cadence = "monthly"
-		}
-		if distributionListEmail.Valid {
-			t.DistributionListEmail = &distributionListEmail.String
-		}
-		// NOT NULL in the schema; treat an unexpected NULL as participating,
-		// matching the column default.
-		t.HealthCheckEnabled = !healthCheckEnabled.Valid || healthCheckEnabled.Bool
-		if createdAt.Valid {
-			t.CreatedAt = createdAt.Time
-		}
-		if updatedAt.Valid {
-			t.UpdatedAt = updatedAt.Time
-		}
-
-		if deactivatedAt.Valid {
-			d := deactivatedAt.Time
-			t.DeactivatedAt = &d
-		}
-
-		// Fetch team members
-		members, err := r.FindTeamMembers(ctx, t.ID)
-		if err != nil {
-			return nil, err
-		}
-		t.Members = members
-		t.MemberCount = len(members)
-
-		// Fetch supervisor chain
-		supervisorChain, err := r.FindSupervisorChain(ctx, t.ID)
-		if err != nil {
-			return nil, err
-		}
-		// Convert []*SupervisorLink to []SupervisorLink
-		t.SupervisorChain = make([]team.SupervisorLink, len(supervisorChain))
-		for i, link := range supervisorChain {
-			t.SupervisorChain[i] = *link
-		}
-
-		// Fetch tags
-		tags, err := r.fetchTags(ctx, t.ID)
-		if err != nil {
-			return nil, err
-		}
-		t.Tags = tags
-
-		teams = append(teams, &t)
+	supervisorChain, err := r.FindSupervisorChain(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	t.SupervisorChain = make([]team.SupervisorLink, len(supervisorChain))
+	for i, link := range supervisorChain {
+		t.SupervisorChain[i] = *link
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
+	tags, err := r.fetchTags(ctx, t.ID)
+	if err != nil {
+		return err
 	}
+	t.Tags = tags
 
-	return teams, nil
+	return nil
 }
 
 // fetchTags is a helper function to get team tags
@@ -831,38 +533,45 @@ func (r *TeamRepository) fetchTags(ctx context.Context, teamID string) ([]string
 	return []string{}, nil
 }
 
-// addMemberTx adds a member within a transaction
-func (r *TeamRepository) addMemberTx(ctx context.Context, tx *sql.Tx, teamID, userID string) error {
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO team_members (team_id, user_id)
-		VALUES ($1, $2)
-		ON CONFLICT (team_id, user_id) DO UPDATE
-			SET is_active = true, deactivated_at = NULL
-			WHERE team_members.is_active = false
-	`, teamID, userID)
-
-	if err != nil {
-		return fmt.Errorf("failed to add team member: %w", err)
+// teamWriteFields converts a domain Team's optional fields to NULL-able sqlc params.
+func teamWriteFields(t *team.Team) (teamLeadID, cadence, distributionListEmail sql.NullString) {
+	if t.TeamLeadID != nil && *t.TeamLeadID != "" {
+		teamLeadID = sql.NullString{String: *t.TeamLeadID, Valid: true}
 	}
+	if t.Cadence != "" {
+		cadence = sql.NullString{String: t.Cadence, Valid: true}
+	} else {
+		cadence = sql.NullString{String: "monthly", Valid: true}
+	}
+	if t.DistributionListEmail != nil && *t.DistributionListEmail != "" {
+		distributionListEmail = sql.NullString{String: *t.DistributionListEmail, Valid: true}
+	}
+	return
+}
 
-	return nil
+// supervisorChainPtrs converts a Team's []SupervisorLink to []*SupervisorLink.
+func supervisorChainPtrs(t *team.Team) []*team.SupervisorLink {
+	chainPtrs := make([]*team.SupervisorLink, len(t.SupervisorChain))
+	for i := range t.SupervisorChain {
+		chainPtrs[i] = &t.SupervisorChain[i]
+	}
+	return chainPtrs
 }
 
 // updateSupervisorChainTx updates supervisor chain within a transaction
-func (r *TeamRepository) updateSupervisorChainTx(ctx context.Context, tx *sql.Tx, teamID string, chain []*team.SupervisorLink) error {
-	// Delete existing supervisors
-	_, err := tx.ExecContext(ctx, "DELETE FROM team_supervisors WHERE team_id = $1", teamID)
-	if err != nil {
+func (r *TeamRepository) updateSupervisorChainTx(ctx context.Context, qtx *sqlcgen.Queries, teamID string, chain []*team.SupervisorLink) error {
+	if err := qtx.DeleteTeamSupervisorsByTeamID(ctx, teamID); err != nil {
 		return fmt.Errorf("failed to delete team supervisors: %w", err)
 	}
 
 	// Insert new supervisors (positions are 1-based per DB constraint)
 	for i, supervisor := range chain {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO team_supervisors (team_id, user_id, hierarchy_level_id, position)
-			VALUES ($1, $2, $3, $4)
-		`, teamID, supervisor.UserID, supervisor.LevelID, i+1)
-		if err != nil {
+		if err := qtx.InsertTeamSupervisor(ctx, sqlcgen.InsertTeamSupervisorParams{
+			TeamID:           teamID,
+			UserID:           supervisor.UserID,
+			HierarchyLevelID: supervisor.LevelID,
+			Position:         int32(i + 1),
+		}); err != nil {
 			return fmt.Errorf("failed to save team supervisor: %w", err)
 		}
 	}

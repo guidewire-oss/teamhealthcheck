@@ -3,6 +3,7 @@
 
 .PHONY: help install run build test test-verbose test-coverage clean lint fmt vet tidy
 .PHONY: otel-start otel-stop otel-status otel-logs run-with-otel
+.PHONY: sqlc-generate sqlc-verify
 
 # Default target
 .DEFAULT_GOAL := help
@@ -100,6 +101,23 @@ clean: ## Clean build artifacts
 	rm -rf bin/
 	rm -rf coverage.out coverage.html
 	@echo "Clean complete!"
+
+# Keep in sync with the sqlc version installed in .github/workflows/ci.yml, so local
+# generation produces exactly what CI expects.
+SQLC_VERSION := v1.31.1
+
+sqlc-generate: ## Regenerate sqlc code from infrastructure/persistence/postgres/queries/*.sql
+	@echo "Generating sqlc code..."
+	@command -v sqlc >/dev/null 2>&1 || (echo "sqlc not found - install with: go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)" && exit 1)
+	@test "$$(sqlc version)" = "$(SQLC_VERSION)" || (echo "sqlc $(SQLC_VERSION) is required (CI uses it), found $$(sqlc version) - install with: go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)" && exit 1)
+	sqlc generate
+	@echo "sqlc generation complete!"
+
+sqlc-verify: sqlc-generate ## Verify generated sqlc code is up to date with queries/*.sql (fails on drift)
+	@echo "Verifying generated sqlc code matches queries/*.sql..."
+	@git diff --exit-code infrastructure/persistence/postgres/sqlcgen && \
+		test -z "$$(git ls-files --others --exclude-standard -- infrastructure/persistence/postgres/sqlcgen)" || \
+		(echo "Generated sqlc code is stale - run 'make sqlc-generate' and commit the result (including new files)" && exit 1)
 
 docker-build: ## Build Docker image
 	@echo "Building Docker image..."

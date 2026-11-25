@@ -61,6 +61,12 @@ jobs:
       - name: Run staticcheck
         run: staticcheck ./...
 
+      - name: Install sqlc
+        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
+
+      - name: Verify generated sqlc code is up to date
+        run: make sqlc-verify
+
   backend-swagger-check:
     name: Backend Swagger Check
     runs-on: ubuntu-latest
