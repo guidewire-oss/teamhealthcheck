@@ -30,6 +30,7 @@ type Querier interface {
 	// combination. The table holds one row per sync attempt, so filtered scans stay small.
 	CountOrgSyncRuns(ctx context.Context, arg CountOrgSyncRunsParams) (int64, error)
 	CountTeamMembers(ctx context.Context, teamID string) (int64, error)
+	// A NULL flag (legacy column) counts as enabled, matching how the team queries read it.
 	CountTeamsDisablingHealthCheck(ctx context.Context, teamIds []string) (int64, error)
 	CountTeamsEnablingHealthCheck(ctx context.Context, teamIds []string) (int64, error)
 	CountUsersAtLevel(ctx context.Context, hierarchyLevelID string) (int64, error)

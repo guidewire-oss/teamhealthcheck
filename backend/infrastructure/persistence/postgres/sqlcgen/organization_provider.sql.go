@@ -92,9 +92,10 @@ func (q *Queries) CountCascadedTeamMemberships(ctx context.Context, arg CountCas
 }
 
 const countTeamsDisablingHealthCheck = `-- name: CountTeamsDisablingHealthCheck :one
-SELECT COUNT(*) FROM teams WHERE id = ANY($1::text[]) AND health_check_enabled = true
+SELECT COUNT(*) FROM teams WHERE id = ANY($1::text[]) AND COALESCE(health_check_enabled, true) = true
 `
 
+// A NULL flag (legacy column) counts as enabled, matching how the team queries read it.
 func (q *Queries) CountTeamsDisablingHealthCheck(ctx context.Context, teamIds []string) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countTeamsDisablingHealthCheck, pq.Array(teamIds))
 	var count int64

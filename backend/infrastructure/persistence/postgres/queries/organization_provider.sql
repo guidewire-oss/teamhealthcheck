@@ -30,7 +30,8 @@ WHERE team_id = ANY(sqlc.arg(missing_team_ids)::text[])
    OR (user_id = ANY(sqlc.arg(missing_user_ids)::text[]) AND team_id <> ALL(sqlc.arg(reconciled_team_ids)::text[]));
 
 -- name: CountTeamsDisablingHealthCheck :one
-SELECT COUNT(*) FROM teams WHERE id = ANY(sqlc.arg(team_ids)::text[]) AND health_check_enabled = true;
+-- A NULL flag (legacy column) counts as enabled, matching how the team queries read it.
+SELECT COUNT(*) FROM teams WHERE id = ANY(sqlc.arg(team_ids)::text[]) AND COALESCE(health_check_enabled, true) = true;
 
 -- name: CountTeamsEnablingHealthCheck :one
 SELECT COUNT(*) FROM teams WHERE id = ANY(sqlc.arg(team_ids)::text[]) AND health_check_enabled = false;
