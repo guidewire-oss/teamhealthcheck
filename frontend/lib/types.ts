@@ -50,26 +50,6 @@ export interface Team {
   tags?: string[];
 }
 
-export interface OrganizationNode {
-  id: string;
-  user: User;
-  level: HierarchyLevel;
-  children: OrganizationNode[];
-  teams: Team[];
-  metrics?: {
-    avgHealth: number;
-    totalTeams: number;
-    totalMembers: number;
-    completionRate: number;
-    trends: {
-      improving: number;
-      stable: number;
-      declining: number;
-    };
-    dimensionScores: Map<string, number>;
-  };
-}
-
 export interface HealthDimension {
   id: string;
   name: string;
@@ -123,26 +103,3 @@ export interface TeamHealthSummary {
   participationRate?: number;
 }
 
-export interface HierarchicalSummary {
-  nodeId: string;
-  userName: string;
-  levelId: string;
-  levelName: string;
-  directReports: number;
-  totalTeams: number;
-  totalMembers: number;
-  healthMetrics: {
-    overall: number;
-    byDimension: {
-      [dimensionId: string]: {
-        score: number;
-        trend: 'improving' | 'stable' | 'declining';
-      };
-    };
-    participation: number;
-    lastUpdated: string;
-  };
-  drillDownPath?: string[]; // Path of user IDs to drill down
-  children?: HierarchicalSummary[];
-  teams?: TeamHealthSummary[];
-}
