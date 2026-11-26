@@ -258,8 +258,17 @@ var _ = Describe("E2E: Organization Provider Sync", Serial, Ordered, Label("e2e"
 		Expect(holdVisible).To(BeFalse(), "a sync under the threshold must not be held")
 		anywayVisible, _ := page.Locator("[data-testid='sync-anyway-btn']").IsVisible()
 		Expect(anywayVisible).To(BeFalse(), "Sync Anyway is only offered for a held sync")
-		overrideVisible, _ := page.Locator("[data-testid='sync-override-applied']").IsVisible()
-		Expect(overrideVisible).To(BeFalse(), "a normal sync is not an override")
+		// The panel opens on the latest persisted run, which can be an overridden
+		// run left by the threshold suite (Ginkgo shuffles top-level containers).
+		// That stale result is replaced once this sync's own run is polled in, so
+		// wait for the panel to settle on it instead of asserting on the first
+		// frame. A genuinely overridden ordinary sync would never clear and still
+		// fails here.
+		overrideLocator := page.Locator("[data-testid='sync-override-applied']")
+		Eventually(func() bool {
+			visible, _ := overrideLocator.IsVisible()
+			return visible
+		}, 20*time.Second, 250*time.Millisecond).Should(BeFalse(), "a normal sync is not an override")
 
 		By("Verifying the users landed in the database")
 		Expect(countRowsForSync(

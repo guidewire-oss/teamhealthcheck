@@ -105,7 +105,6 @@ export default function DashboardPage() {
     dimensionName: string;
     score: number;
     trend: string;
-    comment: string;
   } | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
 
@@ -1075,7 +1074,6 @@ export default function DashboardPage() {
                                           );
                                           const score = resp?.score ?? 0;
                                           const trend = resp?.trend ?? '';
-                                          const comment = resp?.comment ?? '';
                                           const TrendIcon =
                                             trend === 'improving'
                                               ? TrendingUp
@@ -1100,7 +1098,6 @@ export default function DashboardPage() {
                                                   dimensionName: dim.dimensionName,
                                                   score,
                                                   trend,
-                                                  comment,
                                                 })
                                               }
                                               onMouseMove={(e) =>
@@ -1123,12 +1120,6 @@ export default function DashboardPage() {
                                                     className={`w-3 h-3 ${trendColor}`}
                                                     data-testid={`matrix-trend-${response.sessionId}-${dim.dimensionId}`}
                                                   />
-                                                  {comment && (
-                                                    <span
-                                                      className="absolute -top-1 -right-1 w-1.5 h-1.5 rounded-full bg-indigo-400"
-                                                      data-testid={`matrix-comment-${response.sessionId}-${dim.dimensionId}`}
-                                                    />
-                                                  )}
                                                 </div>
                                               ) : (
                                                 <span className="text-gray-300 text-xs">—</span>
@@ -1611,11 +1602,6 @@ export default function DashboardPage() {
             {tooltip.trend && (
               <p>
                 Trend: <span className="capitalize">{tooltip.trend}</span>
-              </p>
-            )}
-            {tooltip.comment && (
-              <p className="mt-1 text-gray-300 whitespace-normal" data-testid="comment">
-                {tooltip.comment}
               </p>
             )}
           </div>

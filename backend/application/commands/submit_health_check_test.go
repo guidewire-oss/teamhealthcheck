@@ -87,6 +87,12 @@ func (f *fakeHealthCheckRepository) GetTeamSubmissionStatus(context.Context, str
 func (f *fakeHealthCheckRepository) FindDistinctAssessmentPeriods(context.Context) ([]string, error) {
 	return nil, nil
 }
+func (f *fakeHealthCheckRepository) FindFinalPostWorkshopComments(context.Context, string, string) ([]healthcheck.PostWorkshopComment, error) {
+	return nil, nil
+}
+func (f *fakeHealthCheckRepository) FindMemberOverviewByManager(context.Context, string, string, string) ([]healthcheck.TeamHealthSummary, error) {
+	return nil, nil
+}
 
 // testClock is a controllable clock for the handler under test.
 type testClock struct{ now time.Time }
