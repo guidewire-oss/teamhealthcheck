@@ -77,3 +77,4 @@ nav:
   - Development:
       - Makefile Reference: development/makefile.md
       - Code Review Findings: development/code-review.md
+  - Release Notes: release-notes.md
